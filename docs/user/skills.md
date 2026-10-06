@@ -41,8 +41,18 @@ removes that link and nothing else.
   administrator rights.
 
 Tick the boxes beside skills to act on several at once: turn them on for all agents, turn them off
-for one agent, or remove them. **Remove** takes away every link to the skills so agents stop using
-them. The original skill folders are never deleted.
+for one agent, or remove them. **Remove from agents** takes away every link to the skills so agents
+stop using them. It never deletes the original folders.
+
+## Moving and deleting
+
+**Move to Global** and **Move to this project** move a skill's folder between the project's
+`.agents/skills` and `~/.agents/skills`, and the agents that used it keep using it. A skill is never
+merged into or replaced by one with the same name on the other side; T3 Code leaves both and says
+so. **Delete** removes the skill's folder and the links to it, and can't be undone. When git tracks
+a project skill, both show up in `git status` and the confirmation says you can undo them with git.
+Only a skill kept in an agent's own skill folder can be moved or deleted. One that is only linked
+there, such as a skill from a synced folder, stays where it is.
 
 ## Needs attention
 

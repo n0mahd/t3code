@@ -193,7 +193,9 @@ export type SkillChange =
       readonly skills: readonly SkillRef[];
       readonly agents: readonly ProviderInstanceId[];
     }
-  | { readonly kind: "remove"; readonly skills: readonly SkillRef[] };
+  | { readonly kind: "remove"; readonly skills: readonly SkillRef[] }
+  | { readonly kind: "move"; readonly skills: readonly SkillRef[]; readonly to: SkillScope }
+  | { readonly kind: "delete"; readonly skills: readonly SkillRef[] };
 
 export type SkillPlan = {
   readonly change: SkillChange;
@@ -340,7 +342,7 @@ export function planRemove(selected: readonly Skill[], ctx: SkillsContext): Skil
       affected: 1,
       confirmation: {
         title: `Remove ${skill.name} from your agents?`,
-        body: `${joinNames(losing.map((agent) => agent.displayName)) || "No agent"} will stop using it; the original stays.`,
+        body: `${joinNames(losing.map((agent) => agent.displayName)) || "No agent"} will stop using it; the original in ${skill.home} isn't deleted.`,
         notes,
         confirm: "Remove",
         destructive: true,
@@ -352,11 +354,137 @@ export function planRemove(selected: readonly Skill[], ctx: SkillsContext): Skil
     affected: targets.length,
     confirmation: {
       title: `Remove ${targets.length} skills from your agents?`,
-      body: "Agents will stop using them; the originals stay.",
+      body: "Agents will stop using them; the originals aren't deleted.",
       notes,
       confirm: "Remove",
       destructive: true,
     },
+  };
+}
+
+// -- Moving and deleting ----------------------------------------------------------------------
+
+/** Whether the skill's own folder is in an agent's skill folder, which is what can move or go. */
+const hasOwnFolder = (skill: Skill) => skill.realFolder === true;
+
+const destinationName = (to: SkillScope) => (to === "global" ? "Global" : "this project");
+
+const quoted = (skills: readonly Skill[]) => skills.map((skill) => `“${skill.name}”`);
+
+/** The skill names a note lists, cut short so a long selection stays one line. */
+const someNames = (skills: readonly Skill[], shown = 4) =>
+  skills.length <= shown
+    ? joinNames(quoted(skills))
+    : `${quoted(skills.slice(0, shown)).join(", ")} and ${skills.length - shown} more`;
+
+/** Skills that stay because they are reached through a link, not kept in an agent's folder. */
+const linkedNote = (kept: readonly Skill[], afterwards = "") =>
+  kept.length === 0
+    ? []
+    : [
+        `${plural(kept.length, "skill")} ${kept.length === 1 ? "is" : "are"} reached through a link, so ${kept.length === 1 ? "it stays" : "they stay"}.${afterwards}`,
+      ];
+
+/**
+ * Moving skills between This project and Global. It always asks first, since it changes who
+ * sees the skills. The agents that used a skill keep using it; the server links them again.
+ */
+export function planMove(selected: readonly Skill[], to: SkillScope): SkillPlan | null {
+  const coming = selected.filter((skill) => skill.scope !== to);
+  const targets = coming.filter(hasOwnFolder);
+  if (targets.length === 0) return null;
+  const them = targets.length === 1 ? "it" : "them";
+  const notes = [
+    `Agents that use ${them} keep using ${them}.`,
+    ...linkedNote(coming.filter((skill) => !hasOwnFolder(skill))),
+  ];
+  return {
+    change: { kind: "move", skills: targets.map(skillRef), to },
+    affected: targets.length,
+    confirmation: {
+      title: `Move ${targets.length === 1 ? `“${targets[0]!.name}”` : plural(targets.length, "skill")} to ${destinationName(to)}?`,
+      body:
+        to === "global"
+          ? "Moves to your Global skills, for all your projects."
+          : "Moves into this project, so anyone who clones it gets it.",
+      notes,
+      confirm: "Move",
+      destructive: false,
+    },
+  };
+}
+
+/**
+ * Deleting the skills' own folders and the links that lead to them. This is not Remove: Remove
+ * only takes the links away and leaves the original, and a skill that is only linked here, such
+ * as one from a synced library, can't be deleted from this page at all.
+ */
+export function planDelete(selected: readonly Skill[], ctx: SkillsContext): SkillPlan | null {
+  const targets = selected.filter(hasOwnFolder);
+  if (targets.length === 0) return null;
+  const kept = selected.filter((skill) => !hasOwnFolder(skill));
+  const notes: string[] = [];
+  if (targets.length === 1) {
+    const losing = ctx.installed.filter((agent) => hasAccess(targets[0]!, agent));
+    if (losing.length > 0) {
+      notes.push(`${joinNames(losing.map((agent) => agent.displayName))} will stop using it.`);
+    }
+  } else {
+    notes.push(`${someNames(targets)}.`);
+  }
+  notes.push(
+    ...linkedNote(
+      kept,
+      ` Remove takes ${kept.length === 1 ? "it" : "them"} away from your agents.`,
+    ),
+  );
+  return {
+    change: { kind: "delete", skills: targets.map(skillRef) },
+    affected: targets.length,
+    confirmation: {
+      title:
+        targets.length === 1 ? `Delete ${targets[0]!.name}?` : `Delete ${targets.length} skills?`,
+      body:
+        targets.length === 1
+          ? `This deletes ${targets[0]!.home} and any links to it. It can't be undone.`
+          : `This deletes ${plural(targets.length, "folder")} and any links to them. It can't be undone.`,
+      notes,
+      confirm: "Delete",
+      destructive: true,
+    },
+  };
+}
+
+/**
+ * The project skills a confirmation should ask git about: those a delete removes or a move out of
+ * a project takes. A move into a project makes new files, so there is nothing in git to undo.
+ * Null when the plan has nothing to ask about.
+ */
+export function skillsToCheckWithGit(plan: SkillPlan): readonly SkillRef[] | null {
+  const { change } = plan;
+  if (plan.confirmation === undefined) return null;
+  if (change.kind !== "delete" && !(change.kind === "move" && change.to === "global")) return null;
+  const skills = change.skills.filter((skill) => skill.scope === "project");
+  return skills.length === 0 ? null : skills;
+}
+
+/**
+ * The plan with a line saying git can undo it, once the server has said which project skills it
+ * tracks. A plan nothing is tracked for is returned as it was.
+ */
+export function withGitNote(plan: SkillPlan, tracked: readonly string[]): SkillPlan {
+  if (plan.confirmation === undefined) return plan;
+  const { skills } = plan.change;
+  const names = new Set(tracked);
+  const count = skills.filter((skill) => skill.scope === "project" && names.has(skill.name)).length;
+  if (count === 0) return plan;
+  const note =
+    count === skills.length
+      ? "You can undo this with git."
+      : `${count} of these ${count === 1 ? "is" : "are"} tracked by git, so you can undo ${count === 1 ? "that one" : "those"} with git.`;
+  return {
+    ...plan,
+    confirmation: { ...plan.confirmation, notes: [...plan.confirmation.notes, note] },
   };
 }
 
@@ -371,7 +499,13 @@ export function planFix(skill: Skill, ctx: SkillsContext) {
   };
 }
 
-const problemText = (reason: SkillOutcomeReason, name: string, who: string | undefined) => {
+const problemText = (
+  reason: SkillOutcomeReason,
+  name: string,
+  who: string | undefined,
+  /** Where a move was going, to say who is in the way. */
+  to?: SkillScope,
+) => {
   switch (reason) {
     case "notFound":
       return `“${name}” isn't there any more.`;
@@ -385,12 +519,26 @@ const problemText = (reason: SkillOutcomeReason, name: string, who: string | und
       return `${who ?? "An agent"} loads another “${name}” first.`;
     case "linkNotAllowed":
       return "Your system doesn't let T3 Code make links there. On Windows, turn on Developer Mode.";
+    case "linked":
+      return `“${name}” is reached through a link, so it stays where it is.`;
+    case "destinationTaken":
+      return `${to === undefined ? "The other side" : capitalize(destinationName(to))} already has a “${name}”, so it stays.`;
+    case "inUse":
+      return `“${name}” is in use by another program, so it wasn't moved.`;
     case "failed":
       return who === undefined
         ? `Couldn't change “${name}”.`
         : `Couldn't change ${who}'s folder for “${name}”.`;
   }
 };
+
+const capitalize = (text: string) => `${text.slice(0, 1).toUpperCase()}${text.slice(1)}`;
+
+/** A skill that was changed, but not all the way: its old folder stayed, or only some of it went. */
+const partialText = (kind: SkillChange["kind"], name: string) =>
+  kind === "move"
+    ? `“${name}” moved, but its old folder couldn't be removed.`
+    : `“${name}” was only partly deleted.`;
 
 const MAX_PROBLEMS = 3;
 
@@ -416,12 +564,29 @@ export function describeResult(
         return `Turned off ${count} for ${joinNames(change.agents.map(nameOf))}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "loses" : "lose"} ${them} too.` : ""}`;
       case "remove":
         return `Removed ${count} from your agents.`;
+      case "move":
+        return `Moved ${count} to ${destinationName(change.to)}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "gets" : "get"} ${them} too.` : ""}`;
+      case "delete":
+        return `Deleted ${count}.`;
     }
   })();
   const problems = [
     ...new Set(
       outcomes.flatMap((outcome) => [
-        ...(outcome.reason ? [problemText(outcome.reason, outcome.skill.name, undefined)] : []),
+        ...(outcome.reason
+          ? [
+              outcome.status === "changed" &&
+              outcome.reason === "failed" &&
+              (change.kind === "move" || change.kind === "delete")
+                ? partialText(change.kind, outcome.skill.name)
+                : problemText(
+                    outcome.reason,
+                    outcome.skill.name,
+                    undefined,
+                    change.kind === "move" ? change.to : undefined,
+                  ),
+            ]
+          : []),
         ...outcome.blocked.map((blocked) =>
           problemText(blocked.reason, outcome.skill.name, nameOf(blocked.instanceId)),
         ),
@@ -429,11 +594,18 @@ export function describeResult(
     ),
   ];
   if (lead === "" && problems.length === 0) {
-    return change.kind === "enable"
-      ? "Already on."
-      : change.kind === "disable"
-        ? "Already off."
-        : "Nothing to remove.";
+    switch (change.kind) {
+      case "enable":
+        return "Already on.";
+      case "disable":
+        return "Already off.";
+      case "remove":
+        return "Nothing to remove.";
+      case "move":
+        return `Already in ${destinationName(change.to)}.`;
+      case "delete":
+        return "Nothing to delete.";
+    }
   }
   const shown = problems.slice(0, MAX_PROBLEMS);
   if (problems.length > shown.length) {

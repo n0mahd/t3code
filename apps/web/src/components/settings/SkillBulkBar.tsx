@@ -12,6 +12,8 @@ import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { SkillAgentIcon } from "./skillAgentIcon";
 import {
+  planDelete,
+  planMove,
   planRemove,
   planTurnOff,
   planTurnOnAll,
@@ -24,19 +26,25 @@ import {
 export function BulkBar({
   selected,
   ctx,
+  hasProject,
   busy,
   onClear,
   onPlan,
 }: {
   selected: readonly Skill[];
   ctx: SkillsContext;
+  /** A project is picked, so "Move to this project" means something. */
+  hasProject: boolean;
   /** A change is being made, so nothing else can start. */
   busy: boolean;
   onClear: () => void;
   onPlan: (plan: SkillPlan) => void;
 }) {
   const turnOn = planTurnOnAll(selected, ctx);
+  const toGlobal = planMove(selected, "global");
+  const toProject = hasProject ? planMove(selected, "project") : null;
   const remove = planRemove(selected, ctx);
+  const del = planDelete(selected, ctx);
   return (
     <div
       role="region"
@@ -82,14 +90,36 @@ export function BulkBar({
               })}
             </MenuPopup>
           </Menu>
+          {toGlobal && (
+            <Button size="xs" variant="outline" disabled={busy} onClick={() => onPlan(toGlobal)}>
+              Move to Global
+            </Button>
+          )}
+          {toProject && (
+            <Button size="xs" variant="outline" disabled={busy} onClick={() => onPlan(toProject)}>
+              Move to this project
+            </Button>
+          )}
           {remove && (
             <Button
               size="xs"
               variant="destructive-outline"
               disabled={busy}
+              title="Agents stop using the skills. The originals aren't deleted."
               onClick={() => onPlan(remove)}
             >
-              Remove…
+              Remove from agents…
+            </Button>
+          )}
+          {del && (
+            <Button
+              size="xs"
+              variant="destructive-outline"
+              disabled={busy}
+              title="Deletes the skills' folders. This can't be undone."
+              onClick={() => onPlan(del)}
+            >
+              Delete…
             </Button>
           )}
         </div>

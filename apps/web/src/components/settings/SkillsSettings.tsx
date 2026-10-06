@@ -26,7 +26,9 @@ import {
   matchesQuery,
   planFix,
   skillsEnvironment,
+  skillsToCheckWithGit,
   unreadableNote,
+  withGitNote,
   type Skill,
   type SkillPlan,
   type SkillsContext,
@@ -112,6 +114,9 @@ function EnvironmentSkills({
   const enableSkills = useAtomCommand(serverEnvironment.enableSkills, { reportFailure: false });
   const disableSkills = useAtomCommand(serverEnvironment.disableSkills, { reportFailure: false });
   const removeSkills = useAtomCommand(serverEnvironment.removeSkills, { reportFailure: false });
+  const moveSkills = useAtomCommand(serverEnvironment.moveSkills, { reportFailure: false });
+  const deleteSkills = useAtomCommand(serverEnvironment.deleteSkills, { reportFailure: false });
+  const skillsTracked = useAtomCommand(serverEnvironment.skillsTracked, { reportFailure: false });
   // Reading the list needs no grant; each change needs its command's.
   const canEnable = useAtomValue(
     serverEnvironment.enableSkills.permissionAtom(environment.environmentId),
@@ -121,6 +126,12 @@ function EnvironmentSkills({
   );
   const canRemove = useAtomValue(
     serverEnvironment.removeSkills.permissionAtom(environment.environmentId),
+  );
+  const canMove = useAtomValue(
+    serverEnvironment.moveSkills.permissionAtom(environment.environmentId),
+  );
+  const canDelete = useAtomValue(
+    serverEnvironment.deleteSkills.permissionAtom(environment.environmentId),
   );
   const connected = environment.connection.phase === "connected";
   const providers = environment.serverConfig?.providers ?? NO_PROVIDERS;
@@ -139,7 +150,7 @@ function EnvironmentSkills({
   /** A change is being made and the list read again; nothing else can start meanwhile. */
   const [busy, setBusy] = useState(false);
   /** The controls that change skills are off while a change runs or the grant is missing. */
-  const locked = busy || !(canEnable && canDisable && canRemove);
+  const locked = busy || !(canEnable && canDisable && canRemove && canMove && canDelete);
   const [notice, setNotice] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const mounted = useRef(true);
@@ -263,9 +274,19 @@ function EnvironmentSkills({
                 ...base,
                 input: { ...scoped, skills: change.skills, agents: change.agents },
               })
-            : await removeSkills({ ...base, input: { ...scoped, skills: change.skills } });
+            : change.kind === "remove"
+              ? await removeSkills({ ...base, input: { ...scoped, skills: change.skills } })
+              : change.kind === "move"
+                ? // A move is between a project and Global, so it needs the project picked above.
+                  cwd
+                  ? await moveSkills({
+                      ...base,
+                      input: { cwd, skills: change.skills, to: change.to },
+                    })
+                  : null
+                : await deleteSkills({ ...base, input: { ...scoped, skills: change.skills } });
       setNotice(
-        result._tag === "Success"
+        result?._tag === "Success"
           ? describeResult(change, result.value.outcomes, ctx)
           : CHANGE_ERROR,
       );
@@ -286,10 +307,32 @@ function EnvironmentSkills({
     setSelected(new Set());
     setBusy(false);
   };
-  /** A plan that needs confirming waits for the dialog; any other goes ahead. */
+  /**
+   * A plan that needs confirming waits for the dialog; any other goes ahead. For a move or delete
+   * the dialog opens at once and git is asked meanwhile: the "undo with git" line appears when the
+   * answer is in, and never when the check fails.
+   */
   const runPlan = (plan: SkillPlan) => {
-    if (plan.confirmation) setConfirming(plan);
-    else void apply(plan);
+    if (!plan.confirmation) {
+      void apply(plan);
+      return;
+    }
+    setConfirming(plan);
+    const skills = cwd ? skillsToCheckWithGit(plan) : null;
+    if (!cwd || !skills) return;
+    void (async () => {
+      try {
+        const result = await skillsTracked({
+          environmentId: environment.environmentId,
+          input: { cwd, skills },
+        });
+        if (result._tag !== "Success") return;
+        const tracked = result.value.tracked;
+        setConfirming((current) => (current === plan ? withGitNote(plan, tracked) : current));
+      } catch {
+        // No answer, no promise: the dialog stays as it was.
+      }
+    })();
   };
   const chosen = useMemo(
     () => (skills ?? []).filter((skill) => selected.has(skill.id)),
@@ -451,6 +494,7 @@ function EnvironmentSkills({
                 <BulkBar
                   selected={chosen}
                   ctx={ctx}
+                  hasProject={project !== null}
                   busy={locked}
                   onClear={() => setSelected(new Set())}
                   onPlan={runPlan}

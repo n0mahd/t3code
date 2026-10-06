@@ -17,7 +17,9 @@ import {
   ingestSkills,
   installedAgents,
   matchesQuery,
+  planDelete,
   planFix,
+  planMove,
   planRemove,
   planToggle,
   planTurnOff,
@@ -25,8 +27,10 @@ import {
   scriptFiles,
   skillBody,
   skillsEnvironment,
+  skillsToCheckWithGit,
   switchBlocker,
   unreadableNote,
+  withGitNote,
   type Skill,
   type SkillAgent,
 } from "./SkillsSettings.logic";
@@ -570,7 +574,7 @@ describe("removing skills from the agents", () => {
     expect(plan?.change).toEqual({ kind: "remove", skills: [ref("tdd", "~/.agents/skills/tdd")] });
     expect(plan?.confirmation).toEqual({
       title: "Remove tdd from your agents?",
-      body: "Claude will stop using it; the original stays.",
+      body: "Claude will stop using it; the original in ~/.agents/skills/tdd isn't deleted.",
       notes: ["Codex still uses it from its own folder."],
       confirm: "Remove",
       destructive: true,
@@ -590,11 +594,166 @@ describe("removing skills from the agents", () => {
     expect(plan?.change).toMatchObject({ skills: [ref("a"), ref("b")] });
     expect(plan?.confirmation).toMatchObject({
       title: "Remove 2 skills from your agents?",
-      body: "Agents will stop using them; the originals stay.",
+      body: "Agents will stop using them; the originals aren't deleted.",
       notes: ["1 skill is only in its own folder, so nothing changes there."],
       destructive: true,
     });
     expect(planRemove([own], ctx)).toBeNull();
+  });
+});
+
+/** A global skill kept in an agent's folder itself, so it can move or be deleted. */
+const owned = (name: string, extra: Partial<Skill> = {}): Skill => ({
+  ...reached(
+    name,
+    {
+      claudeAgent: { state: "link", folder: "~/.claude/skills" },
+      codex: { state: "direct", folder: "~/.agents/skills" },
+      cursor: { state: "none", folder: "~/.cursor/skills" },
+    },
+    `~/.agents/skills/${name}`,
+  ),
+  realFolder: true,
+  ...extra,
+});
+
+const ownedInProject = (name: string) =>
+  owned(name, { scope: "project", home: `.agents/skills/${name}` });
+
+describe("moving skills between this project and Global", () => {
+  /** A skill kept in the project's shared folder, which Claude reaches through a link. */
+  const inProject = (name: string, extra: Partial<Skill> = {}) =>
+    owned(name, { scope: "project", home: `.agents/skills/${name}`, ...extra });
+
+  it("always asks first, and says where the skill goes and who sees it", () => {
+    const toGlobal = planMove([inProject("verify")], "global");
+    expect(toGlobal?.change).toEqual({
+      kind: "move",
+      skills: [{ scope: "project", name: "verify", home: ".agents/skills/verify" }],
+      to: "global",
+    });
+    expect(toGlobal?.confirmation).toEqual({
+      title: "Move “verify” to Global?",
+      body: "Moves to your Global skills, for all your projects.",
+      notes: ["Agents that use it keep using it."],
+      confirm: "Move",
+      destructive: false,
+    });
+
+    const global = inProject("tdd", { scope: "global", home: "~/.agents/skills/tdd" });
+    const toProject = planMove([global, inProject("grill", { scope: "global" })], "project");
+    expect(toProject?.confirmation).toMatchObject({
+      title: "Move 2 skills to this project?",
+      body: "Moves into this project, so anyone who clones it gets it.",
+      notes: ["Agents that use them keep using them."],
+    });
+  });
+
+  it("asks git only about project skills a move takes out of a project", () => {
+    const out = planMove([inProject("a"), inProject("b")], "global")!;
+    expect(skillsToCheckWithGit(out)).toEqual(
+      out.change.kind === "move" ? out.change.skills : null,
+    );
+    // Moving into a project makes new files, so there is nothing in git to undo.
+    const global = inProject("g", { scope: "global" });
+    expect(skillsToCheckWithGit(planMove([global], "project")!)).toBeNull();
+    expect(planMove([inProject("a")], "global")?.confirmation?.notes.join(" ")).not.toContain(
+      "git",
+    );
+  });
+
+  it("leaves out skills that are in the place already or only reached through a link", () => {
+    const linked = inProject("synced", { realFolder: undefined });
+    const plan = planMove(
+      [inProject("verify"), linked, inProject("home", { scope: "global" })],
+      "global",
+    );
+    expect(plan?.change).toMatchObject({ skills: [{ name: "verify" }] });
+    expect(plan?.affected).toBe(1);
+    expect(plan?.confirmation?.notes).toContain("1 skill is reached through a link, so it stays.");
+    expect(planMove([linked], "global")).toBeNull();
+    expect(planMove([inProject("home", { scope: "global" })], "global")).toBeNull();
+  });
+});
+
+describe("deleting skills", () => {
+  it("names the folder that goes and who stops using the skill, apart from Remove", () => {
+    const plan = planDelete([owned("tdd")], ctx);
+    expect(plan?.change).toEqual({
+      kind: "delete",
+      skills: [ref("tdd", "~/.agents/skills/tdd")],
+    });
+    expect(plan?.confirmation).toEqual({
+      title: "Delete tdd?",
+      body: "This deletes ~/.agents/skills/tdd and any links to it. It can't be undone.",
+      notes: ["Claude and Codex will stop using it."],
+      confirm: "Delete",
+      destructive: true,
+    });
+    expect(planRemove([owned("tdd")], ctx)?.confirmation?.body).toContain("isn't deleted");
+  });
+
+  it("counts the folders in a bulk delete and names some of the skills", () => {
+    const plan = planDelete(
+      ["a", "b", "c", "d", "e", "f"].map((name) => owned(name)),
+      ctx,
+    );
+    expect(plan?.affected).toBe(6);
+    expect(plan?.confirmation).toMatchObject({
+      title: "Delete 6 skills?",
+      body: "This deletes 6 folders and any links to them. It can't be undone.",
+      notes: ["“a”, “b”, “c”, “d” and 2 more."],
+      destructive: true,
+    });
+  });
+
+  it("never offers to delete a skill that is only linked, and says Remove is for those", () => {
+    const linked = owned("synced", { realFolder: undefined });
+    const plan = planDelete([owned("tdd"), linked], ctx);
+    expect(plan?.change).toMatchObject({ skills: [{ name: "tdd" }] });
+    expect(plan?.confirmation?.notes).toContain(
+      "1 skill is reached through a link, so it stays. Remove takes it away from your agents.",
+    );
+    expect(planDelete([linked], ctx)).toBeNull();
+  });
+
+  it("asks git about the project skills only, and not for a global one", () => {
+    const plan = planDelete([ownedInProject("a"), owned("g")], ctx)!;
+    expect(skillsToCheckWithGit(plan)?.map((skill) => skill.name)).toEqual(["a"]);
+    expect(skillsToCheckWithGit(planDelete([owned("g")], ctx)!)).toBeNull();
+  });
+});
+
+describe("promising an undo with git", () => {
+  const delete3 = () =>
+    planDelete([ownedInProject("a"), ownedInProject("b"), ownedInProject("c")], ctx)!;
+
+  it("says so once the server has named the skills git tracks", () => {
+    expect(
+      withGitNote(planDelete([ownedInProject("a")], ctx)!, ["a"]).confirmation?.notes,
+    ).toContain("You can undo this with git.");
+    expect(withGitNote(delete3(), ["a", "b", "c"]).confirmation?.notes).toContain(
+      "You can undo this with git.",
+    );
+    const some = withGitNote(delete3(), ["a"]).confirmation?.notes;
+    expect(some).toContain("1 of these is tracked by git, so you can undo that one with git.");
+    expect(withGitNote(delete3(), ["a", "b"]).confirmation?.notes).toContain(
+      "2 of these are tracked by git, so you can undo those with git.",
+    );
+  });
+
+  it("adds nothing when git tracks none of them, and works for a move out of a project", () => {
+    const plan = delete3();
+    expect(withGitNote(plan, [])).toBe(plan);
+    expect(withGitNote(plan, ["other"])).toBe(plan);
+    expect(
+      withGitNote(planMove([ownedInProject("a")], "global")!, ["a"]).confirmation?.notes,
+    ).toContain("You can undo this with git.");
+  });
+
+  it("leaves the plan's change alone", () => {
+    const plan = delete3();
+    expect(withGitNote(plan, ["a"]).change).toBe(plan.change);
   });
 });
 
@@ -617,6 +776,63 @@ describe("telling what a change did", () => {
     expect(
       describeResult({ kind: "remove", skills: [ref("a")] }, [outcome({ name: "a" })], ctx),
     ).toBe("Removed 1 skill from your agents.");
+  });
+
+  it("says where skills went and who else got them, and what a delete took", () => {
+    expect(
+      describeResult(
+        { kind: "move", skills: [ref("a"), ref("b")], to: "global" },
+        [outcome({ name: "a", affected: [codex.instanceId] }), outcome({ name: "b" })],
+        ctx,
+      ),
+    ).toBe("Moved 2 skills to Global. Codex gets them too.");
+    expect(
+      describeResult(
+        { kind: "move", skills: [ref("a")], to: "project" },
+        [outcome({ name: "a" })],
+        ctx,
+      ),
+    ).toBe("Moved 1 skill to this project.");
+    expect(
+      describeResult({ kind: "delete", skills: [ref("a")] }, [outcome({ name: "a" })], ctx),
+    ).toBe("Deleted 1 skill.");
+  });
+
+  it("says why a move or a delete left a skill alone, or didn't finish", () => {
+    expect(
+      describeResult(
+        { kind: "move", skills: [], to: "global" },
+        [
+          outcome({ name: "a", status: "skipped", reason: "destinationTaken" }),
+          outcome({ name: "b", status: "skipped", reason: "linked" }),
+          outcome({ name: "c", status: "skipped", reason: "inUse" }),
+        ],
+        ctx,
+      ),
+    ).toBe(
+      "Global already has a “a”, so it stays. “b” is reached through a link, so it stays where it is. “c” is in use by another program, so it wasn't moved.",
+    );
+    expect(
+      describeResult(
+        { kind: "move", skills: [], to: "project" },
+        [outcome({ name: "a", status: "skipped", reason: "destinationTaken" })],
+        ctx,
+      ),
+    ).toBe("This project already has a “a”, so it stays.");
+    expect(
+      describeResult(
+        { kind: "move", skills: [ref("a")], to: "global" },
+        [outcome({ name: "a", reason: "failed" })],
+        ctx,
+      ),
+    ).toBe("Moved 1 skill to Global. “a” moved, but its old folder couldn't be removed.");
+    expect(
+      describeResult(
+        { kind: "delete", skills: [ref("a")] },
+        [outcome({ name: "a", reason: "failed" })],
+        ctx,
+      ),
+    ).toBe("Deleted 1 skill. “a” was only partly deleted.");
   });
 
   it("says why a skill or an agent was skipped, in the person's words", () => {
@@ -673,6 +889,12 @@ describe("telling what a change did", () => {
     );
     expect(describeResult({ kind: "remove", skills: [] }, unchanged, ctx)).toBe(
       "Nothing to remove.",
+    );
+    expect(describeResult({ kind: "move", skills: [], to: "global" }, unchanged, ctx)).toBe(
+      "Already in Global.",
+    );
+    expect(describeResult({ kind: "delete", skills: [] }, unchanged, ctx)).toBe(
+      "Nothing to delete.",
     );
   });
 });

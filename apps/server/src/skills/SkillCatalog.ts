@@ -18,6 +18,7 @@ import {
   type ProviderDriverKind,
   type ProviderInstanceConfig,
   type SkillAgentAccess,
+  type SkillAgentState,
   type SkillCopy,
   type SkillFile,
   type SkillFolderProblem,
@@ -45,6 +46,7 @@ import {
   skillCollisionFor,
   skillRootsFor,
   type AgentSkillFolderList,
+  type SkillCollision,
 } from "@t3tools/provider-core/server/AgentSkillFolders";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -119,7 +121,8 @@ interface AgentInstance {
 interface FolderEntry {
   readonly root: ReadRoot;
   readonly name: string;
-  readonly link: boolean;
+  /** What the link points at, as written; undefined for a real directory. */
+  readonly target: string | undefined;
   /** Absolute path after following links. */
   readonly home: string;
 }
@@ -137,6 +140,44 @@ interface SkillGroup {
   readonly home: string;
   readonly entries: readonly FolderEntry[];
   readonly header: SkillHeader;
+}
+
+/**
+ * One skill as the folders hold it, with what it takes to change who reads it. `list` shows the
+ * same facts as a summary.
+ */
+export interface ResolvedSkill {
+  readonly scope: SkillScope;
+  readonly name: string;
+  /** The same display path as `SkillSummary.home`. */
+  readonly displayHome: string;
+  /** Absolute path of the skill's folder, after following links. */
+  readonly home: string;
+  /** Every entry in the agents' folders that reaches the skill: a real folder, or a link. */
+  readonly entries: ReadonlyArray<{
+    readonly path: string;
+    /** The folder the entry is in. */
+    readonly directory: string;
+    /** What the link points at, as written; undefined for a real folder. */
+    readonly target: string | undefined;
+  }>;
+  readonly agents: ReadonlyArray<{
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ProviderDriverKind;
+    readonly collision: SkillCollision;
+    readonly state: SkillAgentState;
+    /** Paths of the entries it loads the skill from; empty when `state` is `none`. */
+    readonly via: readonly string[];
+    /** The folders it reads, in the order it looks, across both scopes. */
+    readonly reads: ReadonlyArray<{
+      readonly scope: SkillScope;
+      readonly directory: string;
+      readonly label: string;
+      readonly standard: boolean;
+      /** The agent would load a different skill with this name from here. */
+      readonly rival: boolean;
+    }>;
+  }>;
 }
 
 const NOT_FOUND: SkillGetResult = {
@@ -157,6 +198,14 @@ export class SkillCatalog extends Context.Service<
     readonly list: (input: SkillListInput) => Effect.Effect<SkillListResult, SkillRequestError>;
     /** The full SKILL.md text and the file list of one skill from `list`. */
     readonly get: (input: SkillGetInput) => Effect.Effect<SkillGetResult, SkillRequestError>;
+    /**
+     * Every skill in the agents' folders with this scope and name, as the folders hold it now.
+     * A project skill needs `cwd`. Nothing is written.
+     */
+    readonly resolve: (input: {
+      readonly cwd?: string | undefined;
+      readonly skills: ReadonlyArray<{ readonly scope: SkillScope; readonly name: string }>;
+    }) => Effect.Effect<ReadonlyArray<ResolvedSkill>>;
   }
 >()("t3/skills/SkillCatalog") {}
 
@@ -214,15 +263,18 @@ const make = Effect.gen(function* () {
     if (info?.type !== "Directory") return undefined;
     const home = yield* fileSystem.realPath(entryPath).pipe(Effect.orElseSucceed(() => undefined));
     if (home === undefined) return undefined;
-    const link = yield* fileSystem.readLink(entryPath).pipe(
-      Effect.as(true),
-      Effect.orElseSucceed(() => false),
+    const target = yield* fileSystem.readLink(entryPath).pipe(
+      Effect.map((value): string | undefined => value),
+      Effect.orElseSucceed(() => undefined),
     );
-    return { root, name, link, home } satisfies FolderEntry;
+    return { root, name, target, home } satisfies FolderEntry;
   });
 
-  /** The skill folders in a root. A root that is missing is empty; one that can't be read says so. */
-  const scanRoot = Effect.fnUntraced(function* (root: ReadRoot) {
+  /**
+   * The skill folders in a root, or only those named in `only`. A root that is missing is empty;
+   * one that can't be read says so.
+   */
+  const scanRoot = Effect.fnUntraced(function* (root: ReadRoot, only?: ReadonlySet<string>) {
     const listed = yield* fileSystem.readDirectory(root.directory).pipe(
       Effect.map((names) => ({ names, unreadable: false })),
       Effect.catchTags({
@@ -231,7 +283,10 @@ const make = Effect.gen(function* () {
       }),
     );
     const entries = yield* Effect.forEach(
-      listed.names.filter(isSkillFolderName).toSorted().slice(0, MAX_FOLDER_ENTRIES),
+      listed.names
+        .filter((name) => isSkillFolderName(name) && (only === undefined || only.has(name)))
+        .toSorted()
+        .slice(0, MAX_FOLDER_ENTRIES),
       (name) => entryAt(root, name),
       { concurrency: CONCURRENCY },
     );
@@ -296,6 +351,10 @@ const make = Effect.gen(function* () {
     }
     return cwd;
   });
+
+  /** A project's folder as `resolve` takes it: a relative one names no project. */
+  const absoluteCwd = (cwd: string | undefined) =>
+    cwd !== undefined && path.isAbsolute(cwd) ? cwd : undefined;
 
   /** A global folder as shown to the user: `~/...` under the home directory, else its path. */
   const globalLabel = (directory: string) => {
@@ -473,12 +532,20 @@ const make = Effect.gen(function* () {
     return result;
   });
 
-  const list: SkillCatalog["Service"]["list"] = Effect.fn("SkillCatalog.list")(function* (input) {
-    const cwd = yield* requireProject(input.cwd);
+  /**
+   * What the agents' folders hold, grouped by what each folder really holds, and how each
+   * instance reaches every group. `only` narrows the scan to skills with those names.
+   */
+  const scanSkills = Effect.fnUntraced(function* (
+    cwd: string | undefined,
+    only?: ReadonlySet<string>,
+  ) {
     const displayRoots = yield* displayRootsOf(cwd);
     const instances = yield* loadInstances(cwd);
     const roots = rootsFor(cwd, instances);
-    const scanned = yield* Effect.forEach(roots, scanRoot, { concurrency: CONCURRENCY });
+    const scanned = yield* Effect.forEach(roots, (root) => scanRoot(root, only), {
+      concurrency: CONCURRENCY,
+    });
 
     // Group by what is really on disk: the same folder reached through several links is one skill.
     const grouped = new Map<string, Omit<SkillGroup, "header">>();
@@ -515,16 +582,21 @@ const make = Effect.gen(function* () {
         ({ root, entries }) => [rootKey(root), new Map(entries.map((e) => [e.name, e]))] as const,
       ),
     );
-    const copies = yield* compareCopies(groups, displayRoots);
+
+    /** What an instance would load from one folder for this name, if anything. */
+    const loadableAt = (group: SkillGroup, instance: AgentInstance, root: ReadRoot) => {
+      const entry = entryAtRoot.get(rootKey(root))?.get(group.name);
+      const owner = entry && groupOf.get(entry);
+      // Claude skips a skill whose header it can't read, and it doesn't shadow a later one.
+      const skipped = instance.driver === "claudeAgent" && owner?.header.invalid === true;
+      return entry && owner && !skipped ? { entry, owner } : undefined;
+    };
 
     /** How one instance reaches a skill: through the folders it loads it from, else `none`. */
-    const accessFor = (group: SkillGroup, instance: AgentInstance): SkillAgentAccess => {
+    const accessFor = (group: SkillGroup, instance: AgentInstance) => {
       const found = instance.reads.flatMap((root) => {
-        const entry = entryAtRoot.get(rootKey(root))?.get(group.name);
-        const owner = entry && groupOf.get(entry);
-        // Claude skips a skill whose header it can't read, and it doesn't shadow a later one.
-        const skipped = instance.driver === "claudeAgent" && owner?.header.invalid === true;
-        return entry && owner && !skipped ? [{ entry, owner }] : [];
+        const loadable = loadableAt(group, instance, root);
+        return loadable ? [loadable] : [];
       });
       // A first-wins agent loads only the first copy in its order; the others load every copy.
       const firstWins = skillCollisionFor(instance.driver) === "first-wins";
@@ -534,26 +606,41 @@ const make = Effect.gen(function* () {
           : found.filter((f) => f.owner === group);
       // One copy can be reached through several of the agent's folders; the shared one is shown.
       const via = (loaded.find((f) => f.entry.root.standard) ?? loaded[0])?.entry;
+      const loadedEntries = loaded.map((f) => f.entry);
       if (via) {
         return {
-          instanceId: instance.instanceId,
-          driver: instance.driver,
-          state: via.root.standard || !via.link ? "direct" : "link",
-          folder: via.root.label,
+          loadedEntries,
+          access: {
+            instanceId: instance.instanceId,
+            driver: instance.driver,
+            state: via.root.standard || via.target === undefined ? "direct" : "link",
+            folder: via.root.label,
+          } satisfies SkillAgentAccess,
         };
       }
       const looksIn = instance.reads.find((root) => root.scope === group.scope);
       return {
-        instanceId: instance.instanceId,
-        driver: instance.driver,
-        state: "none",
-        folder:
-          looksIn?.label ??
-          (group.scope === "global"
-            ? globalLabel(path.join(homeDirectory, STANDARD_SKILL_FOLDER))
-            : STANDARD_SKILL_FOLDER),
+        loadedEntries,
+        access: {
+          instanceId: instance.instanceId,
+          driver: instance.driver,
+          state: "none",
+          folder:
+            looksIn?.label ??
+            (group.scope === "global"
+              ? globalLabel(path.join(homeDirectory, STANDARD_SKILL_FOLDER))
+              : STANDARD_SKILL_FOLDER),
+        } satisfies SkillAgentAccess,
       };
     };
+
+    return { displayRoots, instances, scanned, groups, accessFor, loadableAt };
+  });
+
+  const list: SkillCatalog["Service"]["list"] = Effect.fn("SkillCatalog.list")(function* (input) {
+    const cwd = yield* requireProject(input.cwd);
+    const { displayRoots, instances, scanned, groups, accessFor } = yield* scanSkills(cwd);
+    const copies = yield* compareCopies(groups, displayRoots);
 
     const skills = groups.map((group): SkillSummary => ({
       name: group.name,
@@ -562,7 +649,7 @@ const make = Effect.gen(function* () {
       description: capDescription(group.header.description),
       ...(group.header.invalid ? { invalidHeader: true } : {}),
       copies: copies.get(group) ?? [],
-      access: instances.map((instance) => accessFor(group, instance)),
+      access: instances.map((instance) => accessFor(group, instance).access),
     }));
 
     const unreadable = new Map<string, SkillFolderProblem>();
@@ -580,6 +667,54 @@ const make = Effect.gen(function* () {
       unreadable: [...unreadable.values()],
     };
   });
+
+  const resolve: SkillCatalog["Service"]["resolve"] = Effect.fn("SkillCatalog.resolve")(
+    function* (input) {
+      const cwd = absoluteCwd(input.cwd);
+      const wanted = input.skills.filter(
+        (skill) => isSkillFolderName(skill.name) && (skill.scope === "global" || cwd !== undefined),
+      );
+      if (wanted.length === 0) return [];
+      const { displayRoots, instances, groups, accessFor, loadableAt } = yield* scanSkills(
+        cwd,
+        new Set(wanted.map((skill) => skill.name)),
+      );
+      const wantedKeys = new Set(wanted.map((skill) => `${skill.scope}\0${skill.name}`));
+      return groups
+        .filter((group) => wantedKeys.has(`${group.scope}\0${group.name}`))
+        .map((group): ResolvedSkill => ({
+          scope: group.scope,
+          name: group.name,
+          displayHome: displayPath(group.home, displayRoots),
+          home: group.home,
+          entries: group.entries.map((entry) => ({
+            path: path.join(entry.root.directory, entry.name),
+            directory: entry.root.directory,
+            target: entry.target,
+          })),
+          agents: instances.map((instance) => {
+            const { access, loadedEntries } = accessFor(group, instance);
+            return {
+              instanceId: instance.instanceId,
+              driver: instance.driver,
+              collision: skillCollisionFor(instance.driver),
+              state: access.state,
+              via: loadedEntries.map((entry) => path.join(entry.root.directory, entry.name)),
+              reads: instance.reads.map((root) => {
+                const loadable = loadableAt(group, instance, root);
+                return {
+                  scope: root.scope,
+                  directory: root.directory,
+                  label: root.label,
+                  standard: root.standard,
+                  rival: loadable !== undefined && loadable.owner !== group,
+                };
+              }),
+            };
+          }),
+        }));
+    },
+  );
 
   /**
    * Relative paths and sizes of the files under a skill's folder, breadth first. It stops at the
@@ -674,7 +809,7 @@ const make = Effect.gen(function* () {
     };
   });
 
-  return SkillCatalog.of({ list, get });
+  return SkillCatalog.of({ list, get, resolve });
 });
 
 export const layer = Layer.effect(SkillCatalog, make);

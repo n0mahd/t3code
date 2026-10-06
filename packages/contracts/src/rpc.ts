@@ -324,10 +324,14 @@ import {
   ServerSettingsPatch,
 } from "./settings.ts";
 import {
+  SkillBatchResult,
+  SkillDisableInput,
+  SkillEnableInput,
   SkillGetInput,
   SkillGetResult,
   SkillListInput,
   SkillListResult,
+  SkillRemoveInput,
   SkillRequestError,
 } from "./skills.ts";
 import {
@@ -476,6 +480,9 @@ export const WS_METHODS = {
   serverRefreshProviders: "server.refreshProviders",
   serverListSkills: "server.listSkills",
   serverGetSkill: "server.getSkill",
+  serverEnableSkills: "server.enableSkills",
+  serverDisableSkills: "server.disableSkills",
+  serverRemoveSkills: "server.removeSkills",
   serverUpdateProvider: "server.updateProvider",
   serverUpdateServer: "server.updateServer",
   serverUpdateServerWithProgress: "server.updateServerWithProgress",
@@ -616,6 +623,24 @@ const WsServerListSkillsRpc = Rpc.make(WS_METHODS.serverListSkills, {
 const WsServerGetSkillRpc = Rpc.make(WS_METHODS.serverGetSkill, {
   payload: SkillGetInput,
   success: SkillGetResult,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerEnableSkillsRpc = Rpc.make(WS_METHODS.serverEnableSkills, {
+  payload: SkillEnableInput,
+  success: SkillBatchResult,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerDisableSkillsRpc = Rpc.make(WS_METHODS.serverDisableSkills, {
+  payload: SkillDisableInput,
+  success: SkillBatchResult,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerRemoveSkillsRpc = Rpc.make(WS_METHODS.serverRemoveSkills, {
+  payload: SkillRemoveInput,
+  success: SkillBatchResult,
   error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
 });
 
@@ -1854,6 +1879,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshProvidersRpc,
   WsServerListSkillsRpc,
   WsServerGetSkillRpc,
+  WsServerEnableSkillsRpc,
+  WsServerDisableSkillsRpc,
+  WsServerRemoveSkillsRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,
   WsProviderAuthStartRpc,

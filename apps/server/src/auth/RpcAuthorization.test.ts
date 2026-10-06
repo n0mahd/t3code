@@ -66,6 +66,16 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("doesn't let a read-only client change which agents use skills", () => {
+    for (const method of [
+      WS_METHODS.serverEnableSkills,
+      WS_METHODS.serverDisableSkills,
+      WS_METHODS.serverRemoveSkills,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

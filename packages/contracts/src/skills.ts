@@ -102,17 +102,92 @@ export const SkillGetResult = Schema.Struct({
 });
 export type SkillGetResult = typeof SkillGetResult.Type;
 
-/**
- * A skill read that couldn't be carried out, as opposed to a folder with no skills: a project's
- * folders are only read when the environment knows the folder as a project.
- */
+/** The skill an action is about, as the list returned it. */
+export const SkillRef = Schema.Struct({
+  scope: SkillScope,
+  name: TrimmedNonEmptyString,
+  /** The `home` the list returned. The action is refused when the skill is no longer there. */
+  home: TrimmedNonEmptyString,
+});
+export type SkillRef = typeof SkillRef.Type;
+
+const SkillRefs = Schema.Array(SkillRef).check(Schema.isMinLength(1), Schema.isMaxLength(200));
+const SkillAgents = Schema.Array(ProviderInstanceId).check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(64),
+);
+
+/** Make a link in each agent's own skill folder, so the agent can use the skill. */
+export const SkillEnableInput = Schema.Struct({
+  /** A registered project's folder, for project skills and for the order its folders are read in. */
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  skills: SkillRefs,
+  agents: SkillAgents,
+});
+export type SkillEnableInput = typeof SkillEnableInput.Type;
+
+/** Remove each agent's link to the skill. An agent that reads the skill's folder itself stays on. */
+export const SkillDisableInput = SkillEnableInput;
+export type SkillDisableInput = typeof SkillDisableInput.Type;
+
+/** Remove every link to the skills. The skills' own folders are never touched. */
+export const SkillRemoveInput = Schema.Struct({
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  skills: SkillRefs,
+});
+export type SkillRemoveInput = typeof SkillRemoveInput.Type;
+
+/** Why a skill or an agent was left as it was. A client words each one. */
+export const SkillOutcomeReason = Schema.Literals([
+  /** The skill isn't in the agents' folders any more. */
+  "notFound",
+  /** The skill, or a link the list showed, is no longer what the list said it was. */
+  "changed",
+  /** The agent reads the skill's own folder, so there is no link to remove. */
+  "alwaysOn",
+  /** A folder, file or link to something else is where the link would go. */
+  "entryTaken",
+  /** The agent loads another skill with this name first, so a link wouldn't be used. */
+  "shadowed",
+  /** The system won't let T3 Code make links there. */
+  "linkNotAllowed",
+  /** The folder couldn't be written. */
+  "failed",
+]);
+export type SkillOutcomeReason = typeof SkillOutcomeReason.Type;
+
+export const SkillOutcome = Schema.Struct({
+  skill: SkillRef,
+  /**
+   * `changed`: a link was made or removed, even if some agents were left out (see `blocked`).
+   * `unchanged`: it was already as asked. `skipped`: nothing was changed.
+   */
+  status: Schema.Literals(["changed", "unchanged", "skipped"]),
+  /** Why the whole skill was skipped: `notFound` or `changed`. */
+  reason: Schema.optional(SkillOutcomeReason),
+  /** Agents the change didn't reach, with why. */
+  blocked: Schema.Array(
+    Schema.Struct({ instanceId: ProviderInstanceId, reason: SkillOutcomeReason }),
+  ),
+  /** Agents that weren't asked for but gained or lost the skill, because they read the same folder. */
+  affected: Schema.Array(ProviderInstanceId),
+});
+export type SkillOutcome = typeof SkillOutcome.Type;
+
+/** One outcome per skill asked for, in the order asked. One bad skill never stops the rest. */
+export const SkillBatchResult = Schema.Struct({ outcomes: Schema.Array(SkillOutcome) });
+export type SkillBatchResult = typeof SkillBatchResult.Type;
+
+/** A whole request that couldn't be carried out, as opposed to a skill that was skipped. */
 export class SkillRequestError extends Schema.TaggedError<SkillRequestError>()(
   "SkillRequestError",
   {
-    reason: Schema.Literals(["projectNotRegistered"]),
+    reason: Schema.Literals(["unknownAgent", "projectNotRegistered"]),
   },
 ) {
   override get message(): string {
-    return "That folder isn't a project in this environment.";
+    return this.reason === "unknownAgent"
+      ? "That agent isn't enabled in this environment."
+      : "That folder isn't a project in this environment.";
   }
 }

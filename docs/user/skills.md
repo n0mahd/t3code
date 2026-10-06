@@ -2,7 +2,8 @@
 
 Open **Settings → Skills** on web and desktop to see which skills your agents can use. The page
 reads the environment and project chosen at the top of Settings, so with a remote environment you
-see that machine's skills. It is read-only: edit skills in your editor, or ask an agent.
+see that machine's skills. You can turn each skill on or off for each agent here. To change what a
+skill says, edit it in your editor or ask an agent.
 
 The agents are your enabled provider instances. Two Claude instances show as two agents, each
 with its own config folder.
@@ -22,11 +23,33 @@ Each instance's config folder follows its settings: a Claude instance's config d
 agents reads isn't listed. If a folder exists but can't be read, the page says so above the list
 instead of showing it as empty.
 
+## Turning a skill on or off for an agent
+
+Open a skill and click an agent under **Used by**. Turning a skill on makes a link in that agent's
+own folder that points at the skill's real folder, so the files stay in one place. Turning it off
+removes that link and nothing else.
+
+- An agent that reads the skill's own folder directly shows a lock: it is always on. To stop it
+  using the skill, move the skill out of that folder yourself.
+- Agents that read the same folder share one link, so turning a skill on or off for one can change
+  it for the others. T3 Code says who else is affected.
+- If something is already in the agent's folder under that name, such as a real folder, a file or
+  a link to a different skill, T3 Code leaves it alone and says so. It never replaces anything.
+- A project's links to skills inside the project are relative, so they keep working when the
+  project moves. They show in `git status`; commit them to give everyone who clones the project
+  the skill. On Windows, global links are junctions, and project links need Developer Mode or
+  administrator rights.
+
+Tick the boxes beside skills to act on several at once: turn them on for all agents, turn them off
+for one agent, or remove them. **Remove** takes away every link to the skills so agents stop using
+them. The original skill folders are never deleted.
+
 ## Needs attention
 
 **Needs attention** filters the list to skills that need a look. A skill is on it when:
 
-- an installed and enabled agent doesn't use it. Hover the icons to see which agent. An agent
+- an installed and enabled agent doesn't use it. Hover the icons to see which agent, or use the
+  button on the row to turn the skill on for it. An agent
   loads one skill per name, the first it finds in its folders (Codex and OpenCode list every
   copy), so a copy that another folder shadows is not used by that agent. Claude doesn't use a
   skill that its own `skillOverrides` setting switches off either.

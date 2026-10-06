@@ -135,11 +135,17 @@ const hasSkill = (state: "direct" | "link" | "none") => state !== "none";
 export class SkillManager extends Context.Service<
   SkillManager,
   {
-    /** Make a link in each agent's own folder so it can use each skill. */
+    /**
+     * Make a link in each agent's own folder so it can use each skill. `"all"` means every
+     * enabled agent. An agent is named by its instance id, or by its driver kind to mean every
+     * instance of that driver when no instance has that id.
+     */
     readonly enable: (
-      input: SkillEnableInput,
+      input: Omit<SkillEnableInput, "agents"> & {
+        readonly agents: SkillEnableInput["agents"] | "all";
+      },
     ) => Effect.Effect<SkillBatchResult, SkillRequestError>;
-    /** Remove each agent's link to each skill. */
+    /** Remove each agent's link to each skill. Agents are named as for `enable`. */
     readonly disable: (
       input: SkillDisableInput,
     ) => Effect.Effect<SkillBatchResult, SkillRequestError>;
@@ -412,11 +418,12 @@ const make = Effect.gen(function* () {
   const run = (input: {
     readonly cwd: string | undefined;
     readonly skills: ReadonlyArray<SkillRef>;
-    readonly agents: ReadonlySet<ProviderInstanceId>;
+    readonly agents: "all" | ReadonlySet<string>;
     /** Skills to look up besides those asked for, such as the same names in the other scope. */
     readonly alsoLookUp?: ReadonlyArray<{ readonly scope: SkillScope; readonly name: string }>;
     readonly change: (
       skill: SkillCatalog.ResolvedSkill,
+      agents: ReadonlySet<ProviderInstanceId>,
       projectRoot: string | undefined,
       /** Everything looked up, which includes the skills asked for. */
       all: ReadonlyArray<SkillCatalog.ResolvedSkill>,
@@ -429,10 +436,18 @@ const make = Effect.gen(function* () {
           cwd: input.cwd,
           skills: [...input.skills, ...(input.alsoLookUp ?? [])],
         });
-        const known = new Set((before[0]?.agents ?? []).map((agent) => agent.instanceId));
-        if (known.size > 0 && [...input.agents].some((id) => !known.has(id))) {
-          return yield* new SkillRequestError({ reason: "unknownAgent" });
+        const instances = before[0]?.agents ?? [];
+        const agents = new Set<ProviderInstanceId>();
+        for (const name of input.agents === "all" ? [] : input.agents) {
+          const byId = instances.filter((agent) => agent.instanceId === name);
+          const matches =
+            byId.length > 0 ? byId : instances.filter((agent) => agent.driver === name);
+          if (matches.length === 0 && instances.length > 0) {
+            return yield* new SkillRequestError({ reason: "unknownAgent" });
+          }
+          for (const agent of matches) agents.add(agent.instanceId);
         }
+        if (input.agents === "all") for (const agent of instances) agents.add(agent.instanceId);
         const projectRoot =
           input.cwd === undefined
             ? undefined
@@ -448,7 +463,7 @@ const make = Effect.gen(function* () {
               const reason = candidates.length > 0 ? "changed" : "notFound";
               return { ref, found, change: { wrote: false, blocked: [], reason } as SkillChange };
             }
-            return { ref, found, change: yield* input.change(found, projectRoot, before) };
+            return { ref, found, change: yield* input.change(found, agents, projectRoot, before) };
           }),
         );
 
@@ -491,7 +506,7 @@ const make = Effect.gen(function* () {
                 (item, index, all) =>
                   all.findIndex((other) => other.instanceId === item.instanceId) === index,
               ),
-              affected: change.affected ?? flipped.filter((id) => !input.agents.has(id)),
+              affected: change.affected ?? flipped.filter((id) => !agents.has(id)),
             } satisfies SkillOutcome,
           };
         });
@@ -504,21 +519,19 @@ const make = Effect.gen(function* () {
 
   return SkillManager.of({
     enable: Effect.fn("SkillManager.enable")(function* (input) {
-      const agents = new Set(input.agents);
       return yield* run({
         cwd: input.cwd,
         skills: input.skills,
-        agents,
-        change: (skill, projectRoot) => enableOne(skill, agents, projectRoot),
+        agents: input.agents === "all" ? "all" : new Set(input.agents),
+        change: enableOne,
       });
     }),
     disable: Effect.fn("SkillManager.disable")(function* (input) {
-      const agents = new Set(input.agents);
       return yield* run({
         cwd: input.cwd,
         skills: input.skills,
-        agents,
-        change: (skill) => disableOne(skill, agents),
+        agents: new Set(input.agents),
+        change: disableOne,
       });
     }),
     remove: Effect.fn("SkillManager.remove")(function* (input) {
@@ -535,7 +548,8 @@ const make = Effect.gen(function* () {
         skills: input.skills,
         agents: new Set(),
         alsoLookUp: input.skills.map((ref) => ({ scope: input.to, name: ref.name })),
-        change: (skill, projectRoot, all) => moveOne(skill, input.to, input.cwd, projectRoot, all),
+        change: (skill, _agents, projectRoot, all) =>
+          moveOne(skill, input.to, input.cwd, projectRoot, all),
       });
     }),
     delete: Effect.fn("SkillManager.delete")(function* (input) {
@@ -548,7 +562,7 @@ const make = Effect.gen(function* () {
           scope: ref.scope === "project" ? ("global" as const) : ("project" as const),
           name: ref.name,
         })),
-        change: (skill, _projectRoot, all) => deleteOne(skill, all),
+        change: (skill, _agents, _projectRoot, all) => deleteOne(skill, all),
       });
     }),
   });

@@ -4,6 +4,9 @@ import type {
   ServerProvider,
   SkillAgentAccess,
   SkillListResult,
+  SkillOutcome,
+  SkillOutcomeReason,
+  SkillRef,
   SkillScope,
   SkillSummary,
 } from "@t3tools/contracts";
@@ -20,6 +23,9 @@ const joinNames = (names: readonly string[]) =>
   names.length <= 1
     ? (names[0] ?? "")
     : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+
+const plural = (count: number, one: string, many = `${one}s`) =>
+  `${count} ${count === 1 ? one : many}`;
 
 export type Skill = SkillSummary & {
   /** Stable across reads, so an open skill survives a refresh. */
@@ -176,6 +182,264 @@ export function unreadableNote(folders: SkillListResult["unreadable"]) {
   return rest.length === 0
     ? `Couldn't read ${first} and ${second}`
     : `Couldn't read ${first}, ${second} and ${rest.length} more`;
+}
+
+// -- Turning skills on and off ------------------------------------------------------------------
+
+/** What to ask the server for. */
+export type SkillChange =
+  | {
+      readonly kind: "enable" | "disable";
+      readonly skills: readonly SkillRef[];
+      readonly agents: readonly ProviderInstanceId[];
+    }
+  | { readonly kind: "remove"; readonly skills: readonly SkillRef[] };
+
+export type SkillPlan = {
+  readonly change: SkillChange;
+  /** How many skills it changes. */
+  readonly affected: number;
+  /** Present when the change should be confirmed first, in plain words. */
+  readonly confirmation?: {
+    readonly title: string;
+    readonly body: string;
+    /** Lines under the body, such as what stays on and why. */
+    readonly notes: readonly string[];
+    readonly confirm: string;
+    readonly destructive: boolean;
+  };
+};
+
+const skillRef = (skill: Skill): SkillRef => ({
+  scope: skill.scope,
+  name: skill.name,
+  home: skill.home,
+});
+
+const enablePlan = (skills: readonly Skill[], agents: readonly SkillAgent[]): SkillPlan => ({
+  change: {
+    kind: "enable",
+    skills: skills.map(skillRef),
+    agents: agents.map((agent) => agent.instanceId),
+  },
+  affected: skills.length,
+});
+
+/** Why an agent's switch can't be flipped, or null when it can. */
+export function switchBlocker(skill: Skill, agent: SkillAgent) {
+  return accessOf(skill, agent)?.state === "direct"
+    ? "Always on. It reads this folder directly."
+    : null;
+}
+
+/** Turning one agent on for one skill, or off. Off asks first when other agents lose it too. */
+export function planToggle(skill: Skill, agent: SkillAgent, ctx: SkillsContext) {
+  return hasAccess(skill, agent) ? planTurnOff([skill], agent, ctx) : enablePlan([skill], [agent]);
+}
+
+/** Every installed agent that lacks one of the skills gets a link; nothing asks first. */
+export function planTurnOnAll(selected: readonly Skill[], ctx: SkillsContext): SkillPlan | null {
+  const targets = selected.filter((skill) => missingAgents(skill, ctx).length > 0);
+  if (targets.length === 0) return null;
+  const agents = ctx.installed.filter((agent) => targets.some((skill) => !hasAccess(skill, agent)));
+  return enablePlan(targets, agents);
+}
+
+/** Other installed agents that lose the skill when this agent's link goes: same folder, same link. */
+function alsoLosesOnTurnOff(skill: Skill, agent: SkillAgent, ctx: SkillsContext) {
+  const target = accessOf(skill, agent);
+  if (target?.state !== "link") return [];
+  return ctx.installed.filter((other) => {
+    const access = accessOf(skill, other);
+    return (
+      other.instanceId !== agent.instanceId &&
+      access?.state === "link" &&
+      access.folder === target.folder
+    );
+  });
+}
+
+/** Turning one agent off for the skills it uses through a link. Others stay on. */
+export function planTurnOff(
+  selected: readonly Skill[],
+  agent: SkillAgent,
+  ctx: SkillsContext,
+): SkillPlan | null {
+  const targets = selected.filter((skill) => accessOf(skill, agent)?.state === "link");
+  const stuck = selected.filter((skill) => accessOf(skill, agent)?.state === "direct");
+  if (targets.length === 0 && stuck.length === 0) return null;
+  const alsoLose = new Map(
+    targets
+      .flatMap((skill) => alsoLosesOnTurnOff(skill, agent, ctx))
+      .map((other) => [other.instanceId, other] as const),
+  );
+  const notes: string[] = [];
+  if (alsoLose.size > 0) {
+    notes.push(
+      `${joinNames([...alsoLose.values()].map((other) => other.displayName))} ${alsoLose.size === 1 ? "loses" : "lose"} ${targets.length === 1 ? "it" : "these"} too.`,
+    );
+  }
+  if (stuck.length > 0) {
+    notes.push(
+      `${plural(stuck.length, "skill")} ${stuck.length === 1 ? "stays" : "stay"} on because ${agent.displayName} reads ${stuck.length === 1 ? "its" : "their"} folder.`,
+    );
+  }
+  return {
+    change: {
+      kind: "disable",
+      skills: targets.map(skillRef),
+      agents: [agent.instanceId],
+    },
+    affected: targets.length,
+    ...(notes.length > 0 && targets.length > 0
+      ? {
+          confirmation: {
+            title: `Turn off for ${agent.displayName}?`,
+            body: `Removes ${agent.displayName}'s link for ${plural(targets.length, "skill")}.`,
+            notes,
+            confirm: "Turn off",
+            destructive: false,
+          },
+        }
+      : {}),
+  };
+}
+
+/** Agents that read the skill through a link, not from the skill's own folder. */
+const readsThroughLink = (skill: Skill) =>
+  skill.access.filter(
+    (access) => access.state !== "none" && `${access.folder}/${skill.name}` !== skill.home,
+  );
+
+/** Removing every link to the skills. The skills' own folders stay, so some agents may keep them. */
+export function planRemove(selected: readonly Skill[], ctx: SkillsContext): SkillPlan | null {
+  const targets = selected.filter((skill) => readsThroughLink(skill).length > 0);
+  if (targets.length === 0) return null;
+  const change: SkillChange = { kind: "remove", skills: targets.map(skillRef) };
+  const notes: string[] = [];
+  const idle = selected.length - targets.length;
+  if (idle > 0) {
+    notes.push(
+      `${plural(idle, "skill")} ${idle === 1 ? "is" : "are"} only in ${idle === 1 ? "its" : "their"} own folder, so nothing changes there.`,
+    );
+  }
+  if (targets.length === 1) {
+    const skill = targets[0]!;
+    const linked = new Set(readsThroughLink(skill).map((access) => access.instanceId));
+    const losing = ctx.installed.filter((agent) => linked.has(agent.instanceId));
+    const keeping = ctx.installed.filter(
+      (agent) => hasAccess(skill, agent) && !linked.has(agent.instanceId),
+    );
+    if (keeping.length > 0) {
+      notes.push(
+        `${joinNames(keeping.map((agent) => agent.displayName))} still ${keeping.length === 1 ? "uses" : "use"} it from its own folder.`,
+      );
+    }
+    return {
+      change,
+      affected: 1,
+      confirmation: {
+        title: `Remove ${skill.name} from your agents?`,
+        body: `${joinNames(losing.map((agent) => agent.displayName)) || "No agent"} will stop using it; the original stays.`,
+        notes,
+        confirm: "Remove",
+        destructive: true,
+      },
+    };
+  }
+  return {
+    change,
+    affected: targets.length,
+    confirmation: {
+      title: `Remove ${targets.length} skills from your agents?`,
+      body: "Agents will stop using them; the originals stay.",
+      notes,
+      confirm: "Remove",
+      destructive: true,
+    },
+  };
+}
+
+/** A one-click fix for a skill that installed agents can't use yet. */
+export function planFix(skill: Skill, ctx: SkillsContext) {
+  const missing = missingAgents(skill, ctx);
+  if (missing.length === 0) return null;
+  return {
+    label:
+      missing.length === 1 ? `Turn on for ${missing[0]!.displayName}` : "Turn on for all agents",
+    plan: enablePlan([skill], missing),
+  };
+}
+
+const problemText = (reason: SkillOutcomeReason, name: string, who: string | undefined) => {
+  switch (reason) {
+    case "notFound":
+      return `“${name}” isn't there any more.`;
+    case "changed":
+      return `“${name}” changed since the list was read.`;
+    case "alwaysOn":
+      return `${who ?? "An agent"} reads “${name}” directly, so it stays on.`;
+    case "entryTaken":
+      return `${who ?? "An agent"} already has a different “${name}”.`;
+    case "shadowed":
+      return `${who ?? "An agent"} loads another “${name}” first.`;
+    case "linkNotAllowed":
+      return "Your system doesn't let T3 Code make links there. On Windows, turn on Developer Mode.";
+    case "failed":
+      return who === undefined
+        ? `Couldn't change “${name}”.`
+        : `Couldn't change ${who}'s folder for “${name}”.`;
+  }
+};
+
+const MAX_PROBLEMS = 3;
+
+/** One status line on what a change did, from what the server says happened to each skill. */
+export function describeResult(
+  change: SkillChange,
+  outcomes: readonly SkillOutcome[],
+  ctx: SkillsContext,
+) {
+  const nameOf = (id: ProviderInstanceId) =>
+    ctx.installed.find((agent) => agent.instanceId === id)?.displayName ?? id;
+  const changed = outcomes.filter((outcome) => outcome.status === "changed");
+  const also = [...new Set(changed.flatMap((outcome) => outcome.affected.map(nameOf)))];
+  const alsoNames = joinNames(also);
+  const them = changed.length === 1 ? "it" : "them";
+  const lead = (() => {
+    if (changed.length === 0) return "";
+    const count = plural(changed.length, "skill");
+    switch (change.kind) {
+      case "enable":
+        return `Turned on ${count} for ${joinNames(change.agents.map(nameOf))}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "gets" : "get"} ${them} too.` : ""}`;
+      case "disable":
+        return `Turned off ${count} for ${joinNames(change.agents.map(nameOf))}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "loses" : "lose"} ${them} too.` : ""}`;
+      case "remove":
+        return `Removed ${count} from your agents.`;
+    }
+  })();
+  const problems = [
+    ...new Set(
+      outcomes.flatMap((outcome) => [
+        ...(outcome.reason ? [problemText(outcome.reason, outcome.skill.name, undefined)] : []),
+        ...outcome.blocked.map((blocked) =>
+          problemText(blocked.reason, outcome.skill.name, nameOf(blocked.instanceId)),
+        ),
+      ]),
+    ),
+  ];
+  if (lead === "" && problems.length === 0) {
+    return change.kind === "enable"
+      ? "Already on."
+      : change.kind === "disable"
+        ? "Already off."
+        : "Nothing to remove.";
+  }
+  const shown = problems.slice(0, MAX_PROBLEMS);
+  if (problems.length > shown.length) {
+    shown.push(`${problems.length - shown.length} more couldn't be changed.`);
+  }
+  return [lead, ...shown].filter((part) => part !== "").join(" ");
 }
 
 // -- Search -----------------------------------------------------------------------------------

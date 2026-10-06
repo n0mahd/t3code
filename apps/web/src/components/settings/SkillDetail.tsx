@@ -6,9 +6,8 @@ import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { useAfterDelay } from "../../hooks/useAfterDelay";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -17,9 +16,14 @@ import {
   accessOf,
   agentSkillPath,
   attention,
+  planRemove,
+  planToggle,
+  planTurnOnAll,
   scriptFiles,
+  switchBlocker,
   type Skill,
   type SkillAgent,
+  type SkillPlan,
   type SkillsContext,
 } from "./SkillsSettings.logic";
 
@@ -79,14 +83,20 @@ export function SkillDetail({
   ctx,
   environmentId,
   projectRoot,
+  busy,
   onBack,
+  onPlan,
   onReload,
 }: {
   skill: Skill;
   ctx: SkillsContext;
   environmentId: EnvironmentId;
   projectRoot: string | null;
+  /** A change is being made, so nothing else can start. */
+  busy: boolean;
   onBack: () => void;
+  /** Turns an agent on or off, or removes the skill's links; a plan with a confirmation asks first. */
+  onPlan: (plan: SkillPlan) => void;
   /** Opens this skill again, which reads its files again. */
   onReload: () => void;
 }) {
@@ -124,6 +134,8 @@ export function SkillDetail({
   const scopeLabel = skill.scope === "global" ? "Global" : "This project";
   const warning = attention(skill, ctx);
   const sameCopies = skill.copies.filter((copy) => copy.same);
+  const turnOnAll = planTurnOnAll([skill], ctx);
+  const remove = planRemove([skill], ctx);
 
   const copyPath = (path: string) => {
     void writeTextToClipboard(path, "skill path").then(
@@ -170,10 +182,20 @@ export function SkillDetail({
             <span className="text-xs text-muted-foreground">No agents are installed.</span>
           )}
           {ctx.installed.map((agent) => (
-            <AgentChip key={agent.instanceId} skill={skill} agent={agent} agents={ctx.installed} />
+            <AgentChip
+              key={agent.instanceId}
+              skill={skill}
+              agent={agent}
+              ctx={ctx}
+              busy={busy}
+              onToggle={() => {
+                const plan = planToggle(skill, agent, ctx);
+                if (plan) onPlan(plan);
+              }}
+            />
           ))}
           <span className="flex-1" />
-          {skillFolder && (
+          {(skillFolder || turnOnAll || remove) && (
             <Menu>
               <MenuTrigger
                 render={<Button size="icon-xs" variant="outline" aria-label="More actions" />}
@@ -181,7 +203,22 @@ export function SkillDetail({
                 <MoreHorizontalIcon />
               </MenuTrigger>
               <MenuPopup align="end">
-                <MenuItem onClick={() => copyPath(skillFolder)}>Copy path</MenuItem>
+                {skillFolder && (
+                  <MenuItem onClick={() => copyPath(skillFolder)}>Copy path</MenuItem>
+                )}
+                {turnOnAll && (
+                  <MenuItem disabled={busy} onClick={() => onPlan(turnOnAll)}>
+                    Turn on for all agents
+                  </MenuItem>
+                )}
+                {remove && (
+                  <>
+                    <MenuSeparator />
+                    <MenuItem variant="destructive" disabled={busy} onClick={() => onPlan(remove)}>
+                      Remove…
+                    </MenuItem>
+                  </>
+                )}
               </MenuPopup>
             </Menu>
           )}
@@ -262,36 +299,52 @@ export function SkillDetail({
   );
 }
 
-/** One agent: whether it can use the skill, and where it reads it from. */
+/** One agent: click to switch it on or off, unless it reads the skill's folder directly. */
 function AgentChip({
   skill,
   agent,
-  agents,
+  ctx,
+  busy,
+  onToggle,
 }: {
   skill: Skill;
   agent: SkillAgent;
-  agents: readonly SkillAgent[];
+  ctx: SkillsContext;
+  busy: boolean;
+  onToggle: () => void;
 }) {
   const access = accessOf(skill, agent);
   const on = access?.state === "direct" || access?.state === "link";
-  const direct = access?.state === "direct";
+  const blocker = switchBlocker(skill, agent);
   return (
     <Tooltip>
       <TooltipTrigger
-        render={<Badge variant={on ? "secondary" : "outline"} size="control" tabIndex={0} />}
+        render={
+          <Button
+            size="xs"
+            variant={on ? "secondary" : "outline"}
+            aria-pressed={on}
+            aria-disabled={blocker !== null || busy}
+            onClick={() => {
+              if (blocker === null && !busy) onToggle();
+            }}
+          />
+        }
       >
-        <SkillAgentIcon agent={agent} agents={agents} active={on} />
+        <SkillAgentIcon agent={agent} agents={ctx.installed} active={on} />
         {agent.displayName}
-        {direct && (
-          <LockIcon className="text-muted-foreground" aria-label="Reads the folder directly" />
-        )}
+        {blocker && <LockIcon className="text-muted-foreground" aria-label="Always on" />}
       </TooltipTrigger>
       <TooltipPopup>
-        <span className="block">
-          {access?.state === "direct" && `${agent.displayName} reads this folder directly.`}
-          {access?.state === "link" && `${agent.displayName} reads a link to this skill.`}
-          {!on && `${agent.displayName} doesn't use this skill. It reads skills from:`}
-        </span>
+        {blocker && <span className="block">{blocker}</span>}
+        {!blocker && access?.state === "link" && (
+          <span className="block">{agent.displayName} reads a link to this skill.</span>
+        )}
+        {!on && (
+          <span className="block">
+            {agent.displayName} doesn't use this skill. It reads skills from:
+          </span>
+        )}
         <span className="block font-mono">{agentSkillPath(skill, agent)}</span>
       </TooltipPopup>
     </Tooltip>

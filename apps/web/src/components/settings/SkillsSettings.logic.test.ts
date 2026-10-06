@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
-import type { ServerProvider, SkillAgentAccess, SkillListResult } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  SkillAgentAccess,
+  SkillListResult,
+  SkillOutcome,
+} from "@t3tools/contracts";
 
 import {
   agentSkillPath,
@@ -8,12 +13,19 @@ import {
   availability,
   availabilityNote,
   compareSkillFiles,
+  describeResult,
   ingestSkills,
   installedAgents,
   matchesQuery,
+  planFix,
+  planRemove,
+  planToggle,
+  planTurnOff,
+  planTurnOnAll,
   scriptFiles,
   skillBody,
   skillsEnvironment,
+  switchBlocker,
   unreadableNote,
   type Skill,
   type SkillAgent,
@@ -357,5 +369,310 @@ describe("a skill's files", () => {
     expect(skillBody("---\nname: a\n---\n\n\n# Title\n")).toBe("# Title\n");
     expect(skillBody("---\r\nname: a\r\n---\r\n# Title\r\n")).toBe("# Title\r\n");
     expect(skillBody("# No header\n")).toBe("# No header\n");
+  });
+});
+
+// -- Turning skills on and off --------------------------------------------------------------------
+
+/** A skill whose agents each read it from their own folder, the way the server reports links. */
+function reached(
+  name: string,
+  access: Record<string, { state: SkillAgentAccess["state"]; folder: string }>,
+  home = `~/library/skills/${name}`,
+): Skill {
+  return {
+    ...skill(name, {}, { scope: "global", home }),
+    access: Object.entries(access).map(([instanceId, { state, folder }]) => ({
+      instanceId: ProviderInstanceId.make(instanceId),
+      driver: ProviderDriverKind.make(instanceId),
+      state,
+      folder,
+    })),
+  };
+}
+const ref = (name: string, home = `~/library/skills/${name}`) => ({
+  scope: "global" as const,
+  name,
+  home,
+});
+const ctx = { installed: ALL };
+const outcome = (over: Partial<SkillOutcome> & { name: string }): SkillOutcome => ({
+  skill: ref(over.name),
+  status: "changed",
+  blocked: [],
+  affected: [],
+  ...over,
+});
+
+describe("an agent's switch", () => {
+  it("is locked only when the agent reads the skill's folder itself", () => {
+    const tdd = reached("tdd", {
+      claudeAgent: { state: "direct", folder: "~/.claude/skills" },
+      codex: { state: "link", folder: "~/.codex/skills" },
+      cursor: { state: "none", folder: "~/.cursor/skills" },
+    });
+    expect(switchBlocker(tdd, claude)).toBe("Always on. It reads this folder directly.");
+    expect(switchBlocker(tdd, codex)).toBeNull();
+    expect(switchBlocker(tdd, ALL[2]!)).toBeNull();
+  });
+
+  it("turns on for the agent that was clicked, and off for one that has it", () => {
+    const tdd = reached("tdd", {
+      claudeAgent: { state: "none", folder: "~/.claude/skills" },
+      codex: { state: "link", folder: "~/.codex/skills" },
+    });
+    expect(planToggle(tdd, claude, ctx)).toEqual({
+      change: { kind: "enable", skills: [ref("tdd")], agents: ["claudeAgent"] },
+      affected: 1,
+    });
+    expect(planToggle(tdd, codex, ctx)?.change).toEqual({
+      kind: "disable",
+      skills: [ref("tdd")],
+      agents: ["codex"],
+    });
+  });
+});
+
+describe("turning on for all agents", () => {
+  const cursor = ALL[2]!;
+  it("asks for the agents that some selected skill is missing, and never asks first", () => {
+    const first = reached("first", {
+      claudeAgent: { state: "direct", folder: "~/.claude/skills" },
+      codex: { state: "none", folder: "~/.agents/skills" },
+      cursor: { state: "direct", folder: "~/.agents/skills" },
+    });
+    const second = reached("second", {
+      claudeAgent: { state: "none", folder: "~/.claude/skills" },
+      codex: { state: "direct", folder: "~/.agents/skills" },
+      cursor: { state: "direct", folder: "~/.agents/skills" },
+    });
+    const done = reached("done", {
+      claudeAgent: { state: "link", folder: "~/.claude/skills" },
+      codex: { state: "direct", folder: "~/.agents/skills" },
+      cursor: { state: "direct", folder: "~/.agents/skills" },
+    });
+
+    const plan = planTurnOnAll([first, second, done], ctx);
+
+    expect(plan?.change).toEqual({
+      kind: "enable",
+      skills: [ref("first"), ref("second")],
+      agents: ["claudeAgent", "codex"],
+    });
+    expect(plan?.affected).toBe(2);
+    expect(plan?.confirmation).toBeUndefined();
+    expect(planTurnOnAll([done], ctx)).toBeNull();
+  });
+
+  it("leaves out agents that aren't installed", () => {
+    const tdd = reached("tdd", {
+      claudeAgent: { state: "direct", folder: "~/.claude/skills" },
+      codex: { state: "none", folder: "~/.agents/skills" },
+      cursor: { state: "none", folder: "~/.cursor/skills" },
+    });
+    expect(planTurnOnAll([tdd], { installed: [claude, cursor] })?.change).toMatchObject({
+      agents: ["cursor"],
+    });
+  });
+
+  it("gives one skill the same one-click fix, naming the agent when only one is missing", () => {
+    const some = reached("tdd", {
+      claudeAgent: { state: "none", folder: "~/.claude/skills" },
+      codex: { state: "direct", folder: "~/.agents/skills" },
+      cursor: { state: "direct", folder: "~/.agents/skills" },
+    });
+    const most = reached("tdd", {
+      claudeAgent: { state: "none", folder: "~/.claude/skills" },
+      codex: { state: "none", folder: "~/.agents/skills" },
+      cursor: { state: "direct", folder: "~/.agents/skills" },
+    });
+    expect(planFix(some, ctx)?.label).toBe("Turn on for Claude");
+    expect(planFix(most, ctx)?.label).toBe("Turn on for all agents");
+    expect(planFix(most, ctx)?.plan.change).toMatchObject({ agents: ["claudeAgent", "codex"] });
+    expect(
+      planFix(reached("ok", { claudeAgent: { state: "link", folder: "~/.claude/skills" } }), {
+        installed: [claude],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("turning off for one agent", () => {
+  const workCodex = agent("codex_work", "codex", "Codex Work");
+  const both = { installed: [codex, workCodex, claude] };
+  const linked = (name: string, ...others: Array<[string, "link" | "direct" | "none"]>) =>
+    reached(name, {
+      codex: { state: "link", folder: "~/.codex/skills" },
+      codex_work: { state: "link", folder: "~/.codex/skills" },
+      claudeAgent: { state: "none", folder: "~/.claude/skills" },
+      ...Object.fromEntries(
+        others.map(([id, state]) => [id, { state, folder: "~/.claude/skills" }]),
+      ),
+    });
+
+  it("asks first when another agent reads the same link and loses the skill too", () => {
+    const plan = planTurnOff([linked("tdd"), linked("grill")], codex, both);
+
+    expect(plan?.change).toEqual({
+      kind: "disable",
+      skills: [ref("tdd"), ref("grill")],
+      agents: ["codex"],
+    });
+    expect(plan?.confirmation).toEqual({
+      title: "Turn off for Codex?",
+      body: "Removes Codex's link for 2 skills.",
+      notes: ["Codex Work loses these too."],
+      confirm: "Turn off",
+      destructive: false,
+    });
+  });
+
+  it("goes ahead without asking when nothing else is lost", () => {
+    const alone = reached("tdd", {
+      codex: { state: "link", folder: "~/.codex/skills" },
+      codex_work: { state: "none", folder: "~/.codex/skills" },
+    });
+    const plan = planTurnOff([alone], codex, both);
+    expect(plan?.affected).toBe(1);
+    expect(plan?.confirmation).toBeUndefined();
+  });
+
+  it("says which skills stay on because the agent reads their folder", () => {
+    const stays = reached("stays", { codex: { state: "direct", folder: "~/.agents/skills" } });
+    const plan = planTurnOff([linked("tdd"), stays], codex, { installed: [codex] });
+    expect(plan?.change).toMatchObject({ skills: [ref("tdd")] });
+    expect(plan?.confirmation?.notes).toEqual(["1 skill stays on because Codex reads its folder."]);
+  });
+
+  it("offers nothing for an agent that uses none of the skills", () => {
+    expect(planTurnOff([linked("tdd")], claude, both)).toBeNull();
+    const onlyStuck = planTurnOff(
+      [reached("stays", { codex: { state: "direct", folder: "~/.agents/skills" } })],
+      codex,
+      both,
+    );
+    expect(onlyStuck?.affected).toBe(0);
+  });
+});
+
+describe("removing skills from the agents", () => {
+  it("names who stops using one skill, and who keeps it from its own folder", () => {
+    const tdd = reached(
+      "tdd",
+      {
+        claudeAgent: { state: "link", folder: "~/.claude/skills" },
+        codex: { state: "direct", folder: "~/.agents/skills" },
+        cursor: { state: "none", folder: "~/.cursor/skills" },
+      },
+      "~/.agents/skills/tdd",
+    );
+    const plan = planRemove([tdd], ctx);
+    expect(plan?.change).toEqual({ kind: "remove", skills: [ref("tdd", "~/.agents/skills/tdd")] });
+    expect(plan?.confirmation).toEqual({
+      title: "Remove tdd from your agents?",
+      body: "Claude will stop using it; the original stays.",
+      notes: ["Codex still uses it from its own folder."],
+      confirm: "Remove",
+      destructive: true,
+    });
+  });
+
+  it("counts skills for a bulk removal and leaves out those with no link to remove", () => {
+    const linked = (name: string) =>
+      reached(name, { claudeAgent: { state: "link", folder: "~/.claude/skills" } });
+    const own = reached(
+      "own",
+      { claudeAgent: { state: "direct", folder: "~/.claude/skills" } },
+      "~/.claude/skills/own",
+    );
+    const plan = planRemove([linked("a"), linked("b"), own], ctx);
+    expect(plan?.affected).toBe(2);
+    expect(plan?.change).toMatchObject({ skills: [ref("a"), ref("b")] });
+    expect(plan?.confirmation).toMatchObject({
+      title: "Remove 2 skills from your agents?",
+      body: "Agents will stop using them; the originals stay.",
+      notes: ["1 skill is only in its own folder, so nothing changes there."],
+      destructive: true,
+    });
+    expect(planRemove([own], ctx)).toBeNull();
+  });
+});
+
+describe("telling what a change did", () => {
+  it("says who got a skill, and who else did because they share a folder", () => {
+    expect(
+      describeResult(
+        { kind: "enable", skills: [ref("a"), ref("b")], agents: [claude.instanceId] },
+        [outcome({ name: "a", affected: [codex.instanceId] }), outcome({ name: "b" })],
+        ctx,
+      ),
+    ).toBe("Turned on 2 skills for Claude. Codex gets them too.");
+    expect(
+      describeResult(
+        { kind: "disable", skills: [ref("a")], agents: [codex.instanceId] },
+        [outcome({ name: "a", affected: [claude.instanceId, ALL[2]!.instanceId] })],
+        ctx,
+      ),
+    ).toBe("Turned off 1 skill for Codex. Claude and Cursor lose it too.");
+    expect(
+      describeResult({ kind: "remove", skills: [ref("a")] }, [outcome({ name: "a" })], ctx),
+    ).toBe("Removed 1 skill from your agents.");
+  });
+
+  it("says why a skill or an agent was skipped, in the person's words", () => {
+    expect(
+      describeResult(
+        { kind: "enable", skills: [ref("a"), ref("b"), ref("c")], agents: [claude.instanceId] },
+        [
+          outcome({ name: "a" }),
+          outcome({
+            name: "b",
+            status: "skipped",
+            blocked: [{ instanceId: claude.instanceId, reason: "entryTaken" }],
+          }),
+          outcome({ name: "c", status: "skipped", reason: "changed" }),
+        ],
+        ctx,
+      ),
+    ).toBe(
+      "Turned on 1 skill for Claude. Claude already has a different “b”. “c” changed since the list was read.",
+    );
+  });
+
+  it("names an agent the page doesn't list by its id, and cuts a long list short", () => {
+    const blocked = (name: string, reason: SkillOutcome["blocked"][number]["reason"]) =>
+      outcome({
+        name,
+        status: "skipped",
+        blocked: [{ instanceId: "pi" as never, reason }],
+      });
+    expect(
+      describeResult(
+        { kind: "enable", skills: [], agents: [] },
+        [
+          blocked("a", "shadowed"),
+          blocked("b", "shadowed"),
+          blocked("c", "alwaysOn"),
+          blocked("d", "failed"),
+          blocked("e", "failed"),
+        ],
+        ctx,
+      ),
+    ).toBe(
+      "pi loads another “a” first. pi loads another “b” first. pi reads “c” directly, so it stays on. 2 more couldn't be changed.",
+    );
+  });
+
+  it("says plainly when there was nothing to do", () => {
+    const unchanged = [outcome({ name: "a", status: "unchanged" })];
+    expect(describeResult({ kind: "enable", skills: [], agents: [] }, unchanged, ctx)).toBe(
+      "Already on.",
+    );
+    expect(describeResult({ kind: "disable", skills: [], agents: [] }, unchanged, ctx)).toBe(
+      "Already off.",
+    );
+    expect(describeResult({ kind: "remove", skills: [] }, unchanged, ctx)).toBe(
+      "Nothing to remove.",
+    );
   });
 });

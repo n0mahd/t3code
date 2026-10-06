@@ -1,5 +1,6 @@
 import type { ServerProvider } from "@t3tools/contracts";
-import { BookOpenIcon } from "lucide-react";
+import { useAtomValue } from "@effect/atom-react";
+import { BookOpenIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAfterDelay } from "../../hooks/useAfterDelay";
@@ -11,19 +12,23 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { Skeleton } from "../ui/skeleton";
+import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
 import { SkillDetail } from "./SkillDetail";
-import { SkillSection, StandardInfo } from "./SkillList";
+import { SkillSection, StandardInfo, type RowFix } from "./SkillList";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
 import {
   attention,
+  describeResult,
   ingestSkills,
   installedAgents,
   matchesQuery,
+  planFix,
   skillsEnvironment,
   unreadableNote,
   type Skill,
+  type SkillPlan,
   type SkillsContext,
 } from "./SkillsSettings.logic";
 
@@ -31,6 +36,7 @@ const NO_PROVIDERS: readonly ServerProvider[] = [];
 /** A load that finishes sooner than this shows no placeholder at all. */
 const SKELETON_DELAY_MS = 150;
 const LOAD_ERROR = "Couldn't read this environment's skill folders.";
+const CHANGE_ERROR = "Couldn't change the skills here.";
 
 type PickedProject = { id: string; label: string; cwd: string };
 type Loaded = ReturnType<typeof ingestSkills>;
@@ -103,6 +109,19 @@ function EnvironmentSkills({
   onSubpageChange: (open: boolean) => void;
 }) {
   const listSkills = useAtomCommand(serverEnvironment.listSkills, { reportFailure: false });
+  const enableSkills = useAtomCommand(serverEnvironment.enableSkills, { reportFailure: false });
+  const disableSkills = useAtomCommand(serverEnvironment.disableSkills, { reportFailure: false });
+  const removeSkills = useAtomCommand(serverEnvironment.removeSkills, { reportFailure: false });
+  // Reading the list needs no grant; each change needs its command's.
+  const canEnable = useAtomValue(
+    serverEnvironment.enableSkills.permissionAtom(environment.environmentId),
+  );
+  const canDisable = useAtomValue(
+    serverEnvironment.disableSkills.permissionAtom(environment.environmentId),
+  );
+  const canRemove = useAtomValue(
+    serverEnvironment.removeSkills.permissionAtom(environment.environmentId),
+  );
   const connected = environment.connection.phase === "connected";
   const providers = environment.serverConfig?.providers ?? NO_PROVIDERS;
   const cwd = project?.cwd ?? null;
@@ -114,6 +133,14 @@ function EnvironmentSkills({
   const [query, setQuery] = useState("");
   const [onlyAttention, setOnlyAttention] = useState(false);
   const [detailReload, setDetailReload] = useState(0);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  /** A change that is waiting for the person to confirm it. */
+  const [confirming, setConfirming] = useState<SkillPlan | null>(null);
+  /** A change is being made and the list read again; nothing else can start meanwhile. */
+  const [busy, setBusy] = useState(false);
+  /** The controls that change skills are off while a change runs or the grant is missing. */
+  const locked = busy || !(canEnable && canDisable && canRemove);
+  const [notice, setNotice] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -213,6 +240,76 @@ function EnvironmentSkills({
   }, [showList, onSubpageChange]);
 
   const toList = () => show({ kind: "list" });
+
+  /**
+   * Asks the server to make the change, then reads the folders again: the page shows what is on
+   * disk, never what the change was expected to do.
+   */
+  const apply = async (plan: SkillPlan) => {
+    setConfirming(null);
+    setBusy(true);
+    const { change } = plan;
+    const base = { environmentId: environment.environmentId } as const;
+    const scoped = cwd ? { cwd } : {};
+    try {
+      const result =
+        change.kind === "enable"
+          ? await enableSkills({
+              ...base,
+              input: { ...scoped, skills: change.skills, agents: change.agents },
+            })
+          : change.kind === "disable"
+            ? await disableSkills({
+                ...base,
+                input: { ...scoped, skills: change.skills, agents: change.agents },
+              })
+            : await removeSkills({ ...base, input: { ...scoped, skills: change.skills } });
+      setNotice(
+        result._tag === "Success"
+          ? describeResult(change, result.value.outcomes, ctx)
+          : CHANGE_ERROR,
+      );
+    } catch {
+      setNotice(CHANGE_ERROR);
+    }
+    try {
+      const loaded = await load();
+      if (loaded) {
+        setData(loaded);
+        setLoadError(null);
+      } else {
+        setLoadError(LOAD_ERROR);
+      }
+    } catch {
+      setLoadError(LOAD_ERROR);
+    }
+    setSelected(new Set());
+    setBusy(false);
+  };
+  /** A plan that needs confirming waits for the dialog; any other goes ahead. */
+  const runPlan = (plan: SkillPlan) => {
+    if (plan.confirmation) setConfirming(plan);
+    else void apply(plan);
+  };
+  const chosen = useMemo(
+    () => (skills ?? []).filter((skill) => selected.has(skill.id)),
+    [skills, selected],
+  );
+  const setSelection = (ids: readonly string[], checked: boolean) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  /** Only the Needs attention list offers it, where the missing link is the point of the row. */
+  const rowFix = (skill: Skill): RowFix | null => {
+    if (!onlyAttention || attention(skill, ctx)?.kind !== "missing") return null;
+    const fix = planFix(skill, ctx);
+    return fix ? { label: fix.label, run: () => runPlan(fix.plan) } : null;
+  };
   const offline = !connected;
   const empty = skills !== null && skills.length === 0;
   const emptyText = (total: number, none: string) =>
@@ -241,6 +338,23 @@ function EnvironmentSkills({
         </p>
       )}
 
+      {notice && (
+        <p
+          role="status"
+          className="flex items-start gap-2 rounded-lg bg-muted/40 px-3 py-2 text-sm break-words"
+        >
+          <span className="min-w-0 flex-1">{notice}</span>
+          <Button
+            size="icon-xs"
+            variant="ghost-muted"
+            aria-label="Dismiss"
+            onClick={() => setNotice(null)}
+          >
+            <XIcon />
+          </Button>
+        </p>
+      )}
+
       {skillView && (
         <SkillDetail
           key={`${skillView.skill.id}:${detailReload}`}
@@ -248,7 +362,9 @@ function EnvironmentSkills({
           ctx={ctx}
           environmentId={environment.environmentId}
           projectRoot={cwd}
+          busy={locked}
           onBack={toList}
+          onPlan={runPlan}
           onReload={() => setDetailReload((count) => count + 1)}
         />
       )}
@@ -309,6 +425,10 @@ function EnvironmentSkills({
                   visible={visible(projectSkills)}
                   ctx={ctx}
                   emptyText={emptyText(projectSkills.length, "No skills in this project.")}
+                  selected={selected}
+                  busy={locked}
+                  rowFix={rowFix}
+                  onSelectedChange={setSelection}
                   onOpen={(id) => show({ kind: "skill", id })}
                 />
               )}
@@ -320,13 +440,32 @@ function EnvironmentSkills({
                 visible={visible(globalSkills)}
                 ctx={ctx}
                 emptyText={emptyText(globalSkills.length, "No Global skills yet.")}
+                selected={selected}
+                busy={locked}
+                rowFix={rowFix}
+                onSelectedChange={setSelection}
                 onOpen={(id) => show({ kind: "skill", id })}
               />
               {empty && <p className="text-sm text-muted-foreground">No skills yet.</p>}
+              {chosen.length > 0 && (
+                <BulkBar
+                  selected={chosen}
+                  ctx={ctx}
+                  busy={locked}
+                  onClear={() => setSelected(new Set())}
+                  onPlan={runPlan}
+                />
+              )}
             </>
           )}
         </>
       )}
+
+      <ConfirmPlan
+        plan={confirming}
+        onCancel={() => setConfirming(null)}
+        onConfirm={() => confirming && void apply(confirming)}
+      />
     </div>
   );
 }

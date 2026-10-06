@@ -288,3 +288,29 @@ it.effect("rejects protected unary and streamed RPCs outside a guarded command",
     expect(writes).toBe(0);
   }),
 );
+
+it.effect("needs the operate grant to change skills, but not to list or read them", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const registry = yield* setup;
+      for (const method of [
+        WS_METHODS.serverEnableSkills,
+        WS_METHODS.serverDisableSkills,
+        WS_METHODS.serverRemoveSkills,
+      ]) {
+        const change = createCommandPermissions(runtime, method);
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        expect(registry.get(change.permissionAtom(env))).toBe(false);
+        expect((yield* change.authorize(registry, env).pipe(Effect.flip)).requiredScope).toBe(
+          AuthOrchestrationOperateScope,
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(change.permissionAtom(env))).toBe(true);
+        yield* change.authorize(registry, env);
+      }
+      for (const method of [WS_METHODS.serverListSkills, WS_METHODS.serverGetSkill]) {
+        expect(createCommandPermissions(runtime, method).requiredScopes()).toEqual([]);
+      }
+    }),
+  ),
+);

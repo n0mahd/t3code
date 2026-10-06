@@ -64,6 +64,9 @@ describe("RPC authorization scopes", () => {
     for (const method of [WS_METHODS.serverListSkills, WS_METHODS.serverGetSkill]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthFilesystemReadScope);
     }
+    expect(requiredScopeForRpcMethod(WS_METHODS.serverSkillsTracked)).toBe(
+      AuthOrchestrationReadScope,
+    );
   });
 
   it("doesn't let a read-only client change which agents use skills", () => {
@@ -71,6 +74,8 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.serverEnableSkills,
       WS_METHODS.serverDisableSkills,
       WS_METHODS.serverRemoveSkills,
+      WS_METHODS.serverMoveSkills,
+      WS_METHODS.serverDeleteSkills,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }

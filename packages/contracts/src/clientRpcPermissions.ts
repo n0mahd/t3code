@@ -39,6 +39,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverEnableSkills]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverDisableSkills]: AuthOrchestrationOperateScope,
   [WS_METHODS.serverRemoveSkills]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverMoveSkills]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverDeleteSkills]: AuthOrchestrationOperateScope,
 
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,

@@ -192,6 +192,7 @@ import * as PortScanner from "./preview/PortScanner.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as SkillCatalog from "./skills/SkillCatalog.ts";
 import * as SkillManager from "./skills/SkillManager.ts";
+import * as SkillTracking from "./skills/SkillTracking.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import { readWorkflowScript } from "./orchestration-v2/workflowScriptQuery.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
@@ -1288,6 +1289,7 @@ const layerWsRpc = (
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const skillCatalog = yield* SkillCatalog.SkillCatalog;
       const skillManager = yield* SkillManager.SkillManager;
+      const skillTracking = yield* SkillTracking.SkillTracking;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -2181,6 +2183,9 @@ const layerWsRpc = (
         [WS_METHODS.serverEnableSkills]: (input) => skillManager.enable(input),
         [WS_METHODS.serverDisableSkills]: (input) => skillManager.disable(input),
         [WS_METHODS.serverRemoveSkills]: (input) => skillManager.remove(input),
+        [WS_METHODS.serverMoveSkills]: (input) => skillManager.move(input),
+        [WS_METHODS.serverDeleteSkills]: (input) => skillManager.delete(input),
+        [WS_METHODS.serverSkillsTracked]: (input) => skillTracking.tracked(input),
         [WS_METHODS.serverRefreshProviders]: (input) =>
           Effect.gen(function* () {
             // Only explicit catalog refreshes bypass T3's caches. Workspace

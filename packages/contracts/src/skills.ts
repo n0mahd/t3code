@@ -50,6 +50,11 @@ export const SkillSummary = Schema.Struct({
   description: Schema.String,
   /** SKILL.md's header can't be read the way Claude Code reads it, so Claude skips the skill. */
   invalidHeader: Schema.optional(Schema.Boolean),
+  /**
+   * The skill's folder sits in one of the agents' skill folders, so T3 Code can move or delete it.
+   * A skill reached only through links, such as a synced library, isn't.
+   */
+  realFolder: Schema.optional(Schema.Boolean),
   /** The other skills with the same name, in either scope. */
   copies: Schema.Array(SkillCopy),
   access: Schema.Array(SkillAgentAccess),
@@ -137,6 +142,37 @@ export const SkillRemoveInput = Schema.Struct({
 });
 export type SkillRemoveInput = typeof SkillRemoveInput.Type;
 
+/**
+ * Move each skill's folder to the other scope: from a project to the user's global folder, or the
+ * other way. Agents that used the skill keep using it.
+ */
+export const SkillMoveInput = Schema.Struct({
+  /** A registered project's folder: the project the skills move from or into. */
+  cwd: TrimmedNonEmptyString,
+  skills: SkillRefs,
+  /** Where the skills go. A skill that is there already is left as it is. */
+  to: SkillScope,
+});
+export type SkillMoveInput = typeof SkillMoveInput.Type;
+
+/** Which of these project skills git tracks, so a move or delete of them shows in git. */
+export const SkillTrackedInput = Schema.Struct({
+  /** The project the skills are in. */
+  cwd: TrimmedNonEmptyString,
+  skills: SkillRefs,
+});
+export type SkillTrackedInput = typeof SkillTrackedInput.Type;
+
+export const SkillTrackedResult = Schema.Struct({
+  /** Names of the project skills whose SKILL.md git tracks. Never includes a global skill. */
+  tracked: Schema.Array(TrimmedNonEmptyString),
+});
+export type SkillTrackedResult = typeof SkillTrackedResult.Type;
+
+/** Delete each skill's own folder and the links agents use to reach it. This can't be undone. */
+export const SkillDeleteInput = SkillRemoveInput;
+export type SkillDeleteInput = typeof SkillDeleteInput.Type;
+
 /** Why a skill or an agent was left as it was. A client words each one. */
 export const SkillOutcomeReason = Schema.Literals([
   /** The skill isn't in the agents' folders any more. */
@@ -153,6 +189,12 @@ export const SkillOutcomeReason = Schema.Literals([
   "linkNotAllowed",
   /** The folder couldn't be written. */
   "failed",
+  /** The skill's folder is reached through a link, so T3 Code leaves it where it is. */
+  "linked",
+  /** The other scope already has something with this name, which a move never replaces. */
+  "destinationTaken",
+  /** Another program is using the folder, so it couldn't be moved. */
+  "inUse",
 ]);
 export type SkillOutcomeReason = typeof SkillOutcomeReason.Type;
 

@@ -765,6 +765,40 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillCatalog", (it)
     );
   });
 
+  describe("what can be moved or deleted", () => {
+    it.effect.skipIf(!symlinksSupported)(
+      "marks a skill whose folder sits in an agent's folder, and not one reached through a link",
+      () =>
+        Effect.gen(function* () {
+          const { home, project } = yield* makeMachine;
+          const { skills } = yield* withCatalog(home, (catalog) => catalog.list({ cwd: project }));
+          const byName = byKey(skills);
+
+          expect(byName.get("project:verify")?.realFolder).toBe(true);
+          expect(byName.get("project:own-copy")?.realFolder).toBe(true);
+          expect(byName.get("global:cloudflare")?.realFolder).toBe(true);
+          // The library's skills are linked into the shared folder, so they live elsewhere.
+          expect(byName.get("global:architect")?.realFolder).toBeUndefined();
+          expect(byName.get("global:tdd")?.realFolder).toBeUndefined();
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "doesn't call a folder reached through a linked skills folder a real one",
+      () =>
+        Effect.gen(function* () {
+          const { home, project, write, link } = yield* makeMachine;
+          yield* write("elsewhere/relay/SKILL.md", skillFile("relay", "Reached through a link."));
+          // The project's whole `.cursor/skills` folder is a link to another folder.
+          yield* link("elsewhere", "repos/app/.cursor/skills");
+          const { skills } = yield* withCatalog(home, (catalog) => catalog.list({ cwd: project }));
+
+          expect(byKey(skills).get("project:relay")).toMatchObject({ name: "relay" });
+          expect(byKey(skills).get("project:relay")?.realFolder).toBeUndefined();
+        }),
+    );
+  });
+
   describe("get", () => {
     it.effect.skipIf(!symlinksSupported)(
       "returns the full SKILL.md, the file list and which files can run",

@@ -153,6 +153,13 @@ export interface ResolvedSkill {
   readonly displayHome: string;
   /** Absolute path of the skill's folder, after following links. */
   readonly home: string;
+  /**
+   * The home is a real folder in one of the agents' skill folders, reached without a link on the
+   * way. Only such a skill is T3 Code's to move or delete; a synced library's skill is not.
+   */
+  readonly own: boolean;
+  /** The shared folder of each scope, where a moved skill lands; a project's needs `cwd`. */
+  readonly standardFolders: Readonly<Record<SkillScope, string | undefined>>;
   /** Every entry in the agents' folders that reaches the skill: a real folder, or a link. */
   readonly entries: ReadonlyArray<{
     readonly path: string;
@@ -547,6 +554,34 @@ const make = Effect.gen(function* () {
       concurrency: CONCURRENCY,
     });
 
+    // A folder is plain when it is where its path says, with no link on the way below the base.
+    const bases = {
+      project: cwd === undefined ? undefined : { given: cwd, real: displayRoots.project[0] ?? cwd },
+      global: { given: homeDirectory, real: displayRoots.home[0] ?? homeDirectory },
+    };
+    const plainRoots = new Set<string>();
+    yield* Effect.forEach(
+      roots,
+      (root) =>
+        Effect.gen(function* () {
+          const base = bases[root.scope];
+          const real = yield* fileSystem
+            .realPath(root.directory)
+            .pipe(Effect.orElseSucceed(() => undefined));
+          if (base === undefined || real === undefined) return;
+          const relative = path.relative(base.given, root.directory);
+          const inside = !relative.startsWith("..") && !path.isAbsolute(relative);
+          if (real === (inside ? path.join(base.real, relative) : root.directory)) {
+            plainRoots.add(rootKey(root));
+          }
+        }),
+      { concurrency: CONCURRENCY, discard: true },
+    );
+    const isOwn = (group: Pick<SkillGroup, "entries">) =>
+      group.entries.some(
+        (entry) => entry.target === undefined && plainRoots.has(rootKey(entry.root)),
+      );
+
     // Group by what is really on disk: the same folder reached through several links is one skill.
     const grouped = new Map<string, Omit<SkillGroup, "header">>();
     for (const { entries } of scanned) {
@@ -634,12 +669,12 @@ const make = Effect.gen(function* () {
       };
     };
 
-    return { displayRoots, instances, scanned, groups, accessFor, loadableAt };
+    return { displayRoots, instances, scanned, groups, accessFor, loadableAt, isOwn, roots };
   });
 
   const list: SkillCatalog["Service"]["list"] = Effect.fn("SkillCatalog.list")(function* (input) {
     const cwd = yield* requireProject(input.cwd);
-    const { displayRoots, instances, scanned, groups, accessFor } = yield* scanSkills(cwd);
+    const { displayRoots, instances, scanned, groups, accessFor, isOwn } = yield* scanSkills(cwd);
     const copies = yield* compareCopies(groups, displayRoots);
 
     const skills = groups.map((group): SkillSummary => ({
@@ -648,6 +683,7 @@ const make = Effect.gen(function* () {
       home: displayPath(group.home, displayRoots),
       description: capDescription(group.header.description),
       ...(group.header.invalid ? { invalidHeader: true } : {}),
+      ...(isOwn(group) ? { realFolder: true } : {}),
       copies: copies.get(group) ?? [],
       access: instances.map((instance) => accessFor(group, instance).access),
     }));
@@ -675,10 +711,12 @@ const make = Effect.gen(function* () {
         (skill) => isSkillFolderName(skill.name) && (skill.scope === "global" || cwd !== undefined),
       );
       if (wanted.length === 0) return [];
-      const { displayRoots, instances, groups, accessFor, loadableAt } = yield* scanSkills(
-        cwd,
-        new Set(wanted.map((skill) => skill.name)),
-      );
+      const { displayRoots, instances, groups, accessFor, loadableAt, isOwn, roots } =
+        yield* scanSkills(cwd, new Set(wanted.map((skill) => skill.name)));
+      const standardFolders = {
+        project: roots.find((root) => root.scope === "project" && root.standard)?.directory,
+        global: roots.find((root) => root.scope === "global" && root.standard)?.directory,
+      };
       const wantedKeys = new Set(wanted.map((skill) => `${skill.scope}\0${skill.name}`));
       return groups
         .filter((group) => wantedKeys.has(`${group.scope}\0${group.name}`))
@@ -687,6 +725,8 @@ const make = Effect.gen(function* () {
           name: group.name,
           displayHome: displayPath(group.home, displayRoots),
           home: group.home,
+          own: isOwn(group),
+          standardFolders,
           entries: group.entries.map((entry) => ({
             path: path.join(entry.root.directory, entry.name),
             directory: entry.root.directory,

@@ -297,6 +297,8 @@ it.effect("needs the operate grant to change skills, but not to list or read the
         WS_METHODS.serverEnableSkills,
         WS_METHODS.serverDisableSkills,
         WS_METHODS.serverRemoveSkills,
+        WS_METHODS.serverMoveSkills,
+        WS_METHODS.serverDeleteSkills,
       ]) {
         const change = createCommandPermissions(runtime, method);
         registry.set(sessions(env), AsyncResult.success(grant(false)));
@@ -308,7 +310,11 @@ it.effect("needs the operate grant to change skills, but not to list or read the
         expect(registry.get(change.permissionAtom(env))).toBe(true);
         yield* change.authorize(registry, env);
       }
-      for (const method of [WS_METHODS.serverListSkills, WS_METHODS.serverGetSkill]) {
+      for (const method of [
+        WS_METHODS.serverListSkills,
+        WS_METHODS.serverGetSkill,
+        WS_METHODS.serverSkillsTracked,
+      ]) {
         expect(createCommandPermissions(runtime, method).requiredScopes()).toEqual([]);
       }
     }),

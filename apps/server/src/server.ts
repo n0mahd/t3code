@@ -89,6 +89,7 @@ import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as SkillCatalog from "./skills/SkillCatalog.ts";
 import * as SkillManager from "./skills/SkillManager.ts";
+import * as SkillTracking from "./skills/SkillTracking.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
@@ -576,9 +577,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ReplayMarkers.layer,
-  // It reads through SkillCatalog and checks folders against ProjectService, both provided
-  // below; being here makes it one instance, so skill writes run one request at a time.
+  // It reads through SkillCatalog, checks folders against ProjectService and refreshes the
+  // composer's skill lists through ProviderRegistry, all provided below; being here makes it one
+  // instance, so skill writes run one request at a time.
   SkillManager.layer,
+  // Reads through SkillCatalog and runs git through VcsProcess.
+  SkillTracking.layer,
 ).pipe(
   // Core Services
   // It checks a project's folder against ProjectService, which the next layer provides.

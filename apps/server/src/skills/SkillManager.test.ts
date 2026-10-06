@@ -5,8 +5,10 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   SkillBatchResult,
+  SkillDeleteInput,
   SkillDisableInput,
   SkillEnableInput,
+  SkillMoveInput,
   SkillRemoveInput,
   SkillRequestError,
   type Project,
@@ -21,9 +23,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
 import * as SkillManager from "./SkillManager.ts";
@@ -81,47 +86,69 @@ const makeProject = (workspaceRoot: string): Project => ({
   deletedAt: null,
 });
 
-/** The manager and catalog on a machine whose home is `home`; only `registered` folders are projects. */
+/** A skill-list refresh the manager asked the provider registry for. */
+type Refresh = {
+  readonly instanceId: ProviderInstanceId;
+  /** Absent when only the agent's machine-wide list was refreshed. */
+  readonly cwd: string | undefined;
+  readonly fresh: boolean | undefined;
+};
+
+/**
+ * The manager and catalog on a machine whose home is `home`; only `registered` folders are
+ * projects. The provider registry is a stand-in that queues each refresh it is asked for.
+ */
 const withManager = <A, E, R>(
   home: string,
   registered: readonly string[],
   use: (services: {
     readonly manager: SkillManager.SkillManager["Service"];
     readonly catalog: SkillCatalog.SkillCatalog["Service"];
+    readonly refreshes: Queue.Queue<Refresh>;
   }) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
-    return yield* use({
-      manager: yield* SkillManager.SkillManager,
-      catalog: yield* SkillCatalog.SkillCatalog,
-    });
-  }).pipe(
-    Effect.provide(
-      SkillManager.layer.pipe(
-        Layer.provideMerge(
-          SkillCatalog.layer.pipe(
-            Layer.provide(
-              Settings.layerTest({
-                providerInstances: Object.fromEntries(
-                  ["cursor", "grok", "opencode", "antigravity", "pi"].map((driver) => [
-                    ProviderInstanceId.make(driver),
-                    { driver: ProviderDriverKind.make(driver), enabled: true },
-                  ]),
-                ),
-              }),
-            ),
-          ),
+    const refreshes = yield* Queue.unbounded<Refresh>();
+    const registry = Layer.mock(ProviderRegistry.ProviderRegistry)({
+      refreshInstance: (instanceId) =>
+        Queue.offer(refreshes, { instanceId, cwd: undefined, fresh: undefined }).pipe(
+          Effect.as([]),
         ),
-        Layer.provide(
-          Layer.mock(ProjectService.ProjectService)({
-            getByWorkspaceRoot: (root) =>
-              Effect.succeed(
-                registered.includes(root) ? Option.some(makeProject(root)) : Option.none(),
-              ),
-          }),
+      refreshWorkspaceSnapshot: ({ instanceId, cwd, fresh }) =>
+        Queue.offer(refreshes, { instanceId, cwd, fresh }).pipe(Effect.as([])),
+    });
+    const projects = Layer.mock(ProjectService.ProjectService)({
+      getByWorkspaceRoot: (root) =>
+        Effect.succeed(registered.includes(root) ? Option.some(makeProject(root)) : Option.none()),
+    });
+    const catalog = SkillCatalog.layer.pipe(
+      Layer.provide(
+        Settings.layerTest({
+          providerInstances: Object.fromEntries(
+            ["cursor", "grok", "opencode", "antigravity", "pi"].map((driver) => [
+              ProviderInstanceId.make(driver),
+              { driver: ProviderDriverKind.make(driver), enabled: true },
+            ]),
+          ),
+        }),
+      ),
+    );
+    return yield* Effect.gen(function* () {
+      return yield* use({
+        manager: yield* SkillManager.SkillManager,
+        catalog: yield* SkillCatalog.SkillCatalog,
+        refreshes,
+      });
+    }).pipe(
+      Effect.provide(
+        SkillManager.layer.pipe(
+          Layer.provideMerge(catalog),
+          Layer.provide(projects),
+          Layer.provide(registry),
         ),
       ),
-    ),
+    );
+  }).pipe(
     Effect.provideService(HostProcess.Environment, { HOME: home }),
     Effect.provideService(HostProcess.HomeDirectory, home),
   );
@@ -581,6 +608,619 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillManager", (it)
     );
   });
 
+  describe("move", () => {
+    /** Claude reads a project skill through a link made by turning it on. */
+    const withClaudeOnVerify = (
+      manager: SkillManager.SkillManager["Service"],
+      project: string,
+      verify: SkillRef,
+    ) => manager.enable({ cwd: project, skills: [verify], agents: [agent("claudeAgent")] });
+
+    it.effect.skipIf(!symlinksSupported)(
+      "moves a project skill to Global, and each agent's link follows",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const verify = refOf(
+                (yield* catalog.list({ cwd: project })).skills,
+                "project",
+                "verify",
+              );
+              yield* withClaudeOnVerify(manager, project, verify);
+              expect(yield* fs.readLink(path.join(project, ".claude/skills/verify"))).toBe(
+                "../../.agents/skills/verify",
+              );
+
+              const result = yield* manager.move({ cwd: project, skills: [verify], to: "global" });
+
+              // Grok reads the shared global folder but not the project's, so it gets the skill.
+              expect(result.outcomes).toEqual([
+                { skill: verify, status: "changed", blocked: [], affected: [agent("grok")] },
+              ]);
+              yield* encodeResult(result);
+              const moved = path.join(home, ".agents/skills/verify");
+              expect(yield* fs.readFileString(path.join(moved, "run.sh"))).toBe("echo ok");
+              expect(yield* fs.exists(path.join(project, ".agents/skills/verify"))).toBe(false);
+              // The project's link would lead nowhere; the agents that need one get it in Global.
+              expect(yield* fs.readDirectory(path.join(project, ".claude/skills"))).toEqual([]);
+              expect(yield* fs.readLink(path.join(home, ".claude/skills/verify"))).toBe(moved);
+              expect(yield* fs.readLink(path.join(home, ".gemini/config/skills/verify"))).toBe(
+                moved,
+              );
+              const after = (yield* catalog.list({ cwd: project })).skills;
+              expect(
+                after.some((skill) => skill.scope === "project" && skill.name === "verify"),
+              ).toBe(false);
+              expect(stateOf(after, "global", "verify")).toEqual({
+                claudeAgent: "link",
+                codex: "direct",
+                cursor: "direct",
+                grok: "direct",
+                opencode: "direct",
+                antigravity: "link",
+                pi: "direct",
+              });
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "moves a skill in an agent's own folder to this project, and the agent keeps it",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const solo = refOf((yield* catalog.list({ cwd: project })).skills, "global", "solo");
+
+              const result = yield* manager.move({ cwd: project, skills: [solo], to: "project" });
+
+              expect(result.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+              // Codex, Antigravity and Pi read the project's shared folder; they hadn't the skill.
+              expect(result.outcomes[0]?.affected.toSorted()).toEqual(
+                [agent("antigravity"), agent("codex"), agent("pi")].toSorted(),
+              );
+              const moved = path.join(project, ".agents/skills/solo");
+              expect(yield* fs.exists(path.join(moved, "SKILL.md"))).toBe(true);
+              expect(yield* fs.exists(path.join(home, ".claude/skills/solo"))).toBe(false);
+              // A project's link is relative, so it survives a clone.
+              expect(yield* fs.readLink(path.join(project, ".claude/skills/solo"))).toBe(
+                "../../.agents/skills/solo",
+              );
+              expect(
+                stateOf((yield* catalog.list({ cwd: project })).skills, "project", "solo"),
+              ).toMatchObject({ claudeAgent: "link", codex: "direct", opencode: "direct" });
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "never merges into or replaces a skill of the same name in the other scope",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project, write } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const verify = refOf(
+                (yield* catalog.list({ cwd: project })).skills,
+                "project",
+                "verify",
+              );
+              yield* withClaudeOnVerify(manager, project, verify);
+              // First something that isn't even a skill is in the way, then a real skill.
+              yield* fs.makeDirectory(path.join(home, ".agents/skills/verify"), {
+                recursive: true,
+              });
+
+              const folder = yield* manager.move({ cwd: project, skills: [verify], to: "global" });
+              yield* write(".agents/skills/verify/SKILL.md", skillFile("theirs"));
+              const skill = yield* manager.move({ cwd: project, skills: [verify], to: "global" });
+
+              for (const result of [folder, skill]) {
+                expect(result.outcomes[0]).toMatchObject({
+                  status: "skipped",
+                  reason: "destinationTaken",
+                });
+              }
+              expect(
+                yield* fs.readFileString(path.join(home, ".agents/skills/verify/SKILL.md")),
+              ).toBe(skillFile("theirs"));
+              expect(
+                yield* fs.readFileString(path.join(project, ".agents/skills/verify/run.sh")),
+              ).toBe("echo ok");
+              expect(yield* fs.exists(path.join(project, ".claude/skills/verify"))).toBe(true);
+              expect(yield* fs.exists(path.join(home, ".claude/skills/verify"))).toBe(false);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "leaves a skill alone that is only reached through a link, such as a synced library's",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({ cwd: project });
+              const alpha = refOf(skills, "global", "alpha");
+
+              const result = yield* manager.move({ cwd: project, skills: [alpha], to: "project" });
+
+              expect(result.outcomes[0]).toMatchObject({ status: "skipped", reason: "linked" });
+              expect(yield* fs.readLink(path.join(home, ".agents/skills/alpha"))).toBe(
+                path.join(home, "library/skills/alpha"),
+              );
+              expect(yield* fs.exists(path.join(project, ".agents/skills/alpha"))).toBe(false);
+              expect(yield* fs.exists(path.join(home, "library/skills/alpha/SKILL.md"))).toBe(true);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "tells what happened to each skill in a bulk move, and one that can't move doesn't stop the rest",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project, link } = yield* makeMachine;
+          yield* link("library/skills/beta", "repos/app/.agents/skills/synced");
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({ cwd: project });
+              const ghost: SkillRef = {
+                scope: "project",
+                name: "ghost",
+                home: ".agents/skills/ghost",
+              };
+
+              const result = yield* manager.move({
+                cwd: project,
+                skills: [
+                  refOf(skills, "project", "synced"),
+                  ghost,
+                  refOf(skills, "project", "verify"),
+                ],
+                to: "global",
+              });
+
+              expect(
+                result.outcomes.map(({ skill, status, reason }) => [skill.name, status, reason]),
+              ).toEqual([
+                ["synced", "skipped", "linked"],
+                ["ghost", "skipped", "notFound"],
+                ["verify", "changed", undefined],
+              ]);
+              yield* encodeResult(result);
+              expect(yield* fs.exists(path.join(home, ".agents/skills/verify/SKILL.md"))).toBe(
+                true,
+              );
+              expect(yield* fs.readLink(path.join(project, ".agents/skills/synced"))).toBe(
+                path.join(home, "library/skills/beta"),
+              );
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "refuses a skill that isn't where the list said, and a skill that is there already",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({ cwd: project });
+              const solo = refOf(skills, "global", "solo");
+              const verify = refOf(skills, "project", "verify");
+              // `solo` now leads to another folder, so it is no longer what the list showed.
+              yield* fs.remove(path.join(home, ".claude/skills/solo"), { recursive: true });
+              yield* fs.symlink(
+                path.join(home, "library/skills/beta"),
+                path.join(home, ".claude/skills/solo"),
+              );
+
+              const result = yield* manager.move({
+                cwd: project,
+                skills: [solo, verify],
+                to: "project",
+              });
+
+              expect(result.outcomes.map(({ status, reason }) => ({ status, reason }))).toEqual([
+                { status: "skipped", reason: "changed" },
+                // It is in this project already.
+                { status: "unchanged", reason: undefined },
+              ]);
+              expect(yield* fs.exists(path.join(project, ".agents/skills/solo"))).toBe(false);
+              expect(yield* fs.exists(path.join(project, ".agents/skills/verify/run.sh"))).toBe(
+                true,
+              );
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "refuses a project folder the environment doesn't know",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [], ({ manager }) =>
+            Effect.gen(function* () {
+              // The list itself refuses a folder that isn't a project, so name the skill as a
+              // client holding an older list would.
+              const verify: SkillRef = {
+                scope: "project",
+                name: "verify",
+                home: ".agents/skills/verify",
+              };
+
+              const error = yield* manager
+                .move({ cwd: project, skills: [verify], to: "global" })
+                .pipe(Effect.flip);
+
+              expect(error).toEqual(new SkillRequestError({ reason: "projectNotRegistered" }));
+              expect(yield* fs.exists(path.join(project, ".agents/skills/verify/SKILL.md"))).toBe(
+                true,
+              );
+              expect(yield* fs.exists(path.join(home, ".agents/skills/verify"))).toBe(false);
+            }),
+          );
+        }),
+    );
+
+    describe("across filesystems", () => {
+      /** The skill's own folder can't be renamed, as when the project is on another disk. */
+      const onAnotherDisk = (fs: FileSystem.FileSystem, from: string) =>
+        FileSystem.FileSystem.of({
+          ...fs,
+          rename: (oldPath, newPath) =>
+            oldPath === from
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "Unknown",
+                    module: "FileSystem",
+                    method: "rename",
+                    pathOrDescriptor: oldPath,
+                    cause: Object.assign(new Error("EXDEV"), { code: "EXDEV" }),
+                  }),
+                )
+              : fs.rename(oldPath, newPath),
+        });
+
+      it.effect.skipIf(!symlinksSupported)(
+        "copies the skill over, and the agents' links follow just the same",
+        () =>
+          Effect.gen(function* () {
+            const { fs, path, home, project } = yield* makeMachine;
+            const from = path.join(project, ".agents/skills/verify");
+            yield* withManager(home, [project], ({ manager, catalog }) =>
+              Effect.gen(function* () {
+                const verify = refOf(
+                  (yield* catalog.list({ cwd: project })).skills,
+                  "project",
+                  "verify",
+                );
+                yield* withClaudeOnVerify(manager, project, verify);
+
+                const result = yield* manager.move({
+                  cwd: project,
+                  skills: [verify],
+                  to: "global",
+                });
+
+                expect(result.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+                const moved = path.join(home, ".agents/skills/verify");
+                expect(yield* fs.readFileString(path.join(moved, "run.sh"))).toBe("echo ok");
+                expect(yield* fs.exists(from)).toBe(false);
+                expect(yield* fs.readDirectory(path.join(project, ".claude/skills"))).toEqual([]);
+                expect(yield* fs.readLink(path.join(home, ".claude/skills/verify"))).toBe(moved);
+                const left = yield* fs.readDirectory(path.join(home, ".agents/skills"));
+                expect(left.filter((name) => name.startsWith(".t3-moving"))).toEqual([]);
+              }),
+            ).pipe(Effect.provideService(FileSystem.FileSystem, onAnotherDisk(fs, from)));
+          }),
+      );
+
+      it.effect.skipIf(!symlinksSupported)(
+        "leaves the skill and its links as they were when the copy fails",
+        () =>
+          Effect.gen(function* () {
+            const { fs, path, home, project } = yield* makeMachine;
+            const from = path.join(project, ".agents/skills/verify");
+            const failing = FileSystem.FileSystem.of({
+              ...onAnotherDisk(fs, from),
+              copyFile: (source) =>
+                Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "Unknown",
+                    module: "FileSystem",
+                    method: "copyFile",
+                    pathOrDescriptor: source,
+                    cause: Object.assign(new Error("EIO"), { code: "EIO" }),
+                  }),
+                ),
+            });
+            yield* withManager(home, [project], ({ manager, catalog }) =>
+              Effect.gen(function* () {
+                const verify = refOf(
+                  (yield* catalog.list({ cwd: project })).skills,
+                  "project",
+                  "verify",
+                );
+                yield* withClaudeOnVerify(manager, project, verify);
+
+                const result = yield* manager.move({
+                  cwd: project,
+                  skills: [verify],
+                  to: "global",
+                });
+
+                expect(result.outcomes[0]).toMatchObject({ status: "skipped", reason: "failed" });
+                expect(yield* fs.readFileString(path.join(from, "run.sh"))).toBe("echo ok");
+                expect(yield* fs.readLink(path.join(project, ".claude/skills/verify"))).toBe(
+                  "../../.agents/skills/verify",
+                );
+                expect(yield* fs.exists(path.join(home, ".agents/skills/verify"))).toBe(false);
+                expect(yield* fs.readDirectory(path.join(home, ".agents/skills"))).toEqual([
+                  "alpha",
+                ]);
+              }),
+            ).pipe(Effect.provideService(FileSystem.FileSystem, failing));
+          }),
+      );
+    });
+  });
+
+  describe("delete", () => {
+    it.effect.skipIf(!symlinksSupported)(
+      "deletes the skill's folder and every link to it, and nothing else",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({ cwd: project });
+              const verify = refOf(skills, "project", "verify");
+              yield* manager.enable({
+                cwd: project,
+                skills: [verify],
+                agents: [agent("claudeAgent")],
+              });
+
+              const result = yield* manager.delete({ cwd: project, skills: [verify] });
+
+              expect(result.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+              expect(result.outcomes[0]?.affected).toContain(agent("claudeAgent"));
+              expect(result.outcomes[0]?.affected).toContain(agent("codex"));
+              yield* encodeResult(result);
+              expect(yield* fs.exists(path.join(project, ".agents/skills/verify"))).toBe(false);
+              expect(yield* fs.readDirectory(path.join(project, ".claude/skills"))).toEqual([]);
+              // The folders around it, and everything else, are as they were.
+              expect(yield* fs.exists(path.join(project, ".agents/skills"))).toBe(true);
+              expect(yield* fs.exists(path.join(home, ".claude/skills/solo/SKILL.md"))).toBe(true);
+              expect(yield* fs.exists(path.join(home, "library/skills/alpha/SKILL.md"))).toBe(true);
+              expect(
+                (yield* catalog.list({ cwd: project })).skills.some(
+                  (skill) => skill.name === "verify",
+                ),
+              ).toBe(false);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "takes away the links that lead to a global skill from a project too",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project, link } = yield* makeMachine;
+          yield* link(".claude/skills/solo", "repos/app/.claude/skills/solo");
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const solo = refOf((yield* catalog.list({ cwd: project })).skills, "global", "solo");
+
+              const result = yield* manager.delete({ cwd: project, skills: [solo] });
+
+              expect(result.outcomes[0]).toMatchObject({ status: "changed" });
+              expect(yield* fs.exists(path.join(home, ".claude/skills/solo"))).toBe(false);
+              const left = yield* fs.readDirectory(path.join(project, ".claude/skills"));
+              expect(left).not.toContain("solo");
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "doesn't delete what a link leads to: a synced library's skill stays",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home } = yield* makeMachine;
+          yield* withManager(home, [], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const alpha = refOf((yield* catalog.list({})).skills, "global", "alpha");
+
+              const result = yield* manager.delete({ skills: [alpha] });
+
+              expect(result.outcomes[0]).toMatchObject({ status: "skipped", reason: "linked" });
+              expect(
+                yield* fs.readFileString(path.join(home, "library/skills/alpha/notes.md")),
+              ).toBe("notes on alpha");
+              expect(yield* fs.exists(path.join(home, ".agents/skills/alpha"))).toBe(true);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "tells what happened to each skill in a bulk delete, and refuses a stale one",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({ cwd: project });
+              const verify = refOf(skills, "project", "verify");
+              const solo = refOf(skills, "global", "solo");
+              const alpha = refOf(skills, "global", "alpha");
+              const ghost: SkillRef = { scope: "global", name: "ghost", home: "~/ghost" };
+              // `solo` was swapped for a link to another folder since the list was read.
+              yield* fs.remove(path.join(home, ".claude/skills/solo"), { recursive: true });
+              yield* fs.symlink(
+                path.join(home, "library/skills/beta"),
+                path.join(home, ".claude/skills/solo"),
+              );
+
+              const result = yield* manager.delete({
+                cwd: project,
+                skills: [verify, solo, alpha, ghost],
+              });
+
+              expect(
+                result.outcomes.map(({ skill, status, reason }) => [skill.name, status, reason]),
+              ).toEqual([
+                ["verify", "changed", undefined],
+                ["solo", "skipped", "changed"],
+                ["alpha", "skipped", "linked"],
+                ["ghost", "skipped", "notFound"],
+              ]);
+              expect(yield* fs.exists(path.join(home, "library/skills/beta/SKILL.md"))).toBe(true);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "refuses a project folder the environment doesn't know",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [], ({ manager }) =>
+            Effect.gen(function* () {
+              // The list itself refuses a folder that isn't a project, so name the skill as a
+              // client holding an older list would.
+              const verify: SkillRef = {
+                scope: "project",
+                name: "verify",
+                home: ".agents/skills/verify",
+              };
+
+              const error = yield* manager
+                .delete({ cwd: project, skills: [verify] })
+                .pipe(Effect.flip);
+
+              expect(error).toEqual(new SkillRequestError({ reason: "projectNotRegistered" }));
+              expect(yield* fs.exists(path.join(project, ".agents/skills/verify/SKILL.md"))).toBe(
+                true,
+              );
+            }),
+          );
+        }),
+    );
+  });
+
+  describe("the picker refresh", () => {
+    it.effect.skipIf(!symlinksSupported)(
+      "refreshes the agents whose skills changed, once, and nothing after a no-op or a refusal",
+      () =>
+        Effect.gen(function* () {
+          const { home } = yield* makeMachine;
+          yield* withManager(home, [], ({ manager, catalog, refreshes }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({});
+              const alpha = refOf(skills, "global", "alpha");
+              const ghost: SkillRef = { scope: "global", name: "ghost", home: "~/ghost" };
+              // Codex reads the skill already, and the other one isn't there: nothing is written.
+              yield* manager.enable({ skills: [alpha, ghost], agents: [agent("codex")] });
+              yield* manager.disable({ skills: [alpha], agents: [agent("claudeAgent")] });
+
+              yield* manager.enable({ skills: [alpha], agents: [agent("claudeAgent")] });
+
+              // Anything the two no-ops had asked for would come first.
+              expect(yield* Queue.take(refreshes)).toEqual({
+                instanceId: agent("claudeAgent"),
+                cwd: undefined,
+                fresh: undefined,
+              });
+              expect(yield* Queue.size(refreshes)).toBe(0);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "refreshes the open project's list for each agent that gained or lost the skill",
+      () =>
+        Effect.gen(function* () {
+          const { home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog, refreshes }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({ cwd: project });
+              const verify = refOf(skills, "project", "verify");
+
+              // A skill that is already on for the agent asked for changes nothing.
+              yield* manager.enable({ cwd: project, skills: [verify], agents: [agent("codex")] });
+              yield* manager.enable({
+                cwd: project,
+                skills: [verify],
+                agents: [agent("claudeAgent")],
+              });
+              yield* manager.disable({
+                cwd: project,
+                skills: [verify],
+                agents: [agent("claudeAgent")],
+              });
+
+              const asked = yield* Effect.forEach([1, 2], () => Queue.take(refreshes));
+              expect(asked).toEqual([
+                { instanceId: agent("claudeAgent"), cwd: project, fresh: true },
+                { instanceId: agent("claudeAgent"), cwd: project, fresh: true },
+              ]);
+              expect(yield* Queue.size(refreshes)).toBe(0);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "refreshes every agent a move or a delete touches, and none when the move is refused",
+      () =>
+        Effect.gen(function* () {
+          const { home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog, refreshes }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({ cwd: project });
+              const alpha = refOf(skills, "global", "alpha");
+              const verify = refOf(skills, "project", "verify");
+              const solo = refOf(skills, "global", "solo");
+              const touched = (count: number) =>
+                Effect.forEach(Array.from({ length: count }), () => Queue.take(refreshes)).pipe(
+                  Effect.map((asked) => asked.map((item) => item.instanceId).toSorted()),
+                );
+
+              // A skill reached through a link can't move: nothing was written, so nothing refreshes.
+              yield* manager.move({ cwd: project, skills: [alpha], to: "project" });
+              yield* manager.move({ cwd: project, skills: [verify], to: "global" });
+              // Claude never used it. The other six did, or do now, or both.
+              expect(yield* touched(6)).toEqual(
+                ALL_AGENTS.filter((id) => id !== agent("claudeAgent")).toSorted(),
+              );
+              expect(yield* Queue.size(refreshes)).toBe(0);
+
+              yield* manager.delete({ cwd: project, skills: [solo] });
+              // Claude, Cursor and OpenCode read the global `.claude/skills` folder.
+              expect(yield* touched(3)).toEqual(
+                [agent("claudeAgent"), agent("cursor"), agent("opencode")].toSorted(),
+              );
+            }),
+          );
+        }),
+    );
+  });
+
   describe("requests", () => {
     it.effect.skipIf(!symlinksSupported)(
       "refuses to write when the skill is no longer where the list said, or gone",
@@ -714,6 +1354,32 @@ describe("the request and result schemas", () => {
       true,
     );
   });
+
+  it("accepts a request to move or delete skills, and needs a project and a scope to move", () => {
+    expect(decodes(SkillMoveInput, { cwd: "/repo", skills: [ref], to: "project" })).toBe(true);
+    expect(decodes(SkillDeleteInput, { skills: [ref] })).toBe(true);
+    expect(decodes(SkillMoveInput, { skills: [ref], to: "project" })).toBe(false);
+    expect(decodes(SkillMoveInput, { cwd: "/repo", skills: [ref] })).toBe(false);
+    expect(decodes(SkillMoveInput, { cwd: "/repo", skills: [ref], to: "elsewhere" })).toBe(false);
+    expect(decodes(SkillMoveInput, { cwd: "/repo", skills: [], to: "global" })).toBe(false);
+    expect(decodes(SkillDeleteInput, { skills: [] })).toBe(false);
+  });
+
+  it.effect("describes why a move or a delete left a skill, for each reason", () =>
+    Effect.forEach(["linked", "destinationTaken", "inUse"] as const, (reason) =>
+      encodeResult({
+        outcomes: [
+          {
+            skill: ref,
+            status: "skipped",
+            reason,
+            blocked: [{ instanceId: "codex", reason }],
+            affected: [],
+          },
+        ],
+      }),
+    ),
+  );
 });
 
 describe("planEnable", () => {
@@ -732,6 +1398,8 @@ describe("planEnable", () => {
     name: "verify",
     displayHome: ".agents/skills/verify",
     home: "/repo/.agents/skills/verify",
+    own: true,
+    standardFolders: { project: "/repo/.agents/skills", global: "/home/.agents/skills" },
     entries,
     agents,
   });

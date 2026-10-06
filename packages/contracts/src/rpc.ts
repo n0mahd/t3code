@@ -325,14 +325,18 @@ import {
 } from "./settings.ts";
 import {
   SkillBatchResult,
+  SkillDeleteInput,
   SkillDisableInput,
   SkillEnableInput,
   SkillGetInput,
   SkillGetResult,
   SkillListInput,
   SkillListResult,
+  SkillMoveInput,
   SkillRemoveInput,
   SkillRequestError,
+  SkillTrackedInput,
+  SkillTrackedResult,
 } from "./skills.ts";
 import {
   ScheduledTaskDeleteInput,
@@ -483,6 +487,9 @@ export const WS_METHODS = {
   serverEnableSkills: "server.enableSkills",
   serverDisableSkills: "server.disableSkills",
   serverRemoveSkills: "server.removeSkills",
+  serverMoveSkills: "server.moveSkills",
+  serverDeleteSkills: "server.deleteSkills",
+  serverSkillsTracked: "server.skillsTracked",
   serverUpdateProvider: "server.updateProvider",
   serverUpdateServer: "server.updateServer",
   serverUpdateServerWithProgress: "server.updateServerWithProgress",
@@ -642,6 +649,24 @@ const WsServerRemoveSkillsRpc = Rpc.make(WS_METHODS.serverRemoveSkills, {
   payload: SkillRemoveInput,
   success: SkillBatchResult,
   error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerMoveSkillsRpc = Rpc.make(WS_METHODS.serverMoveSkills, {
+  payload: SkillMoveInput,
+  success: SkillBatchResult,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerDeleteSkillsRpc = Rpc.make(WS_METHODS.serverDeleteSkills, {
+  payload: SkillDeleteInput,
+  success: SkillBatchResult,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerSkillsTrackedRpc = Rpc.make(WS_METHODS.serverSkillsTracked, {
+  payload: SkillTrackedInput,
+  success: SkillTrackedResult,
+  error: EnvironmentAuthorizationError,
 });
 
 const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -1882,6 +1907,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerEnableSkillsRpc,
   WsServerDisableSkillsRpc,
   WsServerRemoveSkillsRpc,
+  WsServerMoveSkillsRpc,
+  WsServerDeleteSkillsRpc,
+  WsServerSkillsTrackedRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,
   WsProviderAuthStartRpc,

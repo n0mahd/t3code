@@ -3,13 +3,15 @@
  *
  * A skill has one home, a real folder. An agent reads it either because the agent reads that
  * folder itself (`direct`) or because a link in a folder the agent reads points at it (`link`).
- * Turning a skill on makes such a link in the agent's own folder; turning it off removes it. The
- * only things written are links this service can show lead to the skill's home: a real folder is
- * never replaced, moved or deleted here.
+ * Turning a skill on makes such a link in the agent's own folder; turning it off removes it. Those
+ * writes only touch links this service can show lead to the skill's home: a real folder is never
+ * replaced by them. Moving and deleting are the only writes that take a real folder, and only one
+ * that sits in an agent's skill folder itself (`own`), never a synced library behind a link.
  *
  * Every write starts from what the folders hold now, not from what a client last saw: a skill
  * whose home is not where the client said is refused, and each link is checked again right
- * before it is made or removed (see `SkillLinks`). Writes run one request at a time.
+ * before it is made or removed (see `SkillLinks`). Writes run one request at a time, and an agent
+ * whose skills changed has its skill list for the composer refreshed afterwards.
  *
  * @module SkillManager
  */
@@ -17,12 +19,15 @@ import {
   SkillRequestError,
   type ProviderInstanceId,
   type SkillBatchResult,
+  type SkillDeleteInput,
   type SkillDisableInput,
   type SkillEnableInput,
+  type SkillMoveInput,
   type SkillOutcome,
   type SkillOutcomeReason,
   type SkillRef,
   type SkillRemoveInput,
+  type SkillScope,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
@@ -34,8 +39,10 @@ import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
 import { createLink, removeLink, type RemoveLinkResult } from "./SkillLinks.ts";
+import { deleteFolder, moveFolder } from "./SkillMove.ts";
 
 type Blocked = SkillOutcome["blocked"][number];
 
@@ -47,6 +54,10 @@ interface SkillChange {
   readonly blocked: readonly Blocked[];
   /** Something about the skill as a whole kept the change from being complete. */
   readonly reason?: SkillOutcomeReason | undefined;
+  /** Agents that gained or lost the skill without being asked, when the change works that out. */
+  readonly affected?: readonly ProviderInstanceId[] | undefined;
+  /** Agents whose skill list changed, when the change works that out; their `$` picker is refreshed. */
+  readonly touched?: readonly ProviderInstanceId[] | undefined;
 }
 
 /**
@@ -136,6 +147,12 @@ export class SkillManager extends Context.Service<
     readonly remove: (
       input: SkillRemoveInput,
     ) => Effect.Effect<SkillBatchResult, SkillRequestError>;
+    /** Move each skill's folder to the other scope; the agents that used it keep using it. */
+    readonly move: (input: SkillMoveInput) => Effect.Effect<SkillBatchResult, SkillRequestError>;
+    /** Delete each skill's own folder and every link to it. */
+    readonly delete: (
+      input: SkillDeleteInput,
+    ) => Effect.Effect<SkillBatchResult, SkillRequestError>;
   }
 >()("t3/skills/SkillManager") {}
 
@@ -145,6 +162,7 @@ const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
   const catalog = yield* SkillCatalog.SkillCatalog;
   const projects = yield* ProjectService.ProjectService;
+  const providers = yield* ProviderRegistry.ProviderRegistry;
   const writeLock = yield* Semaphore.make(1);
   // The link primitives take the filesystem from their environment.
   const filesystemContext = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
@@ -224,11 +242,16 @@ const make = Effect.gen(function* () {
     return { wrote, blocked } satisfies SkillChange;
   });
 
-  const removeOne = Effect.fnUntraced(function* (skill: SkillCatalog.ResolvedSkill) {
-    const links = skill.entries.flatMap((entry) =>
-      entry.target === undefined ? [] : [{ path: entry.path, target: entry.target }],
+  /** The links among the skills' entries, with what each points at as written. */
+  const linksTo = (skills: ReadonlyArray<SkillCatalog.ResolvedSkill>) =>
+    skills.flatMap((skill) =>
+      skill.entries.flatMap((entry) =>
+        entry.target === undefined ? [] : [{ path: entry.path, target: entry.target }],
+      ),
     );
-    const results = new Set((yield* removeAll(links)).values());
+
+  const removeOne = Effect.fnUntraced(function* (skill: SkillCatalog.ResolvedSkill) {
+    const results = new Set((yield* removeAll(linksTo([skill]))).values());
     const reason: SkillOutcomeReason | undefined = results.has("failed")
       ? "failed"
       : results.has("changed")
@@ -236,6 +259,150 @@ const make = Effect.gen(function* () {
         : undefined;
     return { wrote: results.has("removed"), blocked: [], reason } satisfies SkillChange;
   });
+
+  const skipped = (reason: SkillOutcomeReason): SkillChange => ({
+    wrote: false,
+    blocked: [],
+    reason,
+  });
+
+  /** Every group that reaches this skill's folder, in either scope: the folder's whole audience. */
+  const reaching = (
+    skill: SkillCatalog.ResolvedSkill,
+    all: ReadonlyArray<SkillCatalog.ResolvedSkill>,
+  ) => all.filter((other) => other.name === skill.name && other.home === skill.home);
+
+  const agentsWith = (skills: ReadonlyArray<SkillCatalog.ResolvedSkill>) =>
+    new Set(
+      skills.flatMap((skill) =>
+        skill.agents.filter((agent) => hasSkill(agent.state)).map((agent) => agent.instanceId),
+      ),
+    );
+
+  const moveOne = Effect.fnUntraced(function* (
+    skill: SkillCatalog.ResolvedSkill,
+    to: SkillScope,
+    cwd: string,
+    projectRoot: string | undefined,
+    all: ReadonlyArray<SkillCatalog.ResolvedSkill>,
+  ) {
+    if (skill.scope === to) return { wrote: false, blocked: [] } satisfies SkillChange;
+    if (!skill.own) return skipped("linked");
+    const folder = skill.standardFolders[to];
+    if (folder === undefined) return skipped("failed");
+    const destination = path.join(folder, skill.name);
+    // Whatever is under the name there, a skill or not, is never merged into or replaced.
+    if (all.some((other) => other.scope === to && other.name === skill.name)) {
+      return skipped("destinationTaken");
+    }
+
+    const audience = reaching(skill, all);
+    const had = agentsWith(audience);
+    const stale = linksTo(audience);
+    const moved = yield* moveFolder({ from: skill.home, to: destination, platform }).pipe(
+      Effect.provideContext(filesystemContext),
+      Effect.catchTags({ SkillMoveError: () => Effect.succeed("failed" as const) }),
+    );
+    if (moved === "taken") return skipped("destinationTaken");
+    if (moved === "inUse") return skipped("inUse");
+    if (moved === "failed") return skipped("failed");
+
+    // The folder is in its new place; the links that led to the old one lead nowhere now. They go
+    // before new ones are made, because a new link may need the same path.
+    yield* removeAll(stale);
+    const real = yield* fileSystem
+      .realPath(destination)
+      .pipe(Effect.orElseSucceed(() => destination));
+    const landed = (yield* catalog.resolve({
+      cwd,
+      skills: [{ scope: to, name: skill.name }],
+    })).find((item) => item.scope === to && item.home === real);
+    const reason = moved === "movedWithLeftover" ? ("failed" as const) : undefined;
+    if (landed === undefined) {
+      return {
+        wrote: true,
+        blocked: [],
+        reason: "failed",
+        touched: [...had],
+      } satisfies SkillChange;
+    }
+
+    // Every agent that used the skill keeps using it. One that reads the new scope's shared folder
+    // already does; any other gets a link in its own folder, by the same rules as turning it on.
+    const lacking = new Set(
+      landed.agents
+        .filter((agent) => had.has(agent.instanceId) && agent.state === "none")
+        .map((agent) => agent.instanceId),
+    );
+    const relinked =
+      lacking.size === 0
+        ? { wrote: false, blocked: [] as readonly Blocked[] }
+        : yield* enableOne(landed, lacking, projectRoot);
+    const settled = relinked.wrote
+      ? ((yield* catalog.resolve({ cwd, skills: [{ scope: to, name: skill.name }] })).find(
+          (item) => item.scope === to && item.home === real,
+        ) ?? landed)
+      : landed;
+    const has = agentsWith([settled]);
+    const unreached = new Set(relinked.blocked.map((item) => item.instanceId));
+    const touched = [...new Set([...had, ...has])];
+    return {
+      wrote: true,
+      blocked: relinked.blocked,
+      reason,
+      touched,
+      affected: touched.filter((id) => had.has(id) !== has.has(id) && !unreached.has(id)),
+    } satisfies SkillChange;
+  });
+
+  const deleteOne = Effect.fnUntraced(function* (
+    skill: SkillCatalog.ResolvedSkill,
+    all: ReadonlyArray<SkillCatalog.ResolvedSkill>,
+  ) {
+    if (!skill.own) return skipped("linked");
+    const audience = reaching(skill, all);
+    const had = [...agentsWith(audience)];
+    const failed = yield* deleteFolder(skill.home).pipe(
+      Effect.provideContext(filesystemContext),
+      Effect.as(false),
+      Effect.catchTags({ SkillMoveError: () => Effect.succeed(true) }),
+    );
+    // A delete that stopped before touching SKILL.md changed nothing an agent can see.
+    if (
+      failed &&
+      (yield* fileSystem
+        .exists(path.join(skill.home, "SKILL.md"))
+        .pipe(Effect.orElseSucceed(() => true)))
+    ) {
+      return skipped("failed");
+    }
+    const results = new Set((yield* removeAll(linksTo(audience))).values());
+    const reason: SkillOutcomeReason | undefined =
+      failed || results.has("failed") ? "failed" : results.has("changed") ? "changed" : undefined;
+    return {
+      wrote: true,
+      blocked: [],
+      reason,
+      affected: had,
+      touched: had,
+    } satisfies SkillChange;
+  });
+
+  /**
+   * Refreshes the skills the composer's `$` picker lists for agents whose skills changed: the
+   * project's own list when a project is open, else the agent's machine-wide one. A scan can take
+   * seconds, since some agents answer through their CLI, and the change is already on disk, so it
+   * runs in the background and a scan that fails changes nothing.
+   */
+  const refreshPickers = (cwd: string | undefined, instances: Iterable<ProviderInstanceId>) =>
+    Effect.forEach(
+      instances,
+      (instanceId) =>
+        cwd === undefined
+          ? providers.refreshInstance(instanceId)
+          : providers.refreshWorkspaceSnapshot({ instanceId, cwd, fresh: true }),
+      { discard: true },
+    ).pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
   /**
    * Looks every skill up as the folders hold it now, applies `change` to those that are still
@@ -246,15 +413,22 @@ const make = Effect.gen(function* () {
     readonly cwd: string | undefined;
     readonly skills: ReadonlyArray<SkillRef>;
     readonly agents: ReadonlySet<ProviderInstanceId>;
+    /** Skills to look up besides those asked for, such as the same names in the other scope. */
+    readonly alsoLookUp?: ReadonlyArray<{ readonly scope: SkillScope; readonly name: string }>;
     readonly change: (
       skill: SkillCatalog.ResolvedSkill,
       projectRoot: string | undefined,
+      /** Everything looked up, which includes the skills asked for. */
+      all: ReadonlyArray<SkillCatalog.ResolvedSkill>,
     ) => Effect.Effect<SkillChange>;
   }) =>
     writeLock.withPermits(1)(
       Effect.gen(function* () {
         if (input.cwd !== undefined) yield* requireProject(input.cwd);
-        const before = yield* catalog.resolve({ cwd: input.cwd, skills: input.skills });
+        const before = yield* catalog.resolve({
+          cwd: input.cwd,
+          skills: [...input.skills, ...(input.alsoLookUp ?? [])],
+        });
         const known = new Set((before[0]?.agents ?? []).map((agent) => agent.instanceId));
         if (known.size > 0 && [...input.agents].some((id) => !known.has(id))) {
           return yield* new SkillRequestError({ reason: "unknownAgent" });
@@ -274,36 +448,38 @@ const make = Effect.gen(function* () {
               const reason = candidates.length > 0 ? "changed" : "notFound";
               return { ref, found, change: { wrote: false, blocked: [], reason } as SkillChange };
             }
-            return { ref, found, change: yield* input.change(found, projectRoot) };
+            return { ref, found, change: yield* input.change(found, projectRoot, before) };
           }),
         );
 
         const after = changes.some((entry) => entry.change.wrote)
           ? yield* catalog.resolve({ cwd: input.cwd, skills: input.skills })
           : before;
-        return {
-          outcomes: changes.map(({ ref, found, change }): SkillOutcome => {
-            const now = after.find(
-              (skill) =>
-                skill.scope === ref.scope &&
-                skill.name === ref.name &&
-                skill.displayHome === ref.home,
-            );
-            const affected =
-              found === undefined
-                ? []
-                : found.agents
-                    .filter(
-                      (agent) =>
-                        !input.agents.has(agent.instanceId) &&
-                        hasSkill(agent.state) !==
-                          hasSkill(
-                            now?.agents.find((other) => other.instanceId === agent.instanceId)
-                              ?.state ?? "none",
-                          ),
-                    )
-                    .map((agent) => agent.instanceId);
-            return {
+        const results = changes.map(({ ref, found, change }) => {
+          const now = after.find(
+            (skill) =>
+              skill.scope === ref.scope &&
+              skill.name === ref.name &&
+              skill.displayHome === ref.home,
+          );
+          // Agents whose use of the skill flipped, whether they were asked for or not.
+          const flipped =
+            found === undefined
+              ? []
+              : found.agents
+                  .filter(
+                    (agent) =>
+                      hasSkill(agent.state) !==
+                      hasSkill(
+                        now?.agents.find((other) => other.instanceId === agent.instanceId)?.state ??
+                          "none",
+                      ),
+                  )
+                  .map((agent) => agent.instanceId);
+          return {
+            // Only what this request wrote counts; a change someone else made meanwhile doesn't.
+            touched: change.wrote ? (change.touched ?? flipped) : [],
+            outcome: {
               skill: ref,
               status: change.wrote
                 ? "changed"
@@ -315,10 +491,14 @@ const make = Effect.gen(function* () {
                 (item, index, all) =>
                   all.findIndex((other) => other.instanceId === item.instanceId) === index,
               ),
-              affected,
-            };
-          }),
-        } satisfies SkillBatchResult;
+              affected: change.affected ?? flipped.filter((id) => !input.agents.has(id)),
+            } satisfies SkillOutcome,
+          };
+        });
+
+        const touched = new Set(results.flatMap((result) => result.touched));
+        if (touched.size > 0) yield* refreshPickers(input.cwd, touched);
+        return { outcomes: results.map((result) => result.outcome) } satisfies SkillBatchResult;
       }),
     );
 
@@ -347,6 +527,28 @@ const make = Effect.gen(function* () {
         skills: input.skills,
         agents: new Set(),
         change: (skill) => removeOne(skill),
+      });
+    }),
+    move: Effect.fn("SkillManager.move")(function* (input) {
+      return yield* run({
+        cwd: input.cwd,
+        skills: input.skills,
+        agents: new Set(),
+        alsoLookUp: input.skills.map((ref) => ({ scope: input.to, name: ref.name })),
+        change: (skill, projectRoot, all) => moveOne(skill, input.to, input.cwd, projectRoot, all),
+      });
+    }),
+    delete: Effect.fn("SkillManager.delete")(function* (input) {
+      return yield* run({
+        cwd: input.cwd,
+        skills: input.skills,
+        agents: new Set(),
+        // Links from the other scope lead to the folder too, and would be left dangling.
+        alsoLookUp: input.skills.map((ref) => ({
+          scope: ref.scope === "project" ? ("global" as const) : ("project" as const),
+          name: ref.name,
+        })),
+        change: (skill, _projectRoot, all) => deleteOne(skill, all),
       });
     }),
   });

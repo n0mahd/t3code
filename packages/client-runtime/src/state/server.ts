@@ -1190,6 +1190,18 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:remove-skills",
       tag: WS_METHODS.serverRemoveSkills,
     }),
+    moveSkills: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:move-skills",
+      tag: WS_METHODS.serverMoveSkills,
+    }),
+    deleteSkills: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:delete-skills",
+      tag: WS_METHODS.serverDeleteSkills,
+    }),
+    skillsTracked: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:skills-tracked",
+      tag: WS_METHODS.serverSkillsTracked,
+    }),
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,

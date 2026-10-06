@@ -54,6 +54,9 @@ a project skill, both show up in `git status` and the confirmation says you can 
 Only a skill kept in an agent's own skill folder can be moved or deleted. One that is only linked
 there, such as a skill from a synced folder, stays where it is.
 
+Agents running in T3 Code can list skills and turn them on or off for agents too; they can't
+remove or delete them.
+
 ## Needs attention
 
 **Needs attention** filters the list to skills that need a look. A skill is on it when:

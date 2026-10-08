@@ -88,6 +88,7 @@ import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as SkillCatalog from "./skills/SkillCatalog.ts";
+import { RegisteredProjects } from "./skills/SkillLibrary.ts";
 import * as SkillManager from "./skills/SkillManager.ts";
 import * as SkillTracking from "./skills/SkillTracking.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
@@ -545,6 +546,22 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
   }),
 );
 
+// The skill list finds the projects a library skill is used in among the registered ones.
+const layerSkillCatalog = SkillCatalog.layer.pipe(
+  Layer.provide(
+    Layer.effect(
+      RegisteredProjects,
+      Effect.gen(function* () {
+        const store = yield* ProjectStore.ProjectStoreV2;
+        return store.list().pipe(
+          Effect.map((rows) => rows.map((row) => row.workspaceRoot)),
+          Effect.orElseSucceed((): string[] => []),
+        );
+      }),
+    ).pipe(Layer.provide(ProjectStore.layer)),
+  ),
+);
+
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   // Asks T3 Connect to deliver webhooks it held while this environment was offline.
@@ -586,7 +603,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 ).pipe(
   // Core Services
   // It checks a project's folder against ProjectService, which the next layer provides.
-  Layer.provideMerge(SkillCatalog.layer),
+  Layer.provideMerge(layerSkillCatalog),
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),

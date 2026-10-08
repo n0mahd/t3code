@@ -73,7 +73,7 @@ interface FoundLock {
 type ReadLock = { readonly _tag: "Missing" } | { readonly _tag: "Unusable" } | FoundLock;
 
 /** The global lock's path, which follows `XDG_STATE_HOME` as the CLI does. */
-export const globalLockPath = (
+const globalLockPath = (
   path: Path.Path,
   input: { readonly environment: NodeJS.ProcessEnv; readonly home: string },
 ) => {

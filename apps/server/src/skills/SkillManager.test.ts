@@ -31,7 +31,9 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
+import { RegisteredProjects } from "./SkillLibrary.ts";
 import * as SkillManager from "./SkillManager.ts";
 import { planEnable } from "./SkillManager.ts";
 
@@ -125,6 +127,8 @@ const withManager = <A, E, R>(
     const projects = Layer.mock(ProjectService.ProjectService)({
       getByWorkspaceRoot: (root) =>
         Effect.succeed(registered.includes(root) ? Option.some(makeProject(root)) : Option.none()),
+      listShells: () =>
+        Effect.succeed(registered.map((workspaceRoot) => ({ workspaceRoot }) as never)),
     });
     const catalog = SkillCatalog.layer.pipe(
       Layer.provide(
@@ -151,12 +155,14 @@ const withManager = <A, E, R>(
           Layer.provide(projects),
           Layer.provide(registry),
           Layer.provide(instances),
+          Layer.provide(VcsProcess.layer),
         ),
       ),
     );
   }).pipe(
     Effect.provideService(HostProcess.Environment, { HOME: home }),
     Effect.provideService(HostProcess.HomeDirectory, home),
+    Effect.provideService(RegisteredProjects, Effect.succeed(registered)),
   );
 
 const refOf = (skills: readonly SkillSummary[], scope: SkillScope, name: string): SkillRef => {
@@ -656,37 +662,6 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillManager", (it)
                 const error = yield* manager.place(input).pipe(Effect.flip);
                 expect(error).toEqual(new SkillRequestError({ reason: "projectNotRegistered" }));
               }
-              expect(yield* fs.exists(path.join(project, ".agents/skills/verify/SKILL.md"))).toBe(
-                true,
-              );
-            }),
-          );
-        }),
-    );
-
-    it.effect.skipIf(!symlinksSupported)(
-      "leaves a skill where it is when asked to use it in only some projects",
-      () =>
-        Effect.gen(function* () {
-          const { fs, path, home, project } = yield* makeMachine;
-          yield* withManager(home, [project], ({ manager, catalog }) =>
-            Effect.gen(function* () {
-              const verify = refOf(
-                (yield* catalog.list({ cwd: project })).skills,
-                "project",
-                "verify",
-              );
-
-              const result = yield* manager.place({
-                cwd: project,
-                skills: [verify],
-                to: { kind: "projects", cwds: [project] },
-              });
-
-              expect(result.outcomes).toEqual([
-                { skill: verify, status: "skipped", reason: "failed", blocked: [], affected: [] },
-              ]);
-              yield* encodeResult(result);
               expect(yield* fs.exists(path.join(project, ".agents/skills/verify/SKILL.md"))).toBe(
                 true,
               );

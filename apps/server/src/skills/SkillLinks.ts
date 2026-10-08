@@ -149,6 +149,11 @@ export const createLink = Effect.fn("SkillLinks.createLink")(function* (input: {
   readonly platform: NodeJS.Platform;
   /** The project's real folder, when a link may be written relative to it. */
   readonly projectRoot?: string | undefined;
+  /**
+   * What the link says instead of the home, for a link that goes through another link on its way
+   * there, such as a project's link to the library. It has to lead to the home all the same.
+   */
+  readonly target?: string | undefined;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -168,7 +173,7 @@ export const createLink = Effect.fn("SkillLinks.createLink")(function* (input: {
         (cause) => new SkillLinkError({ operation: "realPath", path: parent, cause }),
       ),
     );
-  const spec = linkSpec({
+  const computed = linkSpec({
     platform: input.platform,
     scope: input.scope,
     home: input.home,
@@ -177,6 +182,7 @@ export const createLink = Effect.fn("SkillLinks.createLink")(function* (input: {
         ? path.relative(realParent, input.home)
         : undefined,
   });
+  const spec = input.target === undefined ? computed : { ...computed, target: input.target };
 
   const outcome = yield* Effect.tryPromise({
     try: () => NodeFSP.symlink(spec.target, input.link, spec.type),

@@ -1,4 +1,4 @@
-import type { ServerProvider } from "@t3tools/contracts";
+import type { EditorId, ServerProvider } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { BookOpenIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,6 +13,13 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { Skeleton } from "../ui/skeleton";
+import { InstructionDetail } from "./InstructionDetail";
+import { InstructionSection } from "./InstructionList";
+import {
+  findInstructionRow,
+  instructionItems,
+  instructionUnreadableNote,
+} from "./InstructionsSettings.logic";
 import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
 import { SkillDetail } from "./SkillDetail";
 import { SkillSection, StandardInfo } from "./SkillList";
@@ -20,6 +27,7 @@ import type { PlaceOptions } from "./SkillUseIn";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { useInstructions } from "./useInstructions";
 import {
   attention,
   describeResult,
@@ -38,6 +46,7 @@ import {
 } from "./SkillsSettings.logic";
 
 const NO_PROVIDERS: readonly ServerProvider[] = [];
+const NO_EDITORS: readonly EditorId[] = [];
 /** A load that finishes sooner than this shows no placeholder at all. */
 const SKELETON_DELAY_MS = 150;
 const LOAD_ERROR = "Couldn't read this environment's skill folders.";
@@ -45,7 +54,7 @@ const CHANGE_ERROR = "Couldn't change the skills here.";
 
 type PickedProject = { id: string; label: string; cwd: string };
 type Loaded = ReturnType<typeof ingestSkills>;
-type View = { kind: "list" } | { kind: "skill"; id: string };
+type View = { kind: "list" } | { kind: "skill"; id: string } | { kind: "instruction"; id: string };
 
 export function SkillsSettings() {
   const { environment: scopedEnvironment, scope } = useSettingsScope();
@@ -127,7 +136,7 @@ function EnvironmentSkills({
   project: PickedProject | null;
   /** Rows have checkboxes, and a bar at the bottom acts on the ticked ones. */
   selecting: boolean;
-  /** True while a skill is open instead of the list. */
+  /** True while a skill or an instruction file is open instead of the list. */
   onSubpageChange: (open: boolean) => void;
 }) {
   const listSkills = useAtomCommand(serverEnvironment.listSkills, { reportFailure: false });
@@ -152,6 +161,7 @@ function EnvironmentSkills({
   const allProjects = useProjects();
   const connected = environment.connection.phase === "connected";
   const providers = environment.serverConfig?.providers ?? NO_PROVIDERS;
+  const availableEditors = environment.serverConfig?.availableEditors ?? NO_EDITORS;
   const cwd = project?.cwd ?? null;
 
   const [data, setData] = useState<Loaded | null>(null);
@@ -166,9 +176,18 @@ function EnvironmentSkills({
   const [confirming, setConfirming] = useState<SkillPlan | null>(null);
   /** A change is being made and the list read again; nothing else can start meanwhile. */
   const [busy, setBusy] = useState(false);
-  /** The controls that change skills are off while a change runs or the grant is missing. */
-  const locked = busy || !(canEnable && canDisable && canPlace && canDelete);
   const [notice, setNotice] = useState<string | null>(null);
+  const instructions = useInstructions({
+    environmentId: environment.environmentId,
+    connected,
+    cwd,
+    providers,
+    onNotice: setNotice,
+  });
+  /** Skills and instructions share one change at a time. */
+  const anyBusy = busy || instructions.busy;
+  /** The controls that change skills are off while a change runs or the grant is missing. */
+  const locked = anyBusy || !(canEnable && canDisable && canPlace && canDelete);
   const rootRef = useRef<HTMLDivElement>(null);
   const mounted = useRef(true);
   useEffect(() => {
@@ -183,6 +202,7 @@ function EnvironmentSkills({
     rootRef.current?.closest("[data-settings-page-scroll]")?.scrollTo({ top: 0 });
   }, []);
   const openSkill = useCallback((id: string) => show({ kind: "skill", id }), [show]);
+  const openInstruction = useCallback((id: string) => show({ kind: "instruction", id }), [show]);
 
   // The server reads a fixed list of folders each time; no agent is asked to rescan.
   const load = useCallback(async () => {
@@ -213,6 +233,7 @@ function EnvironmentSkills({
   const refresh = () => {
     setRefreshing(true);
     setLoadError(null);
+    void instructions.reload();
     void load()
       .then((loaded) => {
         if (!mounted.current) return;
@@ -278,11 +299,26 @@ function EnvironmentSkills({
   );
   const visibleProject = useMemo(() => narrow(projectSkills), [narrow, projectSkills]);
   const visibleGlobal = useMemo(() => narrow(globalSkills), [narrow, globalSkills]);
+  const attentionTotal = attentionIds.size + instructions.attentionCount;
+  const instructionData = instructions.data;
+  const instructionItemsShown = useMemo(
+    () =>
+      instructionData
+        ? instructionItems(instructionData, instructions.ctx, { needle, onlyAttention })
+        : [],
+    [instructionData, instructions.ctx, needle, onlyAttention],
+  );
 
   const current = view.kind === "skill" ? skills?.find((skill) => skill.id === view.id) : undefined;
   // A view whose skill is gone (a refresh dropped it) falls back to the list.
   const skillView = current && data ? { skill: current, data } : null;
-  const showList = !skillView;
+  // Likewise for an instruction file that is gone.
+  const instructionView = useMemo(() => {
+    if (view.kind !== "instruction" || !instructionData) return null;
+    const row = findInstructionRow(instructionData, instructions.ctx, view.id);
+    return row ? { row, data: instructionData } : null;
+  }, [view, instructionData, instructions.ctx]);
+  const showList = !skillView && !instructionView;
   useEffect(() => {
     onSubpageChange(!showList);
     return () => onSubpageChange(false);
@@ -456,13 +492,29 @@ function EnvironmentSkills({
           onReload={() => setDetailReload((count) => count + 1)}
         />
       )}
+      {instructionView && (
+        <InstructionDetail
+          key={`${instructionView.row.id}:${detailReload}`}
+          row={instructionView.row}
+          ctx={instructions.ctx}
+          data={instructionView.data}
+          environmentId={environment.environmentId}
+          projectRoot={cwd}
+          availableEditors={availableEditors}
+          busy={anyBusy}
+          locked={!instructions.canChange}
+          onBack={toList}
+          onPlan={instructions.runPlan}
+          onSaved={instructions.refreshQuietly}
+        />
+      )}
       {showList && (
         <>
           <div className="flex flex-wrap items-center gap-2">
             <div className="w-full min-w-0 sm:flex-1">
               <Input
-                aria-label="Search skills"
-                placeholder="Search skills…"
+                aria-label="Search skills and instructions"
+                placeholder="Search skills and instructions"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
@@ -475,7 +527,7 @@ function EnvironmentSkills({
                 aria-pressed={onlyAttention}
                 onClick={() => setOnlyAttention((value) => !value)}
               >
-                Needs attention ({attentionIds.size})
+                Needs attention ({attentionTotal})
               </Button>
             )}
             <Button
@@ -495,6 +547,37 @@ function EnvironmentSkills({
             </p>
           )}
           {showSkeleton && <SkillsSkeleton withProject={project !== null} />}
+
+          {instructions.loadError && (
+            <p
+              role="alert"
+              className="flex flex-wrap items-center gap-2 text-sm text-warning-foreground"
+            >
+              {instructions.loadError}
+              <Button size="xs" variant="outline" onClick={() => void instructions.reload()}>
+                Try again
+              </Button>
+            </p>
+          )}
+          {instructionData && instructionData.unreadable.length > 0 && (
+            <p role="status" className="text-sm text-warning-foreground">
+              {instructionUnreadableNote(instructionData.unreadable)}
+            </p>
+          )}
+          {/* Rows are ticked for skills, so the files wait until Select is done. */}
+          {instructionData && instructionItemsShown.length > 0 && !selecting && (
+            <InstructionSection
+              items={instructionItemsShown}
+              data={instructionData}
+              ctx={instructions.ctx}
+              showFix={onlyAttention}
+              busy={anyBusy}
+              locked={!instructions.canChange}
+              onOpen={openInstruction}
+              onPlan={instructions.runPlan}
+              onClaudeChange={instructions.chooseClaude}
+            />
+          )}
 
           {skills !== null && (
             <>
@@ -555,6 +638,13 @@ function EnvironmentSkills({
         onCancel={() => setConfirming(null)}
         onConfirm={() => confirming && void apply(confirming)}
       />
+      <ConfirmPlan
+        plan={instructions.confirming}
+        onCancel={instructions.cancelConfirm}
+        onConfirm={() =>
+          instructions.confirming && void instructions.apply(instructions.confirming)
+        }
+      />
     </div>
   );
 }
@@ -563,7 +653,7 @@ function EnvironmentSkills({
 function SkillsSkeleton({ withProject }: { withProject: boolean }) {
   return (
     <div aria-hidden className="space-y-4">
-      {(withProject ? ["This project", "Global"] : ["Global"]).map((title) => (
+      {["Instructions", ...(withProject ? ["This project", "Global"] : ["Global"])].map((title) => (
         <section key={title} className="space-y-2.5">
           <h2 className="flex min-h-7 items-center px-3 text-sm font-normal text-foreground/70 sm:px-4">
             {title}

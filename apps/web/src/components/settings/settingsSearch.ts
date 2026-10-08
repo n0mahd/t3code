@@ -623,7 +623,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Skills",
     to: "/settings/skills",
     searchTerms: [
-      "agent skills SKILL.md instructions folder link symlink global project conflict needs attention codex claude cursor grok opencode antigravity pi",
+      "agent skills SKILL.md instructions AGENTS.md CLAUDE.md CLAUDE.local.md memory rules folder link symlink global project conflict needs attention codex claude cursor grok opencode antigravity pi",
     ],
   },
   {

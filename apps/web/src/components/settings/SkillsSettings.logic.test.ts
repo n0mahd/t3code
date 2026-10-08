@@ -33,6 +33,7 @@ import {
   projectsBadge,
   rowSwitchOn,
   scriptFiles,
+  sendInBatches,
   skillBody,
   skillsEnvironment,
   skillsToCheckWithGit,
@@ -1240,5 +1241,49 @@ describe("telling that a moved skill lost its source", () => {
     expect(
       describeResult(plan!.change, [outcome({ name: "a" }), outcome({ name: "b" })], ctx),
     ).toBe("Made 2 skills Global.");
+  });
+});
+
+describe("a change of more than 200 skills", () => {
+  const many = (count: number) => Array.from({ length: count }, (_, index) => ref(`s${index}`));
+
+  it("goes to the server in batches of 200, in order, and comes back as one result", async () => {
+    const sizes: number[] = [];
+    const result = await sendInBatches(many(450), async (batch) => {
+      sizes.push(batch.length);
+      return batch.map((entry) => outcome({ name: entry.name }));
+    });
+
+    expect(sizes).toEqual([200, 200, 50]);
+    expect(result.failed).toBe(false);
+    expect(result.outcomes.map((entry) => entry.skill.name)).toEqual(
+      many(450).map((entry) => entry.name),
+    );
+  });
+
+  it("sends exactly 200 as one batch, 201 as two, and nothing for no skills", async () => {
+    const sizes: number[] = [];
+    const send = async (batch: readonly { name: string }[]) => {
+      sizes.push(batch.length);
+      return batch.map((entry) => outcome({ name: entry.name }));
+    };
+
+    await sendInBatches(many(200), send);
+    await sendInBatches(many(201), send);
+    expect((await sendInBatches([], send)).outcomes).toEqual([]);
+
+    expect(sizes).toEqual([200, 200, 1]);
+  });
+
+  it("stops at a batch the server didn't answer, and keeps what was done before it", async () => {
+    let calls = 0;
+    const result = await sendInBatches(many(450), async (batch) => {
+      calls += 1;
+      return calls === 2 ? null : batch.map((entry) => outcome({ name: entry.name }));
+    });
+
+    expect(calls).toBe(2);
+    expect(result.failed).toBe(true);
+    expect(result.outcomes).toHaveLength(200);
   });
 });

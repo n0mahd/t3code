@@ -26,6 +26,7 @@ import {
   ingestSkills,
   installedAgents,
   matchesQuery,
+  sendInBatches,
   skillsEnvironment,
   skillsToCheckWithGit,
   unreadableNote,
@@ -300,27 +301,31 @@ function EnvironmentSkills({
     const base = { environmentId: environment.environmentId } as const;
     const scoped = cwd ? { cwd } : {};
     try {
-      const result =
-        change.kind === "enable"
-          ? await enableSkills({
-              ...base,
-              input: { ...scoped, skills: change.skills, agents: change.agents },
-            })
-          : change.kind === "disable"
-            ? await disableSkills({
+      // The server takes a few hundred skills at a time, so a big change goes in batches.
+      const { outcomes, failed } = await sendInBatches(change.skills, async (skills) => {
+        const result =
+          change.kind === "enable"
+            ? await enableSkills({
                 ...base,
-                input: { ...scoped, skills: change.skills, agents: change.agents },
+                input: { ...scoped, skills, agents: change.agents },
               })
-            : change.kind === "place"
-              ? await placeSkills({
+            : change.kind === "disable"
+              ? await disableSkills({
                   ...base,
-                  input: { ...scoped, skills: change.skills, to: change.to },
+                  input: { ...scoped, skills, agents: change.agents },
                 })
-              : await deleteSkills({ ...base, input: { ...scoped, skills: change.skills } });
+              : change.kind === "place"
+                ? await placeSkills({ ...base, input: { ...scoped, skills, to: change.to } })
+                : await deleteSkills({ ...base, input: { ...scoped, skills } });
+        return result?._tag === "Success" ? result.value.outcomes : null;
+      });
+      // What was done before a batch failed is still told.
       setNotice(
-        result?._tag === "Success"
-          ? describeResult(change, result.value.outcomes, ctx)
-          : CHANGE_ERROR,
+        !failed
+          ? describeResult(change, outcomes, ctx)
+          : outcomes.length === 0
+            ? CHANGE_ERROR
+            : `${describeResult(change, outcomes, ctx)} ${CHANGE_ERROR}`,
       );
     } catch {
       setNotice(CHANGE_ERROR);

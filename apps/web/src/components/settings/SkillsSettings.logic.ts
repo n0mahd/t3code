@@ -836,6 +836,30 @@ export function describeResult(
   return [lead, droppedText, ...shown].filter((part) => part !== "").join(" ");
 }
 
+// -- Big changes ------------------------------------------------------------------------------
+
+/** The server takes at most this many skills in one change. */
+const MAX_SKILLS_PER_CALL = 200;
+
+/**
+ * Sends a change in batches the server accepts, one after the other, and puts the outcomes
+ * together in order. A batch the server answered nothing for stops the rest, since the page reads
+ * the folders again afterwards: what was done stays done, and `failed` says the change is not
+ * complete.
+ */
+export async function sendInBatches(
+  skills: readonly SkillRef[],
+  send: (batch: readonly SkillRef[]) => Promise<readonly SkillOutcome[] | null>,
+) {
+  const outcomes: SkillOutcome[] = [];
+  for (let start = 0; start < skills.length; start += MAX_SKILLS_PER_CALL) {
+    const batch = await send(skills.slice(start, start + MAX_SKILLS_PER_CALL));
+    if (batch === null) return { outcomes, failed: true };
+    outcomes.push(...batch);
+  }
+  return { outcomes, failed: false };
+}
+
 // -- Search -----------------------------------------------------------------------------------
 
 export const matchesQuery = (skill: Skill, needle: string) =>

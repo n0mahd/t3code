@@ -185,10 +185,10 @@ function planAdopt(entry: InstructionEntry, name: string): InstructionPlan {
   return {
     change: { kind: "adopt", id: entry.id, agent: name },
     confirmation: {
-      title: `Use Global for ${name}?`,
+      title: `Use your Global instructions for ${name}?`,
       body: same
-        ? `${name}'s instructions match Global, so ${name} just starts using that file.`
-        : `${name}'s instructions are added to Global. ${name} then reads that file instead.`,
+        ? `${name}'s instructions match your Global instructions, so ${name} just starts using them.`
+        : `${name}'s instructions are added to your Global instructions. ${name} then reads them instead.`,
       notes: [],
       confirm: "Use Global instead",
       destructive: false,
@@ -210,13 +210,13 @@ function planShare(entry: InstructionEntry): InstructionPlan {
   };
 }
 
-/** Taking Global away from the agents that read it. The file stays. */
+/** Taking the Global file away from the agents that read it. The file stays. */
 function planRemove(entry: InstructionEntry, agents: readonly SkillAgent[]): InstructionPlan {
   return {
     change: { kind: "disable", id: entry.id, agents: agents.map((agent) => agent.instanceId) },
     confirmation: {
-      title: "Remove Global from your agents?",
-      body: `${joinNames(agents.map((agent) => agent.displayName))} will stop using Global. The file isn't deleted.`,
+      title: "Stop using your Global instructions?",
+      body: `${joinNames(agents.map((agent) => agent.displayName))} will stop reading them. The file isn't deleted.`,
       notes: [],
       confirm: "Remove",
       destructive: true,
@@ -934,7 +934,7 @@ export function describeChange(change: InstructionChange, ctx: SkillsContext) {
       return `${names} ${many ? "follow" : "follows"} ${many ? "their" : "its"} default again.`;
     }
     case "adopt":
-      return `${change.agent} now uses Global.`;
+      return `${change.agent} now uses your Global instructions.`;
     case "share":
       return "CLAUDE.md is now AGENTS.md.";
     case "delete":

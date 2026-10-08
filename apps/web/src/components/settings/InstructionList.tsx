@@ -194,24 +194,25 @@ const InstructionRowView = memo(function InstructionRowView({
         <Chevron open={open} className={cn(fix && "order-2 max-sm:ml-auto sm:order-3")} />
       </div>
       {open && (
-        <div id={panelId} className="space-y-2.5 pr-3 pb-3 pl-3 sm:pr-4 sm:pl-4">
+        <div
+          id={panelId}
+          className="flex flex-wrap items-center gap-2 pr-3 pb-3 pl-3 sm:pr-4 sm:pl-4"
+        >
           {chips.length === 0 ? (
             <p className="text-xs text-muted-foreground">No agents are installed.</p>
           ) : (
-            <div className="flex flex-wrap gap-2">
-              {chips.map((chip) => (
-                <InstructionAgentChip
-                  key={chip.agent.instanceId}
-                  chip={chip}
-                  agents={ctx.installed}
-                  busy={busy}
-                  locked={locked}
-                  onPlan={onPlan}
-                />
-              ))}
-            </div>
+            chips.map((chip) => (
+              <InstructionAgentChip
+                key={chip.agent.instanceId}
+                chip={chip}
+                agents={ctx.installed}
+                busy={busy}
+                locked={locked}
+                onPlan={onPlan}
+              />
+            ))
           )}
-          <div className="flex justify-end">
+          <div className="ml-auto flex gap-2">
             <Button size="xs" variant="outline" onClick={() => onOpen(row.id)}>
               Edit
             </Button>

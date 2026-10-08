@@ -484,8 +484,8 @@ describe("what needs attention", () => {
     expect(row!.attention!.fix!.plan).toEqual({
       change: { kind: "adopt", id: "global:agentOwn:codex", agent: "Codex" },
       confirmation: {
-        title: "Use Global for Codex?",
-        body: "Codex's instructions are added to Global. Codex then reads that file instead.",
+        title: "Use your Global instructions for Codex?",
+        body: "Codex's instructions are added to your Global instructions. Codex then reads them instead.",
         notes: [],
         confirm: "Use Global instead",
         destructive: false,
@@ -671,7 +671,7 @@ describe("the agents under Used by", () => {
     expect(chip.locked).toBe(false);
     expect(chip.plan).toMatchObject({
       change: { kind: "adopt", id: "global:agentOwn:codex", agent: "Codex" },
-      confirmation: { title: "Use Global for Codex?" },
+      confirmation: { title: "Use your Global instructions for Codex?" },
     });
     // With no file of its own to find, there is nothing to switch.
     expect(chipsFor(shared).find((item) => item.agent.instanceId === "codex")).toMatchObject({
@@ -764,8 +764,8 @@ describe("the ⋯ menu", () => {
     expect(actionsFor([shared], 0).removeFromAgents).toEqual({
       change: { kind: "disable", id: "global:shared", agents: ["claudeAgent", "codex"] },
       confirmation: {
-        title: "Remove Global from your agents?",
-        body: "Claude and Codex will stop using Global. The file isn't deleted.",
+        title: "Stop using your Global instructions?",
+        body: "Claude and Codex will stop reading them. The file isn't deleted.",
         notes: [],
         confirm: "Remove",
         destructive: true,
@@ -789,7 +789,7 @@ describe("the ⋯ menu", () => {
     expect(actionsFor([own], 0).useGlobal).toMatchObject({
       change: { kind: "adopt", agent: "Codex" },
       confirmation: {
-        body: "Codex's instructions match Global, so Codex just starts using that file.",
+        body: "Codex's instructions match your Global instructions, so Codex just starts using them.",
       },
     });
   });
@@ -969,7 +969,7 @@ describe("saying what happened", () => {
       "Claude follows its default again.",
     );
     expect(describeChange({ kind: "adopt", id: "x", agent: "Codex" }, ctx)).toBe(
-      "Codex now uses Global.",
+      "Codex now uses your Global instructions.",
     );
     expect(describeChange({ kind: "share", id: "x", project: true }, ctx)).toBe(
       "CLAUDE.md is now AGENTS.md.",

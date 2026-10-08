@@ -250,13 +250,9 @@ export function switchBlocker(skill: Skill, agent: SkillAgent) {
 export const rowSwitchOn = (skill: Skill, ctx: SkillsContext) =>
   ctx.installed.some((agent) => hasAccess(skill, agent));
 
-/**
- * A section's or group's switch is on when every skill in it is on for every agent that can be
- * switched. Agents T3 Code can't switch are left out, since the switch could never reach them.
- */
+/** A section's or group's switch is on when every row switch in it is on. */
 export const listSwitchOn = (skills: readonly Skill[], ctx: SkillsContext) =>
-  skills.length > 0 &&
-  skills.every((skill) => switchableAgents(skill, ctx).every((agent) => hasAccess(skill, agent)));
+  skills.length > 0 && skills.every((skill) => rowSwitchOn(skill, ctx));
 
 /** Turning one agent on for one skill, or off. Off asks first when other agents lose it too. */
 export function planToggle(skill: Skill, agent: SkillAgent, ctx: SkillsContext) {
@@ -325,7 +321,10 @@ export const planRowSwitch = (skill: Skill, ctx: SkillsContext) =>
     ? planTurnOffAll([skill], ctx, { ask: false })
     : planTurnOnAll([skill], ctx);
 
-/** What a section's or group's switch does. Turning off many skills asks first. */
+/**
+ * What a section's or group's switch does. On turns every skill on for every agent, filling in
+ * agents that were off on rows already on; off asks first.
+ */
 export const planListSwitch = (skills: readonly Skill[], ctx: SkillsContext) =>
   listSwitchOn(skills, ctx)
     ? planTurnOffAll(skills, ctx, { ask: true })

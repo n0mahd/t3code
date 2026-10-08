@@ -574,18 +574,13 @@ describe("one switch for every agent", () => {
     expect(planTurnOnAll([stuck], ctx)).toBeNull();
   });
 
-  it("is a section's switch only when every skill is on for every agent that can be switched", () => {
+  it("is a section's switch exactly when every row switch in it is on", () => {
     expect(listSwitchOn([on("a"), on("b")], ctx)).toBe(true);
-    expect(listSwitchOn([on("a"), some("b")], ctx)).toBe(false);
+    // A row on for only some agents has its switch on, so the section's switch follows.
+    expect(listSwitchOn([on("a"), some("b")], ctx)).toBe(true);
     expect(listSwitchOn([on("a"), off("b")], ctx)).toBe(false);
     expect(listSwitchOn([], ctx)).toBe(false);
-    // The agent T3 Code can't switch is left out of the question.
-    const withoutCursor = reached("c", {
-      claudeAgent: { state: "link", folder: "~/.claude/skills" },
-      codex: { state: "direct", folder: "~/.agents/skills" },
-      cursor: { state: "none", folder: "~/.cursor/skills", fixed: true },
-    });
-    expect(listSwitchOn([withoutCursor], ctx)).toBe(true);
+    expect(listSwitchOn([on("a")], { installed: [] })).toBe(false);
   });
 
   it("turns a whole section on for all agents without asking", () => {
@@ -596,6 +591,21 @@ describe("one switch for every agent", () => {
       agents: ["claudeAgent", "codex", "cursor"],
     });
     expect(plan?.confirmation).toBeUndefined();
+  });
+
+  it("fills in the agents that are off on rows that are already on when turning a section on", () => {
+    const plan = planListSwitch([some("a"), off("b")], ctx);
+    expect(plan?.change).toEqual({
+      kind: "enable",
+      skills: [ref("a"), ref("b")],
+      agents: ["claudeAgent", "codex", "cursor"],
+    });
+  });
+
+  it("turns a section off for every agent when its rows are all on, even for only some agents", () => {
+    const plan = planListSwitch([on("a"), some("b")], ctx);
+    expect(plan?.change).toMatchObject({ kind: "disable", skills: [ref("a"), ref("b")] });
+    expect(plan?.confirmation?.title).toBe("Turn off 2 skills for every agent?");
   });
 
   it("asks before turning a whole section off, and says what stays on", () => {

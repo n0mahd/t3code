@@ -63,51 +63,6 @@ export const linkLeadsTo = (
   entry: string,
 ) => path.resolve(path.dirname(link.path), link.target) === entry;
 
-/**
- * The projects, among `roots`, whose shared skill folder has a link to each library entry. One
- * folder is read per project, and only when there are entries. `entries` maps a skill's name to
- * its library entry's path.
- */
-export const projectsUsing = Effect.fn("SkillLibrary.projectsUsing")(function* (input: {
-  readonly roots: ReadonlyArray<string>;
-  readonly entries: ReadonlyMap<string, string>;
-}) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const used = new Map<string, string[]>();
-  if (input.entries.size === 0) return used;
-  const found = yield* Effect.forEach(
-    input.roots,
-    (root) =>
-      Effect.gen(function* () {
-        const folder = path.join(root, STANDARD_SKILL_FOLDER);
-        const names = yield* fileSystem
-          .readDirectory(folder)
-          .pipe(Effect.orElseSucceed((): string[] => []));
-        const linked: string[] = [];
-        for (const name of names) {
-          const entry = input.entries.get(name);
-          if (entry === undefined) continue;
-          const linkPath = path.join(folder, name);
-          const target = yield* fileSystem.readLink(linkPath).pipe(
-            Effect.map((value): string | undefined => value),
-            Effect.orElseSucceed(() => undefined),
-          );
-          if (target !== undefined && linkLeadsTo(path, { path: linkPath, target }, entry)) {
-            linked.push(name);
-          }
-        }
-        return { root, linked };
-      }),
-    { concurrency: 8 },
-  );
-  // In the order the projects were given, whichever was read first.
-  for (const { root, linked } of found) {
-    for (const name of linked) used.set(name, [...(used.get(name) ?? []), root]);
-  }
-  return used;
-});
-
 /** A link in one project's skill folder that leads to a library entry. */
 export interface LibraryLink {
   readonly project: string;
@@ -118,28 +73,63 @@ export interface LibraryLink {
   readonly folder: string;
 }
 
+/**
+ * Every link, in any agent's project folder in these projects, that leads to a library entry,
+ * for each skill in `entries` (its name, then its library entry's path). A folder is read once
+ * per project whatever the number of skills, and only a name that is a library skill is looked at
+ * further. The links of a skill come in the order of the projects, then of the folders.
+ */
+export const libraryLinksIn = Effect.fn("SkillLibrary.libraryLinksIn")(function* (input: {
+  readonly roots: ReadonlyArray<string>;
+  readonly entries: ReadonlyMap<string, string>;
+}) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const found = new Map<string, LibraryLink[]>();
+  if (input.entries.size === 0) return found;
+  const perProject = yield* Effect.forEach(
+    input.roots,
+    (project) =>
+      Effect.gen(function* () {
+        const links: Array<readonly [string, LibraryLink]> = [];
+        for (const folder of PROJECT_SKILL_FOLDERS) {
+          const names = yield* fileSystem
+            .readDirectory(path.join(project, folder))
+            .pipe(Effect.orElseSucceed((): string[] => []));
+          for (const name of names) {
+            const entry = input.entries.get(name);
+            if (entry === undefined) continue;
+            const linkPath = path.join(project, folder, name);
+            const target = yield* fileSystem.readLink(linkPath).pipe(
+              Effect.map((value): string | undefined => value),
+              Effect.orElseSucceed(() => undefined),
+            );
+            if (target !== undefined && linkLeadsTo(path, { path: linkPath, target }, entry)) {
+              links.push([name, { project, path: linkPath, target, folder }]);
+            }
+          }
+        }
+        return links;
+      }),
+    { concurrency: 8 },
+  );
+  for (const links of perProject) {
+    for (const [name, link] of links) found.set(name, [...(found.get(name) ?? []), link]);
+  }
+  return found;
+});
+
 /** Every link, in any agent's project folder in these projects, that leads to `entry`. */
 export const libraryLinksOf = Effect.fn("SkillLibrary.libraryLinksOf")(function* (input: {
   readonly roots: ReadonlyArray<string>;
   readonly name: string;
   readonly entry: string;
 }) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const found: LibraryLink[] = [];
-  for (const project of input.roots) {
-    for (const folder of PROJECT_SKILL_FOLDERS) {
-      const linkPath = path.join(project, folder, input.name);
-      const target = yield* fileSystem.readLink(linkPath).pipe(
-        Effect.map((value): string | undefined => value),
-        Effect.orElseSucceed(() => undefined),
-      );
-      if (target !== undefined && linkLeadsTo(path, { path: linkPath, target }, input.entry)) {
-        found.push({ project, path: linkPath, target, folder });
-      }
-    }
-  }
-  return found;
+  const found = yield* libraryLinksIn({
+    roots: input.roots,
+    entries: new Map([[input.name, input.entry]]),
+  });
+  return found.get(input.name) ?? [];
 });
 
 /**

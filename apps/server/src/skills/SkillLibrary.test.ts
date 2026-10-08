@@ -115,6 +115,11 @@ const onMachine = <A, E, R>(
 const rowOf = (skills: readonly SkillSummary[], scope: SkillSummary["scope"], name: string) =>
   skills.find((skill) => skill.scope === scope && skill.name === name);
 
+const statesOf = (row: SkillSummary | undefined) =>
+  row === undefined
+    ? undefined
+    : Object.fromEntries(row.access.map((access) => [access.instanceId, access.state]));
+
 it.layer(NodeServices.layer, { excludeTestServices: true })("SkillLibrary", (it) => {
   describe("the list", () => {
     it.effect.skipIf(!symlinksSupported)(
@@ -140,11 +145,14 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillLibrary", (it)
                 home: "~/Knowledge/skills/alpha",
               });
               expect(rowOf(result.skills, "global", "alpha")?.realFolder).toBeUndefined();
-              // No agent reads the library.
-              for (const row of result.skills) {
-                expect(new Set(row.access.map((access) => access.state))).toEqual(
-                  new Set(["none"]),
-                );
+              // No agent reads the library; each has what the projects' links give it, across all
+              // of them. Codex reads the shared folder the links are in. Claude reads its own,
+              // where nothing is linked yet.
+              for (const name of ["db-migrations", "alpha"]) {
+                expect(statesOf(rowOf(result.skills, "global", name))).toEqual({
+                  claudeAgent: "none",
+                  codex: "direct",
+                });
               }
             }),
           );
@@ -173,16 +181,13 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillLibrary", (it)
               // Its own skill, linked the same way, is still its own.
               expect(rowOf(inWeb, "project", "solo")).toBeDefined();
 
-              // A project that doesn't link to it sees the same Global skill, used nowhere here.
+              // A project that doesn't link to it sees the same Global skill, with the same
+              // agents: they are the skill's, not the project's.
               const inMarketing = (yield* catalog.list({ cwd: marketing })).skills;
               expect(rowOf(inMarketing, "global", "db-migrations")?.projects).toEqual([web, api]);
-              expect(
-                new Set(
-                  rowOf(inMarketing, "global", "db-migrations")?.access.map(
-                    (access) => access.state,
-                  ),
-                ),
-              ).toEqual(new Set(["none"]));
+              expect(statesOf(rowOf(inMarketing, "global", "db-migrations"))).toEqual(
+                statesOf(rowOf(inWeb, "global", "db-migrations")),
+              );
             }),
           );
         }),

@@ -22,16 +22,21 @@ import * as Schema from "effect/Schema";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { EXCLUDE_BLOCK_START } from "./SkillGitExclude.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
-import { RegisteredProjects } from "./SkillLibrary.ts";
+import { RegisteredProjects, restoreLibraryLinks } from "./SkillLibrary.ts";
 import * as SkillManager from "./SkillManager.ts";
+import { makeCodexDouble, type CodexDouble } from "./testing/CodexDouble.ts";
 
 const encodeResult = Schema.encodeUnknownEffect(SkillBatchResult);
 const agent = ProviderInstanceId.make;
+const ALL_AGENTS = ["claudeAgent", "codex", "cursor", "grok", "opencode", "antigravity", "pi"].map(
+  (id) => agent(id),
+);
 
 const skillFile = (name: string) => `---\nname: ${name}\ndescription: The ${name} skill.\n---\n`;
 
@@ -140,6 +145,7 @@ const withManager = <A, E, R>(
     readonly catalog: SkillCatalog.SkillCatalog["Service"];
   }) => Effect.Effect<A, E, R>,
   environment: NodeJS.ProcessEnv = {},
+  codex?: CodexDouble,
 ) =>
   Effect.gen(function* () {
     const registry = Layer.mock(ProviderRegistry.ProviderRegistry)({
@@ -151,6 +157,21 @@ const withManager = <A, E, R>(
         Effect.succeed(registered.includes(root) ? Option.some(makeProject(root)) : Option.none()),
       listShells: () =>
         Effect.succeed(registered.map((workspaceRoot) => ({ workspaceRoot }) as never)),
+    });
+    // Only Codex has a settings writer, and only when a test gives it a double.
+    const instances = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getInstance: (instanceId) =>
+        Effect.succeed(
+          instanceId === "codex" && codex !== undefined
+            ? ({
+                enabled: true,
+                openSkillSettingsWriter: Effect.sync(() => {
+                  codex.state.opened += 1;
+                  return codex.write;
+                }),
+              } as never)
+            : undefined,
+        ),
     });
     const catalog = SkillCatalog.layer.pipe(
       Layer.provide(
@@ -175,12 +196,19 @@ const withManager = <A, E, R>(
           Layer.provideMerge(catalog),
           Layer.provide(projects),
           Layer.provide(registry),
+          Layer.provide(instances),
           Layer.provide(VcsProcess.layer),
         ),
       ),
     );
   }).pipe(
-    Effect.provideService(HostProcess.Environment, { HOME: home, ...environment }),
+    Effect.provideService(HostProcess.Environment, {
+      HOME: home,
+      // Keep the managed folders of the agents that read one off the real machine.
+      OPENCODE_TEST_MANAGED_CONFIG_DIR: `${home}/no-managed-opencode`,
+      ...environment,
+    }),
+    Effect.provideService(HostProcess.HomeDirectory, home),
     Effect.provideService(RegisteredProjects, Effect.succeed(registered)),
   );
 
@@ -302,19 +330,20 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
                 expect(rows[0]?.realFolder).toBe(true);
               }
 
-              // Used in web: the agents that read its folders have it. Not used in marketing.
-              const inWeb = stateOf(
-                (yield* catalog.list({ cwd: web })).skills,
-                "global",
-                "db-migrations",
-              );
-              expect(inWeb).toMatchObject({ claudeAgent: "link", codex: "direct", pi: "direct" });
-              const elsewhere = stateOf(
-                (yield* catalog.list({ cwd: marketing })).skills,
-                "global",
-                "db-migrations",
-              );
-              expect(new Set(Object.values(elsewhere))).toEqual(new Set(["none"]));
+              // The agents are the skill's, whichever project is open: the ones that read the
+              // folders it is linked into have it.
+              for (const cwd of [undefined, web, marketing]) {
+                const states = stateOf(
+                  (yield* catalog.list(cwd === undefined ? {} : { cwd })).skills,
+                  "global",
+                  "db-migrations",
+                );
+                expect(states).toMatchObject({
+                  claudeAgent: "link",
+                  codex: "direct",
+                  pi: "direct",
+                });
+              }
             }),
           );
         }),
@@ -366,9 +395,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
               });
 
               expect(result.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
-              // Claude, Cursor and OpenCode read Claude's folder; they lose it everywhere else.
+              // Claude, Cursor and OpenCode read Claude's folder, and keep it in api. The agents
+              // that read the shared folder only get it there too.
               expect(result.outcomes[0]?.affected.toSorted()).toEqual(
-                [agent("claudeAgent"), agent("cursor"), agent("opencode")].toSorted(),
+                [agent("antigravity"), agent("codex"), agent("pi")].toSorted(),
               );
               expect(yield* fs.exists(path.join(home, ".claude/skills/solo"))).toBe(false);
               expect(yield* fs.exists(path.join(library, "solo/SKILL.md"))).toBe(true);
@@ -383,8 +413,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
 
               const inApi = stateOf((yield* catalog.list({ cwd: api })).skills, "global", "solo");
               expect(inApi).toMatchObject({ claudeAgent: "link", codex: "direct" });
+              // The skill's agents are the same whichever project is open.
               const inWeb = stateOf((yield* catalog.list({ cwd: web })).skills, "global", "solo");
-              expect(new Set(Object.values(inWeb))).toEqual(new Set(["none"]));
+              expect(inWeb).toEqual(inApi);
               expect(
                 summaryOf((yield* catalog.list({})).skills, "global", "solo")?.projects,
               ).toEqual([api]);
@@ -1242,6 +1273,399 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
               expect(yield* fs.readFileString(path.join(home, ".agents/.skill-lock.json"))).toBe(
                 broken,
               );
+            }),
+          );
+        }),
+    );
+  });
+
+  describe("the agents of a skill used in only some projects", () => {
+    /** web's project skill `db-migrations`, made Global and used in web and api; its Global row. */
+    const useInWebAndApi = (
+      manager: SkillManager.SkillManager["Service"],
+      catalog: SkillCatalog.SkillCatalog["Service"],
+      web: string,
+      api: string,
+    ) =>
+      Effect.gen(function* () {
+        const verify = refOf(
+          (yield* catalog.list({ cwd: web })).skills,
+          "project",
+          "db-migrations",
+        );
+        yield* manager.place({
+          cwd: web,
+          skills: [verify],
+          to: { kind: "projects", cwds: [web, api] },
+        });
+        return refOf((yield* catalog.list({})).skills, "global", "db-migrations");
+      });
+
+    it.effect.skipIf(!symlinksSupported)(
+      "turns Claude on in the projects that use the skill, never Global, and off again",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, api, marketing, library } = yield* makeMachine;
+          yield* withManager(home, [web, api, marketing], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const skill = yield* useInWebAndApi(manager, catalog, web, api);
+              expect(
+                stateOf((yield* catalog.list({})).skills, "global", "db-migrations").claudeAgent,
+              ).toBe("none");
+
+              // From a project that doesn't use the skill: the Global row acts on Global.
+              const on = yield* manager.enable({
+                cwd: marketing,
+                skills: [skill],
+                agents: [agent("claudeAgent")],
+              });
+
+              expect(on.outcomes).toEqual([
+                { skill, status: "changed", blocked: [], affected: [] },
+              ]);
+              yield* encodeResult(on);
+              const entry = path.join(library, "db-migrations");
+              for (const project of [web, api]) {
+                expect(yield* fs.readLink(path.join(project, ".claude/skills/db-migrations"))).toBe(
+                  entry,
+                );
+                expect(blockLines(yield* exclude(project))).toEqual([
+                  "/.agents/skills/db-migrations",
+                  "/.claude/skills/db-migrations",
+                ]);
+                expect(yield* status(project)).toBe("");
+              }
+              expect(yield* fs.exists(path.join(home, ".claude/skills/db-migrations"))).toBe(false);
+              expect(yield* fs.exists(path.join(marketing, ".claude"))).toBe(false);
+              // Claude has the skill, whichever project is open, and it is one Global skill.
+              for (const cwd of [undefined, web, api, marketing]) {
+                const { skills } = yield* catalog.list(cwd === undefined ? {} : { cwd });
+                expect(
+                  skills.filter((item) => item.name === "db-migrations").map((item) => item.scope),
+                ).toEqual(["global"]);
+                expect(stateOf(skills, "global", "db-migrations").claudeAgent).toBe("link");
+              }
+
+              const off = yield* manager.disable({
+                skills: [skill],
+                agents: [agent("claudeAgent")],
+              });
+
+              expect(off.outcomes).toEqual([
+                { skill, status: "changed", blocked: [], affected: [] },
+              ]);
+              for (const project of [web, api]) {
+                expect(yield* fs.exists(path.join(project, ".claude/skills/db-migrations"))).toBe(
+                  false,
+                );
+                expect(blockLines(yield* exclude(project))).toEqual([
+                  "/.agents/skills/db-migrations",
+                ]);
+                // The shared link stays: the agents that read it keep the skill.
+                expect(yield* fs.readLink(path.join(project, ".agents/skills/db-migrations"))).toBe(
+                  entry,
+                );
+              }
+              expect(
+                stateOf((yield* catalog.list({})).skills, "global", "db-migrations"),
+              ).toMatchObject({ claudeAgent: "none", codex: "direct" });
+              yield* encodeResult(off);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "switches every agent from the row: a link where an agent needs one, its setting where it reads the shared folder",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, api, library } = yield* makeMachine;
+          const codex = yield* makeCodexDouble(path.join(home, ".codex"));
+          yield* withManager(
+            home,
+            [web, api],
+            ({ manager, catalog }) =>
+              Effect.gen(function* () {
+                const skill = yield* useInWebAndApi(manager, catalog, web, api);
+                const row = Effect.map(catalog.list({}), ({ skills }) =>
+                  summaryOf(skills, "global", "db-migrations"),
+                );
+                const states = Effect.map(row, (item) =>
+                  Object.fromEntries((item?.access ?? []).map((a) => [a.instanceId, a.state])),
+                );
+                const entry = path.join(library, "db-migrations");
+
+                expect(yield* states).toEqual({
+                  claudeAgent: "none",
+                  codex: "direct",
+                  cursor: "direct",
+                  grok: "none",
+                  opencode: "direct",
+                  antigravity: "direct",
+                  pi: "direct",
+                });
+                // Cursor, Antigravity and Pi read the shared folder and have no setting to switch.
+                expect(
+                  (yield* row)?.access
+                    .filter((item) => item.fixed === true)
+                    .map((item) => item.instanceId)
+                    .toSorted(),
+                ).toEqual([agent("antigravity"), agent("cursor"), agent("pi")]);
+
+                // Turning on what is off: Claude and Grok read folders of their own.
+                const on = yield* manager.enable({
+                  skills: [skill],
+                  agents: [agent("claudeAgent"), agent("grok")],
+                });
+                expect(on.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+                for (const project of [web, api]) {
+                  for (const folder of [".claude/skills", ".grok/skills"]) {
+                    expect(yield* fs.readLink(path.join(project, folder, "db-migrations"))).toBe(
+                      entry,
+                    );
+                  }
+                  expect(yield* status(project)).toBe("");
+                }
+                expect(yield* states).toMatchObject({ claudeAgent: "link", grok: "link" });
+
+                // Turning every agent off.
+                const off = yield* manager.disable({
+                  skills: [skill],
+                  agents: ALL_AGENTS,
+                });
+                yield* encodeResult(off);
+                expect(off.outcomes[0]?.status).toBe("changed");
+                expect(
+                  off.outcomes[0]?.blocked.toSorted((a, b) =>
+                    a.instanceId.localeCompare(b.instanceId),
+                  ),
+                ).toEqual([
+                  { instanceId: agent("antigravity"), reason: "alwaysOn" },
+                  { instanceId: agent("cursor"), reason: "alwaysOn" },
+                  { instanceId: agent("pi"), reason: "alwaysOn" },
+                ]);
+                for (const project of [web, api]) {
+                  expect(yield* fs.exists(path.join(project, ".claude/skills/db-migrations"))).toBe(
+                    false,
+                  );
+                  expect(yield* fs.exists(path.join(project, ".grok/skills/db-migrations"))).toBe(
+                    false,
+                  );
+                }
+                // Codex records the real SKILL.md, which is the library's; OpenCode names the skill.
+                expect(codex.calls).toEqual([
+                  { path: path.join(entry, "SKILL.md"), enabled: false },
+                ]);
+                expect(
+                  JSON.parse(
+                    yield* fs.readFileString(path.join(home, ".config/opencode/opencode.json")),
+                  ),
+                ).toEqual({ permission: { skill: { "db-migrations": "deny" } } });
+                expect(yield* states).toEqual({
+                  claudeAgent: "none",
+                  codex: "off",
+                  cursor: "direct",
+                  grok: "none",
+                  opencode: "off",
+                  antigravity: "direct",
+                  pi: "direct",
+                });
+
+                // And on again.
+                const back = yield* manager.enable({
+                  skills: [skill],
+                  agents: [agent("claudeAgent"), agent("grok"), agent("codex"), agent("opencode")],
+                });
+                expect(back.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+                expect(yield* states).toMatchObject({
+                  claudeAgent: "link",
+                  codex: "direct",
+                  grok: "link",
+                  opencode: "direct",
+                });
+                expect(yield* fs.readFileString(codex.file)).toBe("");
+                expect(
+                  yield* fs.readFileString(path.join(home, ".config/opencode/opencode.json")),
+                ).not.toContain("deny");
+              }),
+            {},
+            codex,
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "links what it can and says which project had something else in the way",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, api, write } = yield* makeMachine;
+          yield* write("repos/acme-api/.claude/skills/db-migrations/SKILL.md", skillFile("mine"));
+          yield* withManager(home, [web, api], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const skill = yield* useInWebAndApi(manager, catalog, web, api);
+
+              const on = yield* manager.enable({ skills: [skill], agents: [agent("claudeAgent")] });
+
+              expect(on.outcomes[0]).toMatchObject({
+                status: "changed",
+                blocked: [{ instanceId: agent("claudeAgent"), reason: "entryTaken" }],
+              });
+              expect(yield* fs.readLink(path.join(web, ".claude/skills/db-migrations"))).toBe(
+                path.join(home, ".agents/skill-library/db-migrations"),
+              );
+              // The other project's own folder is never replaced.
+              expect(
+                yield* fs.readFileString(path.join(api, ".claude/skills/db-migrations/SKILL.md")),
+              ).toBe(skillFile("mine"));
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)("has nowhere to link a skill that no project uses", () =>
+      Effect.gen(function* () {
+        const { fs, path, home, web, write } = yield* makeMachine;
+        yield* write(".agents/skill-library/lonely/SKILL.md", skillFile("lonely"));
+        yield* withManager(home, [web], ({ manager, catalog }) =>
+          Effect.gen(function* () {
+            const { skills } = yield* catalog.list({});
+            expect(new Set(Object.values(stateOf(skills, "global", "lonely")))).toEqual(
+              new Set(["none"]),
+            );
+
+            const on = yield* manager.enable({
+              skills: [refOf(skills, "global", "lonely")],
+              agents: [agent("claudeAgent")],
+            });
+
+            expect(on.outcomes[0]).toMatchObject({
+              status: "skipped",
+              blocked: [{ instanceId: agent("claudeAgent"), reason: "failed" }],
+            });
+            expect(yield* fs.exists(path.join(home, ".claude/skills/lonely"))).toBe(false);
+            expect(yield* fs.exists(path.join(web, ".claude"))).toBe(false);
+          }),
+        );
+      }),
+    );
+  });
+
+  describe("the git worktrees of a project that uses a library skill", () => {
+    /** A worktree of `project` with the links the worktree hook makes in it. */
+    const addWorktree = (project: string, name: string) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const worktree = path.join(path.dirname(project), `${path.basename(project)}-${name}`);
+        yield* git(project, ["worktree", "add", "-q", "-b", name, worktree]);
+        yield* restoreLibraryLinks({ project, worktree }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        );
+        return worktree;
+      });
+
+    it.effect.skipIf(!symlinksSupported)(
+      "lose the links when Claude is turned off and when the project stops using the skill",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, api, library } = yield* makeMachine;
+          yield* withManager(home, [web, api], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const verify = refOf(
+                (yield* catalog.list({ cwd: web })).skills,
+                "project",
+                "db-migrations",
+              );
+              yield* manager.place({
+                cwd: web,
+                skills: [verify],
+                to: { kind: "projects", cwds: [web, api] },
+              });
+              const skill = refOf((yield* catalog.list({})).skills, "global", "db-migrations");
+              yield* manager.enable({ skills: [skill], agents: [agent("claudeAgent")] });
+              const entry = path.join(library, "db-migrations");
+              const worktree = yield* addWorktree(web, "feature");
+              const other = yield* addWorktree(api, "feature");
+              // Something of the worktree's own is never touched.
+              yield* fs.makeDirectory(path.join(worktree, ".claude/skills/own"), {
+                recursive: true,
+              });
+              yield* fs.symlink(
+                path.join(home, "somewhere-else"),
+                path.join(worktree, ".agents/skills/different"),
+              );
+              expect(yield* fs.readLink(path.join(worktree, ".claude/skills/db-migrations"))).toBe(
+                entry,
+              );
+
+              // Turning Claude off takes its link out of the worktrees as well.
+              yield* manager.disable({ skills: [skill], agents: [agent("claudeAgent")] });
+              expect(yield* fs.exists(path.join(web, ".claude/skills/db-migrations"))).toBe(false);
+              expect(yield* fs.exists(path.join(worktree, ".claude/skills/db-migrations"))).toBe(
+                false,
+              );
+              expect(yield* fs.exists(path.join(other, ".claude/skills/db-migrations"))).toBe(
+                false,
+              );
+              expect(yield* fs.readLink(path.join(worktree, ".agents/skills/db-migrations"))).toBe(
+                entry,
+              );
+
+              // A project that stops using the skill: its worktrees' links go, api's stay.
+              const moved = yield* manager.place({
+                skills: [skill],
+                to: { kind: "projects", cwds: [api] },
+              });
+              expect(moved.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+              expect(yield* fs.exists(path.join(web, ".agents/skills/db-migrations"))).toBe(false);
+              expect(yield* fs.exists(path.join(worktree, ".agents/skills/db-migrations"))).toBe(
+                false,
+              );
+              expect(yield* fs.readLink(path.join(other, ".agents/skills/db-migrations"))).toBe(
+                entry,
+              );
+              // What the worktree had of its own stays.
+              expect(yield* fs.exists(path.join(worktree, ".claude/skills/own"))).toBe(true);
+              expect(yield* fs.readLink(path.join(worktree, ".agents/skills/different"))).toBe(
+                path.join(home, "somewhere-else"),
+              );
+              // Only the worktree's own link shows in git; the exclude lines covered the rest.
+              expect(yield* status(worktree)).toBe("?? .agents/skills/different\n");
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "lose the links when the skill is deleted, and the project's own checkout isn't a worktree",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, api } = yield* makeMachine;
+          yield* withManager(home, [web, api], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const verify = refOf(
+                (yield* catalog.list({ cwd: web })).skills,
+                "project",
+                "db-migrations",
+              );
+              yield* manager.place({
+                cwd: web,
+                skills: [verify],
+                to: { kind: "projects", cwds: [web, api] },
+              });
+              const worktree = yield* addWorktree(web, "feature");
+              const skill = refOf((yield* catalog.list({})).skills, "global", "db-migrations");
+
+              const result = yield* manager.delete({ skills: [skill] });
+
+              expect(result.outcomes[0]).toMatchObject({ status: "changed" });
+              for (const root of [web, api, worktree]) {
+                expect(yield* fs.exists(path.join(root, ".agents/skills/db-migrations"))).toBe(
+                  false,
+                );
+              }
+              expect(blockLines(yield* exclude(web))).toEqual([]);
             }),
           );
         }),

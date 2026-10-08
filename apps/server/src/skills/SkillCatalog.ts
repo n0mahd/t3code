@@ -47,7 +47,9 @@ import * as Stream from "effect/Stream";
 import {
   AGENT_SKILL_FOLDERS,
   STANDARD_SKILL_FOLDER,
+  ownProjectFolderFor,
   skillCollisionFor,
+  skillFoldersFor,
   skillRootsFor,
   type AgentSkillFolderList,
   type SkillCollision,
@@ -69,7 +71,13 @@ import {
   type SkillSwitchView,
   type SwitchedSkill,
 } from "./AgentSkillSettings.ts";
-import { LIBRARY_FOLDER, RegisteredProjects, linkLeadsTo, projectsUsing } from "./SkillLibrary.ts";
+import {
+  LIBRARY_FOLDER,
+  RegisteredProjects,
+  libraryLinksIn,
+  linkLeadsTo,
+  type LibraryLink,
+} from "./SkillLibrary.ts";
 import { readSources } from "./SkillLockFiles.ts";
 
 const SKILL_FILE = "SKILL.md";
@@ -178,13 +186,15 @@ export interface ResolvedSkill {
   /** The shared folder of each scope, where a moved skill lands; a project's needs `cwd`. */
   readonly standardFolders: Readonly<Record<SkillScope, string | undefined>>;
   /**
-   * Set when the skill is kept in the library (`SkillLibrary`): its entry there, and what that
-   * links to when it is a link to a synced folder. The projects that link to it are not looked
-   * for here; `SkillLibrary.libraryLinksOf` finds them in the registered projects.
+   * Set when the skill is kept in the library (`SkillLibrary`): its entry there, what that links
+   * to when it is a link to a synced folder, and the links to it in the registered projects'
+   * folders. Such a skill reaches an agent through those links, whichever project the list is for,
+   * so its `agents` say what the links give each agent across all of them.
    */
   readonly library?: {
     readonly entry: string;
     readonly target: string | undefined;
+    readonly links: ReadonlyArray<LibraryLink>;
   };
   /** Every entry in the agents' folders that reaches the skill: a real folder, or a link. */
   readonly entries: ReadonlyArray<{
@@ -697,8 +707,65 @@ const make = Effect.gen(function* () {
       return entry && owner && !skipped ? { entry, owner } : undefined;
     };
 
+    // The registered projects' links to each library skill, read only when there are any.
+    const libraryEntries = new Map(
+      groups.flatMap((group) => {
+        const entry = group.entries.find((item) => item.root.library === true);
+        return entry === undefined
+          ? []
+          : [[group.name, path.join(entry.root.directory, entry.name)] as const];
+      }),
+    );
+    const libraryLinks =
+      libraryEntries.size === 0
+        ? new Map<string, LibraryLink[]>()
+        : yield* libraryLinksIn({
+            roots: yield* registeredProjects,
+            entries: libraryEntries,
+          }).pipe(Effect.provideContext(filesystemContext));
+    const isLibrary = (group: SkillGroup) =>
+      group.entries.some((entry) => entry.root.library === true);
+
+    /**
+     * How an instance reaches a library skill: through its links in the projects' folders, across
+     * all of them, whichever project the list is for. An agent that reads the shared folder has
+     * the link every project using the skill has; one that doesn't needs a link in its own folder.
+     */
+    const libraryAccessFor = (group: SkillGroup, instance: AgentInstance) => {
+      const folders = skillFoldersFor(instance.driver, "project");
+      const seen = (libraryLinks.get(group.name) ?? []).filter((link) =>
+        folders.includes(link.folder),
+      );
+      const settings =
+        skillSwitchKind(instance.driver, group.scope, "projects") === undefined
+          ? undefined
+          : instance.switches;
+      const switchedOff =
+        settings !== undefined &&
+        views.get(instance.instanceId)?.off(switchedSkillOf(group)) === true;
+      const shared = seen.some((link) => link.folder === STANDARD_SKILL_FOLDER);
+      const folder =
+        (shared ? STANDARD_SKILL_FOLDER : seen[0]?.folder) ??
+        ownProjectFolderFor(instance.driver) ??
+        STANDARD_SKILL_FOLDER;
+      const fixed = seen.length > 0 && shared && !switchedOff && settings === undefined;
+      return {
+        loadedEntries: [] as FolderEntry[],
+        switchedOff,
+        settings,
+        access: {
+          instanceId: instance.instanceId,
+          driver: instance.driver,
+          state: seen.length === 0 ? "none" : switchedOff ? "off" : shared ? "direct" : "link",
+          folder,
+          ...(fixed ? { fixed } : {}),
+        } satisfies SkillAgentAccess,
+      };
+    };
+
     /** How one instance reaches a skill: through the folders it loads it from, else `none`. */
     const accessFor = (group: SkillGroup, instance: AgentInstance) => {
+      if (isLibrary(group)) return libraryAccessFor(group, instance);
       const found = instance.reads.flatMap((root) => {
         const loadable = loadableAt(group, instance, root);
         return loadable ? [loadable] : [];
@@ -751,12 +818,23 @@ const make = Effect.gen(function* () {
       };
     };
 
-    return { displayRoots, instances, scanned, groups, accessFor, loadableAt, isOwn, roots };
+    return {
+      displayRoots,
+      instances,
+      scanned,
+      groups,
+      accessFor,
+      loadableAt,
+      isOwn,
+      roots,
+      libraryLinks,
+    };
   });
 
   const list: SkillCatalog["Service"]["list"] = Effect.fn("SkillCatalog.list")(function* (input) {
     const cwd = yield* requireProject(input.cwd);
-    const { displayRoots, instances, scanned, groups, accessFor, isOwn } = yield* scanSkills(cwd);
+    const { displayRoots, instances, scanned, groups, accessFor, isOwn, libraryLinks } =
+      yield* scanSkills(cwd);
     const copies = yield* compareCopies(groups, displayRoots);
     const sources = yield* readSources({
       environment,
@@ -764,27 +842,18 @@ const make = Effect.gen(function* () {
       projectRoot: cwd,
     }).pipe(Effect.provideContext(filesystemContext));
 
-    // The registered projects that link to each library skill, read only when there are any.
-    const libraryEntries = new Map(
-      groups.flatMap((group) => {
-        const entry = group.entries.find((item) => item.root.library === true);
-        return entry === undefined
-          ? []
-          : [[group.name, path.join(entry.root.directory, entry.name)] as const];
-      }),
-    );
-    const usedIn =
-      libraryEntries.size === 0
-        ? new Map<string, string[]>()
-        : yield* projectsUsing({ roots: yield* registeredProjects, entries: libraryEntries }).pipe(
-            Effect.provideContext(filesystemContext),
-          );
-
     const skills = groups.map((group): SkillSummary => {
       const source = (group.scope === "project" ? sources.project : sources.global).get(group.name);
+      // The projects a library skill is used in: where the shared folder has its link.
       const using = group.entries.some((item) => item.root.library === true)
-        ? usedIn.get(group.name)
-        : undefined;
+        ? [
+            ...new Set(
+              (libraryLinks.get(group.name) ?? [])
+                .filter((link) => link.folder === STANDARD_SKILL_FOLDER)
+                .map((link) => link.project),
+            ),
+          ]
+        : [];
       return {
         name: group.name,
         scope: group.scope,
@@ -795,7 +864,7 @@ const make = Effect.gen(function* () {
         copies: copies.get(group) ?? [],
         access: instances.map((instance) => accessFor(group, instance).access),
         ...(source === undefined ? {} : { source }),
-        ...(using === undefined || using.length === 0 ? {} : { projects: using }),
+        ...(using.length === 0 ? {} : { projects: using }),
       };
     });
 
@@ -815,12 +884,18 @@ const make = Effect.gen(function* () {
     };
   });
 
-  /** Where a group is kept in the library, when it is. */
-  const libraryOf = (group: SkillGroup) => {
+  /** Where a group is kept in the library, when it is, and the projects' links to it. */
+  const libraryOf = (group: SkillGroup, links: ReadonlyMap<string, LibraryLink[]>) => {
     const entry = group.entries.find((item) => item.root.library === true);
     return entry === undefined
       ? {}
-      : { library: { entry: path.join(entry.root.directory, entry.name), target: entry.target } };
+      : {
+          library: {
+            entry: path.join(entry.root.directory, entry.name),
+            target: entry.target,
+            links: links.get(group.name) ?? [],
+          },
+        };
   };
 
   const resolve: SkillCatalog["Service"]["resolve"] = Effect.fn("SkillCatalog.resolve")(
@@ -830,7 +905,7 @@ const make = Effect.gen(function* () {
         (skill) => isSkillFolderName(skill.name) && (skill.scope === "global" || cwd !== undefined),
       );
       if (wanted.length === 0) return [];
-      const { displayRoots, instances, groups, accessFor, loadableAt, isOwn, roots } =
+      const { displayRoots, instances, groups, accessFor, loadableAt, isOwn, roots, libraryLinks } =
         yield* scanSkills(cwd, new Set(wanted.map((skill) => skill.name)));
       const standardFolders = {
         project: roots.find((root) => root.scope === "project" && root.standard)?.directory,
@@ -847,7 +922,7 @@ const make = Effect.gen(function* () {
           home: group.home,
           own: isOwn(group),
           standardFolders,
-          ...libraryOf(group),
+          ...libraryOf(group, libraryLinks),
           entries: group.entries.map((entry) => ({
             path: path.join(entry.root.directory, entry.name),
             directory: entry.root.directory,

@@ -18,6 +18,10 @@
  * with the skill. The skill's source record in the `skills` CLI's lock (`SkillLockFiles`) moves
  * with it between a project and Global.
  *
+ * The agents of a skill used in only some projects are switched through its project links: a link
+ * in each project's folder for an agent that doesn't read the shared one (`addLibraryLinks`,
+ * `removeLibraryLinks`). A link that goes is taken out of the project's git worktrees too.
+ *
  * @module SkillPlacement
  */
 import {
@@ -36,13 +40,14 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import {
   STANDARD_SKILL_FOLDER,
+  ownProjectFolderFor,
   skillFoldersFor,
 } from "@t3tools/provider-core/server/AgentSkillFolders";
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import type * as SkillCatalog from "./SkillCatalog.ts";
-import { updateExclude } from "./SkillGitExclude.ts";
-import { LIBRARY_FOLDER, libraryLinksOf, type LibraryLink } from "./SkillLibrary.ts";
+import { updateExclude, worktreesOf } from "./SkillGitExclude.ts";
+import { LIBRARY_FOLDER, libraryLinksOf, linkLeadsTo, type LibraryLink } from "./SkillLibrary.ts";
 import { createLink, removeLink, type RemoveLinkResult } from "./SkillLinks.ts";
 import { moveRecord, type LockScope } from "./SkillLockFiles.ts";
 import { moveFolder } from "./SkillMove.ts";
@@ -88,6 +93,20 @@ export interface PlacementView {
   readonly cwd: string | undefined;
   readonly all: ReadonlyArray<SkillCatalog.ResolvedSkill>;
 }
+
+/** A skill kept in the library, whose registered projects' links the catalog found. */
+export type LibrarySkill = SkillCatalog.ResolvedSkill & {
+  readonly library: NonNullable<SkillCatalog.ResolvedSkill["library"]>;
+};
+
+/** The projects a library skill is used in: where the shared folder has its link. */
+export const projectsOfLibrarySkill = (skill: LibrarySkill) => [
+  ...new Set(
+    skill.library.links
+      .filter((link) => link.folder === STANDARD_SKILL_FOLDER)
+      .map((link) => link.project),
+  ),
+];
 
 export interface PlacementDeps {
   readonly catalog: SkillCatalog.SkillCatalog["Service"];
@@ -165,12 +184,6 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
         ),
       ),
     ].map(([linkPath, target]) => ({ path: linkPath, target }));
-
-  /** The folder, besides the shared one, an agent needs a link in to use a skill in a project. */
-  const ownProjectFolder = (driver: SkillCatalog.ResolvedSkill["agents"][number]["driver"]) => {
-    const folders = skillFoldersFor(driver, "project");
-    return folders.includes(STANDARD_SKILL_FOLDER) ? undefined : folders[0];
-  };
 
   /** Removes links that are still what was inspected, and remembers how to put each back. */
   const unlink = Effect.fnUntraced(function* (
@@ -258,25 +271,68 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     return blocked;
   });
 
-  /** Removes a library skill's links from these projects, and their lines from the exclude files. */
+  /**
+   * Removes the library skill's links that the project's other git worktrees got when they were
+   * made, which only the links that lead to `entry` count as. A link that is a folder there, or
+   * leads somewhere else, stays.
+   */
+  const unlinkInWorktrees = Effect.fnUntraced(function* (
+    journal: Journal,
+    links: ReadonlyArray<LibraryLink>,
+    entry: string,
+  ) {
+    for (const project of new Set(links.map((link) => link.project))) {
+      const own = yield* realPath(project);
+      const worktrees = yield* inContext(worktreesOf(project));
+      for (const worktree of worktrees) {
+        // The checkout the project is in (or is inside) keeps what it has.
+        const real = yield* realPath(worktree);
+        if (own === real || own.startsWith(`${real}${path.sep}`)) continue;
+        const found: Array<{ path: string; target: string }> = [];
+        for (const link of links.filter((item) => item.project === project)) {
+          const created = path.join(worktree, link.folder, path.basename(link.path));
+          const target = yield* fileSystem.readLink(created).pipe(
+            Effect.map((value): string | undefined => value),
+            Effect.orElseSucceed(() => undefined),
+          );
+          if (target !== undefined && linkLeadsTo(path, { path: created, target }, entry)) {
+            found.push({ path: created, target });
+          }
+        }
+        yield* unlink(journal, found);
+      }
+    }
+  });
+
+  /**
+   * Removes a library skill's links from these projects (and from their git worktrees), and their
+   * lines from the exclude files. What happened to each link is told; a link that is gone counts
+   * as removed.
+   */
   const unlinkProjects = Effect.fnUntraced(function* (
     journal: Journal,
     links: ReadonlyArray<LibraryLink>,
+    entry: string,
   ) {
     const results = yield* unlink(journal, links);
     const gone = links.filter((link) => {
       const result = results.get(link.path);
       return result === "removed" || result === "gone";
     });
+    yield* unlinkInWorktrees(journal, gone, entry);
     for (const project of new Set(gone.map((link) => link.project))) {
       const paths = gone.filter((link) => link.project === project).map((link) => link.path);
       yield* inContext(updateExclude({ projectRoot: project, links: paths, action: "remove" }));
       journal.add(inContext(updateExclude({ projectRoot: project, links: paths, action: "add" })));
     }
-    return links.some(
+    return results;
+  });
+
+  /** Whether any of the links was left in place or couldn't be removed. */
+  const anyStuck = (links: ReadonlyArray<LibraryLink>, results: ReadonlyMap<string, string>) =>
+    links.some(
       (link) => results.get(link.path) === "changed" || results.get(link.path) === "failed",
     );
-  });
 
   /** The skill's source record goes along; a failure is logged and never undoes the placement. */
   const moveSourceRecord = (input: {
@@ -410,7 +466,14 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
             lacking,
             dest.scope === "project" ? yield* realPath(dest.cwd) : undefined,
           );
-    return yield* settle({ view, skill, had, home: real, blocked: relinked.blocked, reason });
+    return yield* settle({
+      view,
+      skill,
+      had,
+      home: real,
+      blocked: relinked.blocked,
+      reason,
+    });
   });
 
   /** One skill into the library, linked into `projects`. */
@@ -440,7 +503,7 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     const folders = [
       ...new Set(
         instances.flatMap((agent) => {
-          const own = had.has(agent.instanceId) ? ownProjectFolder(agent.driver) : undefined;
+          const own = had.has(agent.instanceId) ? ownProjectFolderFor(agent.driver) : undefined;
           return own === undefined ? [] : [own];
         }),
       ),
@@ -478,7 +541,7 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       folders,
       agentsOf: (folder) =>
         instances
-          .filter((agent) => ownProjectFolder(agent.driver) === folder)
+          .filter((agent) => ownProjectFolderFor(agent.driver) === folder)
           .map((agent) => agent.instanceId),
     });
     if (skill.scope === "project" && view.cwd !== undefined) {
@@ -489,15 +552,20 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
         folder: home,
       });
     }
-    return yield* settle({ view, skill, had, home, blocked, reason });
+    return yield* settle({
+      view,
+      skill,
+      had,
+      home,
+      blocked,
+      reason,
+    });
   });
 
   /** A library skill used in a different set of projects: links are added and taken away. */
   const retarget = Effect.fnUntraced(function* (
     journal: Journal,
-    skill: SkillCatalog.ResolvedSkill & {
-      readonly library: NonNullable<SkillCatalog.ResolvedSkill["library"]>;
-    },
+    skill: LibrarySkill,
     projects: ReadonlyArray<string>,
     view: PlacementView,
   ) {
@@ -531,29 +599,25 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       folders,
       agentsOf: (folder) =>
         skill.agents
-          .filter((agent) => ownProjectFolder(agent.driver) === folder)
+          .filter((agent) => ownProjectFolderFor(agent.driver) === folder)
           .map((agent) => agent.instanceId),
     });
-    const leftover = yield* unlinkProjects(
-      journal,
-      links.filter((link) => remove.includes(link.project)),
-    );
+    const leaving = links.filter((link) => remove.includes(link.project));
+    const results = yield* unlinkProjects(journal, leaving, skill.library.entry);
     return yield* settle({
       view,
       skill,
       had,
       home: skill.home,
       blocked,
-      reason: leftover ? "changed" : undefined,
+      reason: anyStuck(leaving, results) ? "changed" : undefined,
     });
   });
 
   /** A library skill into Global or one project: its links go, and the folder takes the place. */
   const outOfLibrary = Effect.fnUntraced(function* (
     journal: Journal,
-    skill: SkillCatalog.ResolvedSkill & {
-      readonly library: NonNullable<SkillCatalog.ResolvedSkill["library"]>;
-    },
+    skill: LibrarySkill,
     dest: { readonly scope: "global" } | { readonly scope: "project"; readonly cwd: string },
     view: PlacementView,
   ) {
@@ -605,8 +669,8 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     ]);
 
     // The links come out first: one of them may be in the way of the folder.
-    const stuck = yield* unlinkProjects(journal, links);
-    let reason: SkillOutcomeReason | undefined = stuck ? "changed" : undefined;
+    const unlinked = yield* unlinkProjects(journal, links, skill.library.entry);
+    let reason: SkillOutcomeReason | undefined = anyStuck(links, unlinked) ? "changed" : undefined;
     if (skill.own) {
       const moved = yield* inContext(
         moveFolder({ from: skill.library.entry, to: destination, platform: deps.platform }),
@@ -659,7 +723,14 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
             lacking,
             dest.scope === "project" ? yield* realPath(dest.cwd) : undefined,
           );
-    return yield* settle({ view, skill, had, home: real, blocked: relinked.blocked, reason });
+    return yield* settle({
+      view,
+      skill,
+      had,
+      home: real,
+      blocked: relinked.blocked,
+      reason,
+    });
   });
 
   /**
@@ -672,7 +743,8 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     view: PlacementView,
   ): Effect.Effect<PlacementChange> => {
     const journal = makeJournal();
-    const library = skill.library === undefined ? undefined : { ...skill, library: skill.library };
+    const library: LibrarySkill | undefined =
+      skill.library === undefined ? undefined : { ...skill, library: skill.library };
     const attempt = Effect.gen(function* () {
       if (to.kind === "projects") {
         const projects = [...new Set(to.cwds)];
@@ -717,8 +789,104 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
           entry: skill.library.entry,
         }),
       );
-      yield* unlinkProjects(makeJournal(), links);
+      yield* unlinkProjects(makeJournal(), links, skill.library.entry);
     }).pipe(Effect.ignoreCause);
 
-  return { place, unlinkLibrarySkill };
+  /**
+   * Gives agents that don't read the shared folder a link in their own folder, in every project
+   * that uses the library skill. `plan` says which folder serves which agents. A link that is
+   * already there is left; something else in the way, or a system that refuses, blocks the agents
+   * of that folder.
+   */
+  const addLibraryLinks = (
+    skill: LibrarySkill,
+    plan: ReadonlyArray<{
+      readonly folder: string;
+      readonly agents: readonly ProviderInstanceId[];
+    }>,
+  ) =>
+    Effect.gen(function* () {
+      const blocked: Blocked[] = [];
+      let wrote = false;
+      const journal = makeJournal();
+      for (const project of projectsOfLibrarySkill(skill)) {
+        const made: string[] = [];
+        for (const { folder, agents } of plan) {
+          const link = path.join(project, folder, skill.name);
+          const result = yield* linkTo(
+            journal,
+            { link, target: skill.library.entry, home: skill.home },
+            "project",
+          ).pipe(Effect.catchTags({ SkillLinkError: () => Effect.succeed("failed" as const) }));
+          if (result === "created") {
+            made.push(link);
+            wrote = true;
+          } else if (result !== "unchanged") {
+            const reason: SkillOutcomeReason =
+              result === "taken"
+                ? "entryTaken"
+                : result === "notAllowed"
+                  ? "linkNotAllowed"
+                  : "failed";
+            for (const instanceId of agents) blocked.push({ instanceId, reason });
+          }
+        }
+        // The link works without its exclude line; it only shows up in git status.
+        yield* inContext(updateExclude({ projectRoot: project, links: made, action: "add" })).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("could not keep a skill link out of git", {
+                  project,
+                  cause: Cause.pretty(cause),
+                }),
+          ),
+        );
+      }
+      return { wrote, blocked } satisfies { wrote: boolean; blocked: readonly Blocked[] };
+    });
+
+  /**
+   * Takes those agents' links out of every project that uses the library skill, and out of the
+   * projects' git worktrees. A link that is no longer the one that was inspected is left, and
+   * blocks the agents of that folder.
+   */
+  const removeLibraryLinks = (
+    skill: LibrarySkill,
+    plan: ReadonlyArray<{
+      readonly folder: string;
+      readonly agents: readonly ProviderInstanceId[];
+    }>,
+  ) =>
+    Effect.gen(function* () {
+      const blocked: Blocked[] = [];
+      let wrote = false;
+      for (const { folder, agents } of plan) {
+        const links = skill.library.links.filter((link) => link.folder === folder);
+        // A step that fails part way leaves unknown links behind: all of them are reported.
+        const results = yield* unlinkProjects(makeJournal(), links, skill.library.entry).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.as(
+                  Effect.logWarning("could not remove a skill's links", {
+                    name: skill.name,
+                    cause: Cause.pretty(cause),
+                  }),
+                  new Map(links.map((link) => [link.path, "failed" as const])),
+                ),
+          ),
+        );
+        for (const link of links) {
+          const result = results.get(link.path);
+          if (result === "removed" || result === "failed") wrote = true;
+          if (result === "changed" || result === "failed") {
+            for (const instanceId of agents) blocked.push({ instanceId, reason: result });
+          }
+        }
+      }
+      return { wrote, blocked } satisfies { wrote: boolean; blocked: readonly Blocked[] };
+    });
+
+  return { place, unlinkLibrarySkill, addLibraryLinks, removeLibraryLinks };
 });

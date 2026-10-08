@@ -19,18 +19,16 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
-import type {
-  SkillSettingsChange,
-  SkillSettingsWriter,
-} from "@t3tools/provider-core/server/driver";
+import { parse as parseToml } from "smol-toml";
 
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
 import * as SkillManager from "./SkillManager.ts";
+import { makeCodexDouble, type CodexDouble } from "./testing/CodexDouble.ts";
 
 const encodeResult = Schema.encodeUnknownEffect(SkillBatchResult);
 const encodeList = Schema.encodeUnknownEffect(SkillListResult);
@@ -85,52 +83,6 @@ const makeProject = (workspaceRoot: string): Project => ({
   updatedAt: "2026-01-01T00:00:00.000Z",
   deletedAt: null,
 });
-
-/**
- * Stands in for the `codex app-server` process and nothing else: it edits the real `config.toml`
- * the way Codex does (checked against codex 0.160.1): a path is recorded by the real path of its
- * SKILL.md, `enabled: true` removes the entry for the selector, and the answer is the selector's
- * state.
- */
-const makeCodexDouble = (codexHome: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const file = path.join(codexHome, "config.toml");
-    const canonical = (value: string) => fs.realPath(value).pipe(Effect.orElseSucceed(() => value));
-    const calls: SkillSettingsChange[] = [];
-    const state = { opened: 0, effective: undefined as boolean | undefined };
-    const write: SkillSettingsWriter = (change) =>
-      Effect.gen(function* () {
-        calls.push(change);
-        const text = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""));
-        const document = parseToml(text) as { skills?: { config?: Record<string, unknown>[] } };
-        const rules = document.skills?.config ?? [];
-        const selected = "path" in change ? yield* canonical(change.path) : change.name;
-        const kept: Record<string, unknown>[] = [];
-        for (const rule of rules) {
-          const named =
-            "path" in change && typeof rule.path === "string"
-              ? (yield* canonical(rule.path)) === selected
-              : "name" in change && rule.name === selected;
-          if (!named) kept.push(rule);
-        }
-        if (!change.enabled) {
-          kept.push(
-            "path" in change
-              ? { path: selected, enabled: false }
-              : { name: selected, enabled: false },
-          );
-        }
-        const next = kept.length > 0 ? { skills: { config: kept } } : {};
-        yield* fs.makeDirectory(codexHome, { recursive: true });
-        yield* fs.writeFileString(file, kept.length > 0 ? stringifyToml(next) : "");
-        return { effectiveEnabled: state.effective ?? change.enabled };
-      }).pipe(Effect.orDie);
-    return { file, calls, state, write };
-  });
-
-type CodexDouble = Effect.Success<ReturnType<typeof makeCodexDouble>>;
 
 /** The manager and catalog on a machine whose home is `home`; only `registered` are projects. */
 const withManager = <A, E, R>(
@@ -193,6 +145,7 @@ const withManager = <A, E, R>(
           Layer.provide(projects),
           Layer.provide(registry),
           Layer.provide(instances),
+          Layer.provide(VcsProcess.layer),
         ),
       ),
     );

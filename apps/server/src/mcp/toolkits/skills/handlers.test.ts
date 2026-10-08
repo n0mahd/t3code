@@ -29,6 +29,7 @@ import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../../../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as Settings from "../../../serverSettings.ts";
+import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as SkillCatalog from "../../../skills/SkillCatalog.ts";
 import * as SkillManager from "../../../skills/SkillManager.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
@@ -201,6 +202,8 @@ const layerFor = (
           } as OrchestrationV2ThreadShell),
       }),
     ),
+    // The manager keeps the links it makes out of git, so it runs git.
+    Layer.provide(VcsProcess.layer),
     Layer.provide(Layer.succeed(HostProcess.Environment, { HOME: home })),
     Layer.provide(Layer.succeed(HostProcess.HomeDirectory, home)),
   );

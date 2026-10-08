@@ -167,3 +167,13 @@ export const skillFoldersFor = (agent: ProviderDriverKind, scope: SkillScope): r
   skillRootsFor(agent)
     .filter((root) => root.scope === scope)
     .map((root) => root.folder);
+
+/**
+ * The project folder, besides the shared one, an agent needs a link in to use a skill: its own
+ * (`.claude/skills` for Claude). Undefined for an agent that reads the shared folder, which a
+ * skill used in a project is linked into anyway.
+ */
+export const ownProjectFolderFor = (agent: ProviderDriverKind) => {
+  const folders = skillFoldersFor(agent, "project");
+  return folders.includes(STANDARD_SKILL_FOLDER) ? undefined : folders[0];
+};

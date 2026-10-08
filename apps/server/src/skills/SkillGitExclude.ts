@@ -5,7 +5,8 @@
  * repository's `info/exclude` (in the common git dir, so every worktree of the repository shares
  * it) instead of a `.gitignore` that gets committed. T3 Code owns one marked block there and
  * leaves every other line alone; the block goes when its last line does. A project that isn't in a
- * git repository has no exclude file, so its links need nothing.
+ * git repository has no exclude file, so its links need nothing. The same repository's other
+ * worktrees (`worktreesOf`) hold the links the worktree hook made in them.
  *
  * @module SkillGitExclude
  */
@@ -92,4 +93,30 @@ export const updateExclude = Effect.fn("SkillGitExclude.updateExclude")(function
   );
   if (next === text || (text === "" && next === "")) return;
   yield* writeFileStringAtomically({ filePath: file, contents: next });
+});
+
+/**
+ * The checkouts of the repository a project is in, the project's own among them: the paths
+ * `git worktree list --porcelain` names. Empty outside a git repository.
+ */
+export const worktreesOf = Effect.fn("SkillGitExclude.worktreesOf")(function* (
+  projectRoot: string,
+) {
+  const vcs = yield* VcsProcess.VcsProcess;
+  const result = yield* vcs
+    .run({
+      operation: "SkillGitExclude.worktreesOf",
+      command: "git",
+      args: ["worktree", "list", "--porcelain"],
+      cwd: projectRoot,
+      allowNonZeroExit: true,
+      timeoutMs: 5_000,
+      maxOutputBytes: 256 * 1024,
+    })
+    .pipe(Effect.orElseSucceed(() => undefined));
+  if (result === undefined || result.exitCode !== 0) return [];
+  return result.stdout
+    .split("\n")
+    .filter((line) => line.startsWith("worktree ") && line.length > "worktree ".length)
+    .map((line) => line.slice("worktree ".length));
 });

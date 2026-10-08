@@ -25,7 +25,8 @@
  *   https://github.com/earendil-works/pi/blob/43d3763991/packages/coding-agent/src/core/package-manager.ts,
  *   which applies the user's array to the skills found in `~/.agents/skills`. Only for Global
  *   skills: a project's skills are filtered by the project's own `.pi/settings.json`, which is
- *   usually committed, so a project skill is `fixed`. Not run against Pi (not installed here).
+ *   usually committed, so a project skill is `fixed`, and so is a Global skill used in only some
+ *   projects, which Pi finds in the projects' folders. Not run against Pi (not installed here).
  * - Cursor: `fixed`. Its skills page documents no setting to switch one skill off, only the
  *   `disable-model-invocation` field in the skill's own file. https://cursor.com/docs/context/skills
  * - Grok: `fixed`. The docs list `[skills] paths` for extra folders and a TUI `/skills` modal,
@@ -49,20 +50,41 @@ import { piSwitches, setPiSwitch } from "./PiSkillSettings.ts";
 
 type SwitchKind = "claude" | "codex" | "opencode" | "pi";
 
-/** The adapters that have a per-skill setting, and for which skills. */
+/**
+ * The adapters that have a per-skill setting, and for which skills. `inProjects`: the setting also
+ * reaches a Global skill the agent finds only through links in projects' folders (a skill used in
+ * some projects, see `SkillLibrary`). Claude and OpenCode name the skill and Codex records its real
+ * folder, so wherever the agent finds it they apply; Pi applies its list to the user-level folders
+ * only.
+ */
 const SWITCHES: Readonly<
-  Record<string, { readonly kind: SwitchKind; readonly scopes: readonly SkillScope[] }>
+  Record<
+    string,
+    {
+      readonly kind: SwitchKind;
+      readonly scopes: readonly SkillScope[];
+      readonly inProjects: boolean;
+    }
+  >
 > = {
-  claudeAgent: { kind: "claude", scopes: ["global", "project"] },
-  codex: { kind: "codex", scopes: ["global", "project"] },
-  opencode: { kind: "opencode", scopes: ["global", "project"] },
-  pi: { kind: "pi", scopes: ["global"] },
+  claudeAgent: { kind: "claude", scopes: ["global", "project"], inProjects: true },
+  codex: { kind: "codex", scopes: ["global", "project"], inProjects: true },
+  opencode: { kind: "opencode", scopes: ["global", "project"], inProjects: true },
+  pi: { kind: "pi", scopes: ["global"], inProjects: false },
 };
 
-/** Which settings switch a skill of this scope for the agent, if T3 Code knows any. */
-export const skillSwitchKind = (driver: ProviderDriverKind, scope: SkillScope) => {
+/**
+ * Which settings switch a skill of this scope for the agent, if T3 Code knows any. `reach` is
+ * `projects` for a Global skill that the agent finds only through links in projects' folders.
+ */
+export const skillSwitchKind = (
+  driver: ProviderDriverKind,
+  scope: SkillScope,
+  reach: "folder" | "projects" = "folder",
+) => {
   const entry = SWITCHES[driver];
-  return entry?.scopes.includes(scope) ? entry.kind : undefined;
+  if (entry === undefined || !entry.scopes.includes(scope)) return undefined;
+  return reach === "projects" && !entry.inProjects ? undefined : entry.kind;
 };
 
 /** What T3 Code needs to know about an agent instance to read and write its settings. */

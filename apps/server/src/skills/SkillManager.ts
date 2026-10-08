@@ -44,6 +44,7 @@ import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import type { SkillSettingsWriter } from "@t3tools/provider-core/server/driver";
+import { ownProjectFolderFor } from "@t3tools/provider-core/server/AgentSkillFolders";
 
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -58,7 +59,7 @@ import {
 import * as SkillCatalog from "./SkillCatalog.ts";
 import { createLink, removeLink, type RemoveLinkResult } from "./SkillLinks.ts";
 import { deleteFolder } from "./SkillMove.ts";
-import { makeSkillPlacement } from "./SkillPlacement.ts";
+import { makeSkillPlacement, projectsOfLibrarySkill, type LibrarySkill } from "./SkillPlacement.ts";
 
 type Blocked = SkillOutcome["blocked"][number];
 
@@ -161,6 +162,70 @@ const planDisable = (
     }
   }
   return { unlinks: [...unlinks.values()], blocked, switchOffs };
+};
+
+/**
+ * What turning agents on takes for a skill used in only some projects. Every project that uses it
+ * has a link in the shared folder, which the agents that read that folder already have. An agent
+ * that doesn't gets a link in its own folder in each of those projects (`links`), and one whose
+ * own settings switch the skill off gets that taken away (`clears`).
+ */
+const planEnableLibrary = (skill: LibrarySkill, requested: ReadonlySet<ProviderInstanceId>) => {
+  const folders = new Map<string, ProviderInstanceId[]>();
+  const blocked: Blocked[] = [];
+  const clears: ProviderInstanceId[] = [];
+  const projects = projectsOfLibrarySkill(skill);
+  for (const agent of skill.agents) {
+    if (!requested.has(agent.instanceId)) continue;
+    if (agent.state === "off") {
+      clears.push(agent.instanceId);
+      continue;
+    }
+    if (agent.state !== "none") continue;
+    const folder = ownProjectFolderFor(agent.driver);
+    // With no project using the skill there is nowhere to link it for the agent.
+    if (folder === undefined || projects.length === 0) {
+      blocked.push({ instanceId: agent.instanceId, reason: "failed" });
+      continue;
+    }
+    if (agent.switchedOff) clears.push(agent.instanceId);
+    folders.set(folder, [...(folders.get(folder) ?? []), agent.instanceId]);
+  }
+  return {
+    links: [...folders].map(([folder, agents]) => ({ folder, agents })),
+    blocked,
+    clears,
+  };
+};
+
+/**
+ * What turning agents off takes for a skill used in only some projects: the links in an agent's
+ * own folder go (`unlinks`), in every project. An agent that reads the shared folder, which every
+ * project that uses the skill links into, can't be switched by a link: it has its own setting
+ * written (`switchOffs`) or stays on.
+ */
+const planDisableLibrary = (skill: LibrarySkill, requested: ReadonlySet<ProviderInstanceId>) => {
+  const folders = new Map<string, ProviderInstanceId[]>();
+  const blocked: Blocked[] = [];
+  const switchOffs: ProviderInstanceId[] = [];
+  for (const agent of skill.agents) {
+    if (!requested.has(agent.instanceId) || agent.state === "none" || agent.state === "off") {
+      continue;
+    }
+    const folder = ownProjectFolderFor(agent.driver);
+    if (folder !== undefined) {
+      folders.set(folder, [...(folders.get(folder) ?? []), agent.instanceId]);
+    } else if (agent.settings === undefined) {
+      blocked.push({ instanceId: agent.instanceId, reason: "alwaysOn" });
+    } else {
+      switchOffs.push(agent.instanceId);
+    }
+  }
+  return {
+    unlinks: [...folders].map(([folder, agents]) => ({ folder, agents })),
+    blocked,
+    switchOffs,
+  };
 };
 
 const hasSkill = (state: SkillAgentState) => state === "direct" || state === "link";
@@ -387,12 +452,56 @@ const make = Effect.gen(function* () {
     return { wrote, blocked } satisfies SkillChange;
   });
 
+  const placement = yield* makeSkillPlacement({
+    catalog,
+    platform,
+    environment,
+    home: homeDirectory,
+    registeredRoots: projects.listShells().pipe(
+      Effect.map((shells) => shells.map((shell) => shell.workspaceRoot)),
+      Effect.orElseSucceed((): string[] => []),
+    ),
+    enable: (skill, agents, projectRoot) => enableOne(skill, agents, projectRoot),
+  });
+
+  /** A skill used in only some projects: links in the projects' folders, and the agents' settings. */
+  const enableLibraryAgents = Effect.fnUntraced(function* (
+    skill: LibrarySkill,
+    requested: ReadonlySet<ProviderInstanceId>,
+    writers: SettingsWriters,
+  ) {
+    const plan = planEnableLibrary(skill, requested);
+    const linked = yield* placement.addLibraryLinks(skill, plan.links);
+    const cleared = yield* switchAgents(skill, plan.clears, false, writers);
+    return {
+      wrote: linked.wrote || cleared.wrote,
+      blocked: [...plan.blocked, ...linked.blocked, ...cleared.blocked],
+    } satisfies SkillChange;
+  });
+
+  const disableLibraryAgents = Effect.fnUntraced(function* (
+    skill: LibrarySkill,
+    requested: ReadonlySet<ProviderInstanceId>,
+    writers: SettingsWriters,
+  ) {
+    const plan = planDisableLibrary(skill, requested);
+    const unlinked = yield* placement.removeLibraryLinks(skill, plan.unlinks);
+    const switched = yield* switchAgents(skill, plan.switchOffs, true, writers);
+    return {
+      wrote: unlinked.wrote || switched.wrote,
+      blocked: [...plan.blocked, ...unlinked.blocked, ...switched.blocked],
+    } satisfies SkillChange;
+  });
+
   const enableAgents = Effect.fnUntraced(function* (
     skill: SkillCatalog.ResolvedSkill,
     requested: ReadonlySet<ProviderInstanceId>,
     projectRoot: string | undefined,
     writers: SettingsWriters,
   ) {
+    if (skill.library !== undefined) {
+      return yield* enableLibraryAgents({ ...skill, library: skill.library }, requested, writers);
+    }
     const linked = yield* enableOne(skill, requested, projectRoot);
     const cleared = yield* switchAgents(skill, planEnable(skill, requested).clears, false, writers);
     return combine(linked, cleared);
@@ -403,6 +512,9 @@ const make = Effect.gen(function* () {
     requested: ReadonlySet<ProviderInstanceId>,
     writers: SettingsWriters,
   ) {
+    if (skill.library !== undefined) {
+      return yield* disableLibraryAgents({ ...skill, library: skill.library }, requested, writers);
+    }
     const unlinked = yield* disableOne(skill, requested);
     const switched = yield* switchAgents(
       skill,
@@ -439,18 +551,6 @@ const make = Effect.gen(function* () {
         skill.agents.filter((agent) => hasSkill(agent.state)).map((agent) => agent.instanceId),
       ),
     );
-
-  const placement = yield* makeSkillPlacement({
-    catalog,
-    platform,
-    environment,
-    home: homeDirectory,
-    registeredRoots: projects.listShells().pipe(
-      Effect.map((shells) => shells.map((shell) => shell.workspaceRoot)),
-      Effect.orElseSucceed((): string[] => []),
-    ),
-    enable: (skill, agents, projectRoot) => enableOne(skill, agents, projectRoot),
-  });
 
   const deleteOne = Effect.fnUntraced(function* (
     skill: SkillCatalog.ResolvedSkill,

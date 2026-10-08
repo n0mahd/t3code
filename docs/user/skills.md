@@ -78,9 +78,33 @@ a synced folder, stays where it is.
 Agents running in T3 Code can list skills and turn them on or off for agents too; they can't
 move or delete them.
 
+## Instructions
+
+The **Instructions** section at the top of the page lists the files your agents read before they
+start work. **This project** is the project's own `AGENTS.md`, shared through the repo. **Just you**
+is your own `CLAUDE.local.md` for the project, which only Claude reads; T3 Code keeps it out of
+git. `AGENTS.md` and `CLAUDE.md` files in subfolders are under **In subfolders**. Open a file to
+edit it. Edits save as you type, and if the file changed on disk, T3 Code asks before overwriting
+it.
+
+**Global** is yours alone and used in every project. Click it to turn agents on or off for it, or
+**Edit** it. It is `~/.agents/AGENTS.md`, or the file your agents already link to. An agent with its
+own different file offers **Use Global instead**, which adds its text to the end of Global and
+links the agent to it. T3 Code never replaces a file any other way.
+
+Claude skips a project's `AGENTS.md` when the project has a `CLAUDE.local.md` or a `CLAUDE.md`. Set
+**Claude reads AGENTS.md** to **Alongside any CLAUDE.md** to read both. It applies in every
+project and needs Claude Code 2.1.277 or later. If a project has only a `CLAUDE.md`, **Share with
+all agents** renames it to `AGENTS.md`.
+
+Agents running in T3 Code can list these files and turn Global on or off for agents. They edit the
+files themselves, and the Claude choice stays yours.
+
 ## Needs attention
 
-**Needs attention** filters the list to skills that need a look. A skill is on it when:
+**Needs attention** filters the list to skills and instructions that need a look. An instruction
+file is on it when Claude skips a project's `AGENTS.md`, when an agent doesn't use Global, or when
+an agent has instructions of its own; each has a button for the fix. A skill is on it when:
 
 - an installed and enabled agent doesn't use it. An agent loads one skill per name, the first it
   finds in its folders (Codex and OpenCode list every copy), so a copy that another folder shadows
@@ -96,5 +120,6 @@ move or delete them.
 
 - Only a project's top folders are read, such as `<project>/.agents/skills`, not the folders
   above it that some agents also read.
+- An instruction file isn't shown or edited past 1 MB.
 - A skill's file list stops at 500 files, and `SKILL.md` isn't shown past 1 MB.
 - A `SKILL.md` that is a link to a file outside the skill's folder isn't read.

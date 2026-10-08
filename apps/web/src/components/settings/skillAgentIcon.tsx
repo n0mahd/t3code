@@ -5,9 +5,8 @@ import { shouldShowInstanceBadge } from "../../providerInstances";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
-  availability,
   availabilityNote,
-  type Skill,
+  type Availability,
   type SkillAgent,
   type SkillsContext,
 } from "./SkillsSettings.logic";
@@ -53,11 +52,11 @@ function IconRow({ label, children }: { label: string; children: ReactNode }) {
 }
 
 /**
- * Who can use a skill: one mark when every installed agent can, otherwise just the agents that
- * can. Agents that aren't installed and enabled never show.
+ * Who has a skill, or a group of them, on: one mark when every installed agent does, otherwise just
+ * the agents that do, and nothing when none does. Agents that aren't installed and enabled never
+ * show.
  */
-export function SkillAgents({ skill, ctx }: { skill: Skill; ctx: SkillsContext }) {
-  const value = availability(skill, ctx);
+export function SkillAgents({ value, ctx }: { value: Availability; ctx: SkillsContext }) {
   const label = availabilityNote(value);
   if (value.everyone)
     return (

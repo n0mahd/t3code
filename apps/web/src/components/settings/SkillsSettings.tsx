@@ -12,9 +12,9 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { Skeleton } from "../ui/skeleton";
-import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
+import { ConfirmPlan } from "./SkillBulkBar";
 import { SkillDetail } from "./SkillDetail";
-import { SkillSection, StandardInfo, type RowFix } from "./SkillList";
+import { SkillSection, StandardInfo } from "./SkillList";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -24,7 +24,6 @@ import {
   ingestSkills,
   installedAgents,
   matchesQuery,
-  planFix,
   skillsEnvironment,
   skillsToCheckWithGit,
   unreadableNote,
@@ -140,7 +139,6 @@ function EnvironmentSkills({
   const [query, setQuery] = useState("");
   const [onlyAttention, setOnlyAttention] = useState(false);
   const [detailReload, setDetailReload] = useState(0);
-  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   /** A change that is waiting for the person to confirm it. */
   const [confirming, setConfirming] = useState<SkillPlan | null>(null);
   /** A change is being made and the list read again; nothing else can start meanwhile. */
@@ -157,10 +155,11 @@ function EnvironmentSkills({
     };
   }, []);
   // A new view starts at the top of the page.
-  const show = (next: View) => {
+  const show = useCallback((next: View) => {
     setView(next);
     rootRef.current?.closest("[data-settings-page-scroll]")?.scrollTo({ top: 0 });
-  };
+  }, []);
+  const openSkill = useCallback((id: string) => show({ kind: "skill", id }), [show]);
 
   // The server reads a fixed list of folders each time; no agent is asked to rescan.
   const load = useCallback(async () => {
@@ -270,18 +269,11 @@ function EnvironmentSkills({
                 ...base,
                 input: { ...scoped, skills: change.skills, agents: change.agents },
               })
-            : change.kind === "move"
-              ? // A move is between a project and Global, so it needs the project picked above.
-                cwd
-                ? await placeSkills({
-                    ...base,
-                    input: {
-                      cwd,
-                      skills: change.skills,
-                      to: change.to === "global" ? { kind: "global" } : { kind: "project", cwd },
-                    },
-                  })
-                : null
+            : change.kind === "place"
+              ? await placeSkills({
+                  ...base,
+                  input: { ...scoped, skills: change.skills, to: change.to },
+                })
               : await deleteSkills({ ...base, input: { ...scoped, skills: change.skills } });
       setNotice(
         result?._tag === "Success"
@@ -302,13 +294,12 @@ function EnvironmentSkills({
     } catch {
       setLoadError(LOAD_ERROR);
     }
-    setSelected(new Set());
     setBusy(false);
   };
   /**
-   * A plan that needs confirming waits for the dialog; any other goes ahead. For a move or delete
-   * the dialog opens at once and git is asked meanwhile: the "undo with git" line appears when the
-   * answer is in, and never when the check fails.
+   * A plan that needs confirming waits for the dialog; any other goes ahead. For a placement or
+   * delete the dialog opens at once and git is asked meanwhile: the "undo with git" line appears
+   * when the answer is in, and never when the check fails.
    */
   const runPlan = (plan: SkillPlan) => {
     if (!plan.confirmation) {
@@ -332,25 +323,12 @@ function EnvironmentSkills({
       }
     })();
   };
-  const chosen = useMemo(
-    () => (skills ?? []).filter((skill) => selected.has(skill.id)),
-    [skills, selected],
-  );
-  const setSelection = (ids: readonly string[], checked: boolean) =>
-    setSelected((current) => {
-      const next = new Set(current);
-      for (const id of ids) {
-        if (checked) next.add(id);
-        else next.delete(id);
-      }
-      return next;
-    });
-  /** Only the Needs attention list offers it, where the missing link is the point of the row. */
-  const rowFix = (skill: Skill): RowFix | null => {
-    if (!onlyAttention || attention(skill, ctx)?.kind !== "missing") return null;
-    const fix = planFix(skill, ctx);
-    return fix ? { label: fix.label, run: () => runPlan(fix.plan) } : null;
-  };
+  // Rows are memoized, so they get one function that always calls the latest runPlan.
+  const runPlanRef = useRef(runPlan);
+  useEffect(() => {
+    runPlanRef.current = runPlan;
+  });
+  const onPlan = useCallback((plan: SkillPlan) => runPlanRef.current(plan), []);
   const offline = !connected;
   const empty = skills !== null && skills.length === 0;
   const emptyText = (total: number, none: string) =>
@@ -459,45 +437,26 @@ function EnvironmentSkills({
               {project && (
                 <SkillSection
                   title="This project"
-                  hint="Lives in this repo"
-                  detail={`Anyone who clones ${project.label} gets these.`}
-                  folder=".agents/skills"
-                  all={projectSkills}
                   visible={visible(projectSkills)}
                   ctx={ctx}
                   emptyText={emptyText(projectSkills.length, "No skills in this project.")}
-                  selected={selected}
+                  showFix={onlyAttention}
                   busy={locked}
-                  rowFix={rowFix}
-                  onSelectedChange={setSelection}
-                  onOpen={(id) => show({ kind: "skill", id })}
+                  onPlan={onPlan}
+                  onOpen={openSkill}
                 />
               )}
               <SkillSection
                 title="Global"
-                hint="In all your projects"
-                folder="~/.agents/skills"
-                all={globalSkills}
                 visible={visible(globalSkills)}
                 ctx={ctx}
                 emptyText={emptyText(globalSkills.length, "No Global skills yet.")}
-                selected={selected}
+                showFix={onlyAttention}
                 busy={locked}
-                rowFix={rowFix}
-                onSelectedChange={setSelection}
-                onOpen={(id) => show({ kind: "skill", id })}
+                onPlan={onPlan}
+                onOpen={openSkill}
               />
               {empty && <p className="text-sm text-muted-foreground">No skills yet.</p>}
-              {chosen.length > 0 && (
-                <BulkBar
-                  selected={chosen}
-                  ctx={ctx}
-                  hasProject={project !== null}
-                  busy={locked}
-                  onClear={() => setSelected(new Set())}
-                  onPlan={runPlan}
-                />
-              )}
             </>
           )}
         </>

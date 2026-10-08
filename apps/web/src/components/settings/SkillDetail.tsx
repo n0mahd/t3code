@@ -1,5 +1,5 @@
 import type { EnvironmentId, SkillGetResult } from "@t3tools/contracts";
-import { AlertTriangleIcon, ArrowLeftIcon, LockIcon, MoreHorizontalIcon } from "lucide-react";
+import { AlertTriangleIcon, ArrowLeftIcon, MoreHorizontalIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
@@ -11,19 +11,14 @@ import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/men
 import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { SkillAgentIcon } from "./skillAgentIcon";
+import { AgentSwitchChip } from "./SkillAgentSwitch";
 import {
-  accessOf,
-  agentSkillPath,
   attention,
   planDelete,
-  planMove,
   planToggle,
   planTurnOnAll,
   scriptFiles,
-  switchBlocker,
   type Skill,
-  type SkillAgent,
   type SkillPlan,
   type SkillsContext,
 } from "./SkillsSettings.logic";
@@ -96,7 +91,7 @@ export function SkillDetail({
   /** A change is being made, so nothing else can start. */
   busy: boolean;
   onBack: () => void;
-  /** Turns an agent on or off, moves or deletes the skill; a plan with a confirmation asks first. */
+  /** Turns an agent on or off, places or deletes the skill; a plan with a confirmation asks first. */
   onPlan: (plan: SkillPlan) => void;
   /** Opens this skill again, which reads its files again. */
   onReload: () => void;
@@ -137,11 +132,6 @@ export function SkillDetail({
   const sameCopies = skill.copies.filter((copy) => copy.same);
   const turnOnAll = planTurnOnAll([skill], ctx);
   const del = planDelete([skill], ctx);
-  // Moving into a project needs one picked above the page.
-  const move =
-    skill.scope === "global" && projectRoot === null
-      ? null
-      : planMove([skill], skill.scope === "global" ? "project" : "global");
 
   const copyPath = (path: string) => {
     void writeTextToClipboard(path, "skill path").then(
@@ -188,7 +178,7 @@ export function SkillDetail({
             <span className="text-xs text-muted-foreground">No agents are installed.</span>
           )}
           {ctx.installed.map((agent) => (
-            <AgentChip
+            <AgentSwitchChip
               key={agent.instanceId}
               skill={skill}
               agent={agent}
@@ -201,7 +191,7 @@ export function SkillDetail({
             />
           ))}
           <span className="flex-1" />
-          {(skillFolder || turnOnAll || move || del) && (
+          {(skillFolder || turnOnAll || del) && (
             <Menu>
               <MenuTrigger
                 render={<Button size="icon-xs" variant="outline" aria-label="More actions" />}
@@ -215,11 +205,6 @@ export function SkillDetail({
                 {turnOnAll && (
                   <MenuItem disabled={busy} onClick={() => onPlan(turnOnAll)}>
                     Turn on for all agents
-                  </MenuItem>
-                )}
-                {move && (
-                  <MenuItem disabled={busy} onClick={() => onPlan(move)}>
-                    {skill.scope === "global" ? "Move to this project" : "Move to Global"}
                   </MenuItem>
                 )}
                 {del && <MenuSeparator />}
@@ -305,57 +290,5 @@ export function SkillDetail({
         )}
       </div>
     </section>
-  );
-}
-
-/** One agent: click to switch it on or off, unless it reads the skill's folder directly. */
-function AgentChip({
-  skill,
-  agent,
-  ctx,
-  busy,
-  onToggle,
-}: {
-  skill: Skill;
-  agent: SkillAgent;
-  ctx: SkillsContext;
-  busy: boolean;
-  onToggle: () => void;
-}) {
-  const access = accessOf(skill, agent);
-  const on = access?.state === "direct" || access?.state === "link";
-  const blocker = switchBlocker(skill, agent);
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            size="xs"
-            variant={on ? "secondary" : "outline"}
-            aria-pressed={on}
-            aria-disabled={blocker !== null || busy}
-            onClick={() => {
-              if (blocker === null && !busy) onToggle();
-            }}
-          />
-        }
-      >
-        <SkillAgentIcon agent={agent} agents={ctx.installed} active={on} />
-        {agent.displayName}
-        {blocker && <LockIcon className="text-muted-foreground" aria-label="Always on" />}
-      </TooltipTrigger>
-      <TooltipPopup>
-        {blocker && <span className="block">{blocker}</span>}
-        {!blocker && access?.state === "link" && (
-          <span className="block">{agent.displayName} reads a link to this skill.</span>
-        )}
-        {!on && (
-          <span className="block">
-            {agent.displayName} doesn't use this skill. It reads skills from:
-          </span>
-        )}
-        <span className="block font-mono">{agentSkillPath(skill, agent)}</span>
-      </TooltipPopup>
-    </Tooltip>
   );
 }

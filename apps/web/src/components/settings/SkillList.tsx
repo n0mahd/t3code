@@ -1,111 +1,149 @@
-import { InfoIcon } from "lucide-react";
+import { ChevronRightIcon, InfoIcon } from "lucide-react";
+import { memo, useMemo, useState, type MouseEvent } from "react";
 
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
-import { Checkbox } from "../ui/checkbox";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { Switch } from "../ui/switch";
 import { SettingsGroup } from "./SettingsGroup";
+import { AgentSwitchChip } from "./SkillAgentSwitch";
 import { SkillAgents } from "./skillAgentIcon";
-import { attention, type Skill, type SkillsContext } from "./SkillsSettings.logic";
+import {
+  attention,
+  availability,
+  listSwitchOn,
+  planFix,
+  planListSwitch,
+  planRowSwitch,
+  planToggle,
+  projectsBadge,
+  rowSwitchOn,
+  type Skill,
+  type SkillPlan,
+  type SkillsContext,
+} from "./SkillsSettings.logic";
 
-/** A checkbox that shows on hover or focus, always on touch, and stays once something is ticked. */
-function SelectBox({
-  label,
-  checked,
-  indeterminate = false,
-  visible,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  indeterminate?: boolean;
-  /** Something is selected somewhere, so every box shows. */
-  visible: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <span
-      className={cn(
-        "flex size-6 shrink-0 items-center justify-center group-focus-within/row:opacity-100 group-hover/row:opacity-100 has-data-checked:opacity-100 has-data-indeterminate:opacity-100 pointer-coarse:opacity-100",
-        visible ? "opacity-100" : "opacity-0",
-      )}
-    >
-      <Checkbox
-        aria-label={label}
-        checked={checked}
-        indeterminate={indeterminate}
-        onCheckedChange={(value) => onChange(value)}
-      />
-    </span>
-  );
-}
+/** Keeps a click on a control inside a clickable row from also opening or closing the row. */
+const stopRowClick = (event: MouseEvent) => event.stopPropagation();
 
-/** A one-click change for a row, such as turning the skill on for the agent that lacks it. */
-export type RowFix = { readonly label: string; readonly run: () => void };
-
-function SkillRow({
+const SkillRow = memo(function SkillRow({
   skill,
   ctx,
-  selected,
-  anySelected,
-  fix,
+  showFix,
   busy,
-  onToggle,
+  onPlan,
   onOpen,
 }: {
   skill: Skill;
   ctx: SkillsContext;
-  selected: boolean;
-  anySelected: boolean;
-  fix: RowFix | null;
+  /** Offer the one-click fix for a skill some agent lacks; only the Needs attention list does. */
+  showFix: boolean;
+  /** A change is being made, so nothing else can start. */
   busy: boolean;
-  onToggle: (checked: boolean) => void;
-  onOpen: () => void;
+  /** Turns agents on or off for skills; a plan with a confirmation asks first. */
+  onPlan: (plan: SkillPlan) => void;
+  /** Opens the skill itself, with its files. */
+  onOpen: (id: string) => void;
 }) {
-  const warning = attention(skill, ctx);
+  const [open, setOpen] = useState(false);
+  const derived = useMemo(() => {
+    const warning = attention(skill, ctx);
+    return {
+      conflict: warning?.kind === "conflict" ? warning.detail : null,
+      fix: showFix && warning?.kind === "missing" ? planFix(skill, ctx) : null,
+      availability: availability(skill, ctx),
+      on: rowSwitchOn(skill, ctx),
+      projects: projectsBadge(skill),
+    };
+  }, [skill, ctx, showFix]);
+  const { fix } = derived;
+  const panelId = `skill-panel-${skill.id}`;
   return (
-    <li
-      className={cn(
-        "group/row flex min-w-0 items-center gap-2 py-2 pr-3 pl-3 hover:bg-muted/40 sm:pr-4 sm:pl-4",
-        selected && "bg-muted/60",
-      )}
-    >
-      <SelectBox
-        label={`Select ${skill.name}`}
-        checked={selected}
-        visible={anySelected}
-        onChange={onToggle}
-      />
-      <button
-        type="button"
-        onClick={onOpen}
-        className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+    <li className={cn("min-w-0", open && "bg-muted/30")}>
+      <div
+        onClick={() => setOpen((value) => !value)}
+        className="flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 hover:bg-muted/40 sm:px-4"
       >
-        <span className="min-w-0 flex-1">
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={open ? panelId : undefined}
+          className="min-w-40 flex-1 cursor-pointer rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
           <span className="block truncate text-sm font-medium">{skill.name}</span>
           <span className="block truncate text-xs text-muted-foreground">
             {skill.description || "No description yet."}
           </span>
-        </span>
-        <span className="flex shrink-0 items-center gap-2">
-          {warning?.kind === "conflict" && (
-            <Badge variant="warning" size="sm" title={warning.detail}>
+        </button>
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          {derived.conflict && (
+            <Badge variant="warning" size="sm" title={derived.conflict}>
               Conflict
             </Badge>
           )}
-          <SkillAgents skill={skill} ctx={ctx} />
+          {derived.projects && (
+            <Badge variant="outline" size="sm">
+              {derived.projects}
+            </Badge>
+          )}
+          <SkillAgents value={derived.availability} ctx={ctx} />
+          <span className="flex items-center gap-2" onClick={stopRowClick}>
+            {fix && (
+              <Button size="xs" variant="outline" disabled={busy} onClick={() => onPlan(fix.plan)}>
+                {fix.label}
+              </Button>
+            )}
+            <Switch
+              aria-label={skill.name}
+              checked={derived.on}
+              disabled={busy || ctx.installed.length === 0}
+              onCheckedChange={() => {
+                const plan = planRowSwitch(skill, ctx);
+                if (plan) onPlan(plan);
+              }}
+            />
+          </span>
+          <ChevronRightIcon
+            aria-hidden
+            className={cn(
+              "size-4 shrink-0 text-muted-foreground transition-transform duration-150 motion-reduce:transition-none",
+              open && "rotate-90",
+            )}
+          />
         </span>
-      </button>
-      {fix && (
-        <Button size="xs" variant="outline" disabled={busy} onClick={fix.run}>
-          {fix.label}
-        </Button>
+      </div>
+      {open && (
+        <div id={panelId} className="space-y-2.5 px-3 pb-3 sm:px-4">
+          {ctx.installed.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No agents are installed.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {ctx.installed.map((agent) => (
+                <AgentSwitchChip
+                  key={agent.instanceId}
+                  skill={skill}
+                  agent={agent}
+                  ctx={ctx}
+                  busy={busy}
+                  onToggle={() => {
+                    const plan = planToggle(skill, agent, ctx);
+                    if (plan) onPlan(plan);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button size="xs" variant="outline" onClick={() => onOpen(skill.id)}>
+              Edit skill
+            </Button>
+          </div>
+        </div>
       )}
     </li>
   );
-}
+});
 
 /** Small info button beside the page heading: where project and global skills live. */
 export function StandardInfo() {
@@ -128,70 +166,41 @@ export function StandardInfo() {
 
 export function SkillSection({
   title,
-  hint,
-  detail,
-  folder,
-  all,
   visible,
   ctx,
   emptyText,
-  selected,
+  showFix,
   busy,
-  rowFix,
-  onSelectedChange,
+  onPlan,
   onOpen,
 }: {
   title: string;
-  /** A short muted phrase beside the name, in plain words. */
-  hint: string;
-  /** What the tooltip on the name adds, before the folder. */
-  detail?: string;
-  /** The section's folder, shown in a tooltip on its name. */
-  folder: string;
-  /** Every skill in the section, before search narrows it. */
-  all: readonly Skill[];
   /** The skills that match the search and filters. */
   visible: readonly Skill[];
   ctx: SkillsContext;
   emptyText: string;
-  /** The ids of the ticked rows, across both sections. */
-  selected: ReadonlySet<string>;
+  showFix: boolean;
   /** A change is being made, so nothing else can start. */
   busy: boolean;
-  /** The one-click change a row offers, if any. */
-  rowFix: (skill: Skill) => RowFix | null;
-  onSelectedChange: (ids: readonly string[], checked: boolean) => void;
+  onPlan: (plan: SkillPlan) => void;
   onOpen: (id: string) => void;
 }) {
-  const anySelected = selected.size > 0;
-  const selectedCount = visible.filter((skill) => selected.has(skill.id)).length;
+  const on = useMemo(() => listSwitchOn(visible, ctx), [visible, ctx]);
   return (
     <section className="space-y-2.5">
-      <div className="group/row flex min-h-7 items-center gap-2 px-3 sm:px-4">
-        <SelectBox
-          label={`Select all in ${title}`}
-          checked={visible.length > 0 && selectedCount === visible.length}
-          indeterminate={selectedCount > 0 && selectedCount < visible.length}
-          visible={anySelected}
-          onChange={(checked) =>
-            onSelectedChange(
-              visible.map((skill) => skill.id),
-              checked,
-            )
-          }
+      <div className="flex min-h-7 items-center gap-2 px-3 sm:px-4">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-normal text-foreground/70">{title}</h2>
+        <Switch
+          aria-label={`All skills in ${title}`}
+          checked={on}
+          disabled={busy || visible.length === 0 || ctx.installed.length === 0}
+          onCheckedChange={() => {
+            const plan = planListSwitch(visible, ctx);
+            if (plan) onPlan(plan);
+          }}
         />
-        <h2 className="flex min-w-0 flex-1 items-baseline gap-2 text-sm font-normal text-foreground/70">
-          <Tooltip>
-            <TooltipTrigger render={<span tabIndex={0} className="shrink-0 cursor-default" />}>
-              {title} · {all.length}
-            </TooltipTrigger>
-            <TooltipPopup>
-              {detail && <span className="block">{detail}</span>}
-              <span className="block font-mono">{folder}</span>
-            </TooltipPopup>
-          </Tooltip>
-          <span className="min-w-0 truncate text-xs text-muted-foreground">{hint}</span>
-        </h2>
+        {/* The width of a row's chevron, so this switch sits over the rows' switches. */}
+        <span aria-hidden className="w-4 shrink-0" />
       </div>
       <SettingsGroup>
         {visible.length === 0 ? (
@@ -203,12 +212,10 @@ export function SkillSection({
                 key={skill.id}
                 skill={skill}
                 ctx={ctx}
-                selected={selected.has(skill.id)}
-                anySelected={anySelected}
-                fix={rowFix(skill)}
+                showFix={showFix}
                 busy={busy}
-                onToggle={(checked) => onSelectedChange([skill.id], checked)}
-                onOpen={() => onOpen(skill.id)}
+                onPlan={onPlan}
+                onOpen={onOpen}
               />
             ))}
           </ul>

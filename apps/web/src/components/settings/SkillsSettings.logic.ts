@@ -6,6 +6,7 @@ import type {
   SkillListResult,
   SkillOutcome,
   SkillOutcomeReason,
+  SkillPlacement,
   SkillRef,
   SkillScope,
   SkillSummary,
@@ -90,13 +91,14 @@ export function installedAgents(
 
 // -- Access -----------------------------------------------------------------------------------
 
-export const accessOf = (
+const accessOf = (
   skill: Skill,
   agent: Pick<SkillAgent, "instanceId">,
 ): SkillAgentAccess | undefined =>
   skill.access.find((access) => access.instanceId === agent.instanceId);
 
-const hasAccess = (skill: Skill, agent: SkillAgent) => {
+/** The agent loads the skill: through a link, or by reading its folder. */
+export const hasAccess = (skill: Skill, agent: SkillAgent) => {
   const state = accessOf(skill, agent)?.state;
   return state === "direct" || state === "link";
 };
@@ -151,7 +153,7 @@ export function attention(skill: Skill, ctx: SkillsContext): Attention | null {
 }
 
 /** Who can use a skill, among the installed agents. */
-type Availability = {
+export type Availability = {
   /** Every installed agent can use it. */
   everyone: boolean;
   agents: SkillAgent[];
@@ -193,7 +195,13 @@ export type SkillChange =
       readonly skills: readonly SkillRef[];
       readonly agents: readonly ProviderInstanceId[];
     }
-  | { readonly kind: "move"; readonly skills: readonly SkillRef[]; readonly to: SkillScope }
+  | {
+      readonly kind: "place";
+      readonly skills: readonly SkillRef[];
+      readonly to: SkillPlacement;
+      /** The projects `to` names, for telling the person where the skills went. */
+      readonly projectNames: readonly string[];
+    }
   | { readonly kind: "delete"; readonly skills: readonly SkillRef[] };
 
 export type SkillPlan = {
@@ -203,6 +211,7 @@ export type SkillPlan = {
   /** Present when the change should be confirmed first, in plain words. */
   readonly confirmation?: {
     readonly title: string;
+    /** May be empty when the title says it all. */
     readonly body: string;
     /** Lines under the body, such as what stays on and why. */
     readonly notes: readonly string[];
@@ -226,25 +235,106 @@ const enablePlan = (skills: readonly Skill[], agents: readonly SkillAgent[]): Sk
   affected: skills.length,
 });
 
+/** T3 Code can't switch this agent for this skill: it reads the folder and has no setting for it. */
+const isFixed = (skill: Skill, agent: Pick<SkillAgent, "instanceId">) =>
+  accessOf(skill, agent)?.fixed === true;
+
+/** Installed agents T3 Code can switch for this skill. */
+const switchableAgents = (skill: Skill, ctx: SkillsContext) =>
+  ctx.installed.filter((agent) => !isFixed(skill, agent));
+
 /** Why an agent's switch can't be flipped, or null when it can. */
 export function switchBlocker(skill: Skill, agent: SkillAgent) {
-  return accessOf(skill, agent)?.state === "direct"
-    ? "Always on. It reads this folder directly."
-    : null;
+  if (!isFixed(skill, agent)) return null;
+  return hasAccess(skill, agent)
+    ? `Always on. ${agent.displayName} reads this folder directly.`
+    : `${agent.displayName} can't be switched for this skill.`;
 }
+
+/** One skill's switch is on when any agent uses it; the icons show who. */
+export const rowSwitchOn = (skill: Skill, ctx: SkillsContext) =>
+  ctx.installed.some((agent) => hasAccess(skill, agent));
+
+/**
+ * A section's or group's switch is on when every skill in it is on for every agent that can be
+ * switched. Agents T3 Code can't switch are left out, since the switch could never reach them.
+ */
+export const listSwitchOn = (skills: readonly Skill[], ctx: SkillsContext) =>
+  skills.length > 0 &&
+  skills.every((skill) => switchableAgents(skill, ctx).every((agent) => hasAccess(skill, agent)));
 
 /** Turning one agent on for one skill, or off. Off asks first when other agents lose it too. */
 export function planToggle(skill: Skill, agent: SkillAgent, ctx: SkillsContext) {
   return hasAccess(skill, agent) ? planTurnOff([skill], agent, ctx) : enablePlan([skill], [agent]);
 }
 
-/** Every installed agent that lacks one of the skills gets a link; nothing asks first. */
+/** Every agent that lacks one of the skills, and can be switched, gets it; nothing asks first. */
 export function planTurnOnAll(selected: readonly Skill[], ctx: SkillsContext): SkillPlan | null {
-  const targets = selected.filter((skill) => missingAgents(skill, ctx).length > 0);
-  if (targets.length === 0) return null;
-  const agents = ctx.installed.filter((agent) => targets.some((skill) => !hasAccess(skill, agent)));
-  return enablePlan(targets, agents);
+  const wanted = selected
+    .map((skill) => ({
+      skill,
+      missing: switchableAgents(skill, ctx).filter((agent) => !hasAccess(skill, agent)),
+    }))
+    .filter((entry) => entry.missing.length > 0);
+  if (wanted.length === 0) return null;
+  const ids = new Set(wanted.flatMap((entry) => entry.missing.map((agent) => agent.instanceId)));
+  return enablePlan(
+    wanted.map((entry) => entry.skill),
+    ctx.installed.filter((agent) => ids.has(agent.instanceId)),
+  );
 }
+
+const staysOnNote = (count: number, agent: SkillAgent) =>
+  `${plural(count, "skill")} ${count === 1 ? "stays" : "stay"} on because ${agent.displayName} reads ${count === 1 ? "its" : "their"} folder.`;
+
+/**
+ * Every agent that uses one of the skills is switched off. Agents T3 Code can't switch are asked
+ * anyway, so the result can say why a skill stays on. With `ask`, the change waits for a yes.
+ */
+export function planTurnOffAll(
+  selected: readonly Skill[],
+  ctx: SkillsContext,
+  { ask }: { ask: boolean },
+): SkillPlan | null {
+  const targets = selected.filter((skill) => rowSwitchOn(skill, ctx));
+  if (targets.length === 0) return null;
+  const agents = ctx.installed.filter((agent) => targets.some((skill) => hasAccess(skill, agent)));
+  const notes = agents.flatMap((agent) => {
+    const stays = targets.filter((skill) => isFixed(skill, agent) && hasAccess(skill, agent));
+    return stays.length > 0 ? [staysOnNote(stays.length, agent)] : [];
+  });
+  return {
+    change: {
+      kind: "disable",
+      skills: targets.map(skillRef),
+      agents: agents.map((agent) => agent.instanceId),
+    },
+    affected: targets.length,
+    ...(ask
+      ? {
+          confirmation: {
+            title: `Turn off ${targets.length === 1 ? `“${targets[0]!.name}”` : plural(targets.length, "skill")} for every agent?`,
+            body: "",
+            notes,
+            confirm: "Turn off",
+            destructive: false,
+          },
+        }
+      : {}),
+  };
+}
+
+/** What a row's switch does: turn the skill on for every agent, or off for every agent. */
+export const planRowSwitch = (skill: Skill, ctx: SkillsContext) =>
+  rowSwitchOn(skill, ctx)
+    ? planTurnOffAll([skill], ctx, { ask: false })
+    : planTurnOnAll([skill], ctx);
+
+/** What a section's or group's switch does. Turning off many skills asks first. */
+export const planListSwitch = (skills: readonly Skill[], ctx: SkillsContext) =>
+  listSwitchOn(skills, ctx)
+    ? planTurnOffAll(skills, ctx, { ask: true })
+    : planTurnOnAll(skills, ctx);
 
 /** Other installed agents that lose the skill when this agent's link goes: same folder, same link. */
 function alsoLosesOnTurnOff(skill: Skill, agent: SkillAgent, ctx: SkillsContext) {
@@ -260,15 +350,16 @@ function alsoLosesOnTurnOff(skill: Skill, agent: SkillAgent, ctx: SkillsContext)
   });
 }
 
-/** Turning one agent off for the skills it uses through a link. Others stay on. */
+/** Turning one agent off for the skills it uses. Others stay on. */
 export function planTurnOff(
   selected: readonly Skill[],
   agent: SkillAgent,
   ctx: SkillsContext,
 ): SkillPlan | null {
-  const targets = selected.filter((skill) => accessOf(skill, agent)?.state === "link");
-  const stuck = selected.filter((skill) => accessOf(skill, agent)?.state === "direct");
-  if (targets.length === 0 && stuck.length === 0) return null;
+  const using = selected.filter((skill) => hasAccess(skill, agent));
+  const targets = using.filter((skill) => !isFixed(skill, agent));
+  const stuck = using.filter((skill) => isFixed(skill, agent));
+  if (using.length === 0) return null;
   const alsoLose = new Map(
     targets
       .flatMap((skill) => alsoLosesOnTurnOff(skill, agent, ctx))
@@ -280,11 +371,7 @@ export function planTurnOff(
       `${joinNames([...alsoLose.values()].map((other) => other.displayName))} ${alsoLose.size === 1 ? "loses" : "lose"} ${targets.length === 1 ? "it" : "these"} too.`,
     );
   }
-  if (stuck.length > 0) {
-    notes.push(
-      `${plural(stuck.length, "skill")} ${stuck.length === 1 ? "stays" : "stay"} on because ${agent.displayName} reads ${stuck.length === 1 ? "its" : "their"} folder.`,
-    );
-  }
+  if (stuck.length > 0) notes.push(staysOnNote(stuck.length, agent));
   return {
     change: {
       kind: "disable",
@@ -306,12 +393,192 @@ export function planTurnOff(
   };
 }
 
-// -- Moving and deleting ----------------------------------------------------------------------
+// -- Selecting and grouping -------------------------------------------------------------------
 
-/** Whether the skill's own folder is in an agent's skill folder, which is what can move or go. */
+/** A checkbox over several rows: ticked when all are, indeterminate when only some are. */
+export function checkState(ids: readonly string[], selected: ReadonlySet<string>) {
+  const count = ids.filter((id) => selected.has(id)).length;
+  return {
+    checked: ids.length > 0 && count === ids.length,
+    indeterminate: count > 0 && count < ids.length,
+  };
+}
+
+/** A group shows this many skills before a "more" row. */
+export const GROUP_PREVIEW = 3;
+
+export type SkillGroup = { readonly source: string; readonly skills: readonly Skill[] };
+
+/**
+ * Skills the installer says came from the same place form a group when there are two or more.
+ * Groups come first, by name; everything else keeps its order.
+ */
+export function groupBySource(skills: readonly Skill[]): {
+  groups: SkillGroup[];
+  loose: Skill[];
+} {
+  const bySource = new Map<string, Skill[]>();
+  for (const skill of skills) {
+    if (!skill.source) continue;
+    const list = bySource.get(skill.source);
+    if (list) list.push(skill);
+    else bySource.set(skill.source, [skill]);
+  }
+  const groups = [...bySource]
+    .filter(([, list]) => list.length >= 2)
+    .map(([source, list]): SkillGroup => ({ source, skills: list }))
+    .toSorted((a, b) => a.source.localeCompare(b.source));
+  const grouped = new Set(groups.map((group) => group.source));
+  return { groups, loose: skills.filter((skill) => !skill.source || !grouped.has(skill.source)) };
+}
+
+/** Who has all of a group's skills on, in the same terms as one skill's icons. */
+export function groupAvailability(skills: readonly Skill[], ctx: SkillsContext): Availability {
+  const agents = ctx.installed.filter((agent) => skills.every((skill) => hasAccess(skill, agent)));
+  const missing = ctx.installed.filter((agent) => !agents.includes(agent));
+  return { everyone: ctx.installed.length > 0 && missing.length === 0, agents, missing };
+}
+
+/** The badge on a Global skill that is used in some projects only. */
+export const projectsBadge = (skill: Skill) =>
+  skill.projects && skill.projects.length > 0 ? plural(skill.projects.length, "project") : null;
+
+// -- Placing and deleting ---------------------------------------------------------------------
+
+/** A registered project of this environment, as the Use in… list shows it. */
+export type ProjectOption = { readonly cwd: string; readonly label: string };
+
+/** Where "Use in…" can put skills. */
+export type PlaceChoice = "project" | "global" | "projects";
+
+export type PlaceTarget =
+  | { readonly kind: "project"; readonly project: ProjectOption }
+  | { readonly kind: "global" }
+  | { readonly kind: "projects"; readonly projects: readonly ProjectOption[] };
+
+/** The server takes at most this many projects in one placement. */
+const MAX_PLACE_PROJECTS = 64;
+
+const placementOf = (skill: Skill): PlaceChoice =>
+  skill.scope === "project" ? "project" : skill.projects?.length ? "projects" : "global";
+
+/**
+ * What the Use in… list starts on: where the skills are now, when they all share one place, and
+ * the projects ticked: the ones a skill is used in, else the project picked above the page.
+ */
+export function startingPlacement(selected: readonly Skill[], picked: ProjectOption | null) {
+  const places = new Set(selected.map(placementOf));
+  const choice = places.size === 1 ? [...places][0]! : null;
+  const used = [...new Set(selected.flatMap((skill) => skill.projects ?? []))];
+  const ticked = choice === "projects" ? used : picked ? [picked.cwd] : [];
+  return { choice, ticked };
+}
+
+/** The placement a choice stands for, or null while it is unfinished or can't be asked for. */
+export function placeTarget(
+  choice: PlaceChoice | null,
+  picked: ProjectOption | null,
+  projects: readonly ProjectOption[],
+  ticked: ReadonlySet<string>,
+): PlaceTarget | null {
+  switch (choice) {
+    case "project":
+      return picked ? { kind: "project", project: picked } : null;
+    case "global":
+      return { kind: "global" };
+    case "projects": {
+      const chosen = projects.filter((project) => ticked.has(project.cwd));
+      return chosen.length > 0 && chosen.length <= MAX_PLACE_PROJECTS
+        ? { kind: "projects", projects: chosen }
+        : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** Whether the skill is placed that way already, so there is nothing to do for it. */
+function placedAlready(skill: Skill, target: PlaceTarget) {
+  switch (target.kind) {
+    case "project":
+      return skill.scope === "project";
+    case "global":
+      return skill.scope === "global" && !skill.projects?.length;
+    case "projects": {
+      const used = new Set(skill.projects ?? []);
+      return (
+        skill.scope === "global" &&
+        used.size === target.projects.length &&
+        target.projects.every((project) => used.has(project.cwd))
+      );
+    }
+  }
+}
+
+const placement = (target: PlaceTarget): SkillPlacement =>
+  target.kind === "project"
+    ? { kind: "project", cwd: target.project.cwd }
+    : target.kind === "global"
+      ? { kind: "global" }
+      : { kind: "projects", cwds: target.projects.map((project) => project.cwd) };
+
+const projectNamesOf = (target: PlaceTarget) =>
+  target.kind === "project"
+    ? [target.project.label]
+    : target.kind === "projects"
+      ? target.projects.map((project) => project.label)
+      : [];
+
+/**
+ * Putting skills in one project, in every project, or in some. It always asks first, since it
+ * changes who sees the skills. Skills that are placed that way already are left out.
+ */
+export function planPlace(selected: readonly Skill[], target: PlaceTarget): SkillPlan | null {
+  const coming = selected.filter((skill) => !placedAlready(skill, target));
+  if (coming.length === 0) return null;
+  const what = coming.length === 1 ? coming[0]!.name : plural(coming.length, "skill");
+  const alreadyGlobal = coming.every((skill) => skill.scope === "global");
+  const names = projectNamesOf(target);
+  const where = joinNames(names);
+  const confirmation = (() => {
+    switch (target.kind) {
+      case "project":
+        return {
+          title: `Use ${what} only in ${where}?`,
+          body: `It moves into ${where}, so anyone who clones it gets it.`,
+          confirm: "Move",
+        };
+      case "global":
+        return {
+          title: alreadyGlobal ? `Use ${what} in every project?` : `Make ${what} Global?`,
+          body: "It will be on in every project.",
+          confirm: alreadyGlobal ? "Apply" : "Make Global",
+        };
+      case "projects":
+        return {
+          title: alreadyGlobal ? `Use ${what} only in ${where}?` : `Make ${what} Global?`,
+          body:
+            names.length === 1
+              ? `It will be on in ${where} only.`
+              : `It will be on in ${where}. There's one copy, so an edit shows up in ${names.length === 2 ? "both" : "all of them"}.`,
+          confirm: alreadyGlobal ? "Apply" : "Make Global",
+        };
+    }
+  })();
+  return {
+    change: {
+      kind: "place",
+      skills: coming.map(skillRef),
+      to: placement(target),
+      projectNames: names,
+    },
+    affected: coming.length,
+    confirmation: { ...confirmation, notes: [], destructive: false },
+  };
+}
+
+/** Whether the skill's own folder is in an agent's skill folder, which is what can be deleted. */
 const hasOwnFolder = (skill: Skill) => skill.realFolder === true;
-
-const destinationName = (to: SkillScope) => (to === "global" ? "Global" : "this project");
 
 const quoted = (skills: readonly Skill[]) => skills.map((skill) => `“${skill.name}”`);
 
@@ -328,35 +595,6 @@ const linkedNote = (kept: readonly Skill[]) =>
     : [
         `${plural(kept.length, "skill")} ${kept.length === 1 ? "is" : "are"} reached through a link, so ${kept.length === 1 ? "it stays" : "they stay"}.`,
       ];
-
-/**
- * Moving skills between This project and Global. It always asks first, since it changes who
- * sees the skills. The agents that used a skill keep using it; the server links them again.
- */
-export function planMove(selected: readonly Skill[], to: SkillScope): SkillPlan | null {
-  const coming = selected.filter((skill) => skill.scope !== to);
-  const targets = coming.filter(hasOwnFolder);
-  if (targets.length === 0) return null;
-  const them = targets.length === 1 ? "it" : "them";
-  const notes = [
-    `Agents that use ${them} keep using ${them}.`,
-    ...linkedNote(coming.filter((skill) => !hasOwnFolder(skill))),
-  ];
-  return {
-    change: { kind: "move", skills: targets.map(skillRef), to },
-    affected: targets.length,
-    confirmation: {
-      title: `Move ${targets.length === 1 ? `“${targets[0]!.name}”` : plural(targets.length, "skill")} to ${destinationName(to)}?`,
-      body:
-        to === "global"
-          ? "Moves to your Global skills, for all your projects."
-          : "Moves into this project, so anyone who clones it gets it.",
-      notes,
-      confirm: "Move",
-      destructive: false,
-    },
-  };
-}
 
 /**
  * Deleting the skills' own folders and the links that lead to them. A skill that is only linked
@@ -394,14 +632,15 @@ export function planDelete(selected: readonly Skill[], ctx: SkillsContext): Skil
 }
 
 /**
- * The project skills a confirmation should ask git about: those a delete removes or a move out of
- * a project takes. A move into a project makes new files, so there is nothing in git to undo.
- * Null when the plan has nothing to ask about.
+ * The project skills a confirmation should ask git about: those a delete removes or a placement
+ * takes out of their project. A move into a project makes new files, so there is nothing in git
+ * to undo. Null when the plan has nothing to ask about.
  */
 export function skillsToCheckWithGit(plan: SkillPlan): readonly SkillRef[] | null {
   const { change } = plan;
   if (plan.confirmation === undefined) return null;
-  if (change.kind !== "delete" && !(change.kind === "move" && change.to === "global")) return null;
+  if (change.kind === "enable" || change.kind === "disable") return null;
+  if (change.kind === "place" && change.to.kind === "project") return null;
   const skills = change.skills.filter((skill) => skill.scope === "project");
   return skills.length === 0 ? null : skills;
 }
@@ -428,7 +667,7 @@ export function withGitNote(plan: SkillPlan, tracked: readonly string[]): SkillP
 
 /** A one-click fix for a skill that installed agents can't use yet. */
 export function planFix(skill: Skill, ctx: SkillsContext) {
-  const missing = missingAgents(skill, ctx);
+  const missing = missingAgents(skill, ctx).filter((agent) => !isFixed(skill, agent));
   if (missing.length === 0) return null;
   return {
     label:
@@ -441,8 +680,8 @@ const problemText = (
   reason: SkillOutcomeReason,
   name: string,
   who: string | undefined,
-  /** Where a move was going, to say who is in the way. */
-  to?: SkillScope,
+  /** Where a placement was going, to say who is in the way. */
+  where?: string,
 ) => {
   switch (reason) {
     case "notFound":
@@ -460,7 +699,7 @@ const problemText = (
     case "linked":
       return `“${name}” is reached through a link, so it stays where it is.`;
     case "destinationTaken":
-      return `${to === undefined ? "The other side" : capitalize(destinationName(to))} already has a “${name}”, so it stays.`;
+      return `${where ?? "The other side"} already has a “${name}”, so it stays.`;
     case "inUse":
       return `“${name}” is in use by another program, so it wasn't moved.`;
     case "setElsewhere":
@@ -472,11 +711,25 @@ const problemText = (
   }
 };
 
-const capitalize = (text: string) => `${text.slice(0, 1).toUpperCase()}${text.slice(1)}`;
+/** Many skills held back for the same agent and reason are one sentence, not one each. */
+const manyProblemText = (reason: SkillOutcomeReason, who: string, count: number) =>
+  reason === "alwaysOn"
+    ? `${who} reads ${count} skills directly, so they stay on.`
+    : `${who}'s settings decide ${count} skills, so they stay as they are.`;
+
+const AGGREGATED_REASONS = new Set<SkillOutcomeReason>(["alwaysOn", "setElsewhere"]);
+
+/** Where a placement went, as the start of a sentence naming who is in the way. */
+const placeWhere = (change: Extract<SkillChange, { kind: "place" }>) =>
+  change.to.kind === "global"
+    ? "Global"
+    : change.to.kind === "project"
+      ? (change.projectNames[0] ?? "This project")
+      : "A project";
 
 /** A skill that was changed, but not all the way: its old folder stayed, or only some of it went. */
 const partialText = (kind: SkillChange["kind"], name: string) =>
-  kind === "move"
+  kind === "place"
     ? `“${name}” moved, but its old folder couldn't be removed.`
     : `“${name}” was only partly deleted.`;
 
@@ -494,20 +747,37 @@ export function describeResult(
   const also = [...new Set(changed.flatMap((outcome) => outcome.affected.map(nameOf)))];
   const alsoNames = joinNames(also);
   const them = changed.length === 1 ? "it" : "them";
+  const alsoText = (verb: string) =>
+    also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? `${verb}s` : verb} ${them} too.` : "";
   const lead = (() => {
     if (changed.length === 0) return "";
     const count = plural(changed.length, "skill");
     switch (change.kind) {
       case "enable":
-        return `Turned on ${count} for ${joinNames(change.agents.map(nameOf))}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "gets" : "get"} ${them} too.` : ""}`;
+        return `Turned on ${count} for ${joinNames(change.agents.map(nameOf))}.${alsoText("get")}`;
       case "disable":
         return `Turned off ${count} for ${joinNames(change.agents.map(nameOf))}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "loses" : "lose"} ${them} too.` : ""}`;
-      case "move":
-        return `Moved ${count} to ${destinationName(change.to)}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "gets" : "get"} ${them} too.` : ""}`;
+      case "place":
+        return `${
+          change.to.kind === "global"
+            ? `Made ${count} Global.`
+            : change.to.kind === "project"
+              ? `Moved ${count} to ${change.projectNames[0] ?? "this project"}.`
+              : `${count} now used in ${joinNames(change.projectNames)}.`
+        }${alsoText("get")}`;
       case "delete":
         return `Deleted ${count}.`;
     }
   })();
+  // Skills held back for the same agent and reason are counted once, so a bulk change stays short.
+  const held = new Map<string, number>();
+  for (const outcome of outcomes) {
+    for (const blocked of outcome.blocked) {
+      if (!AGGREGATED_REASONS.has(blocked.reason)) continue;
+      const key = `${blocked.reason}\0${blocked.instanceId}`;
+      held.set(key, (held.get(key) ?? 0) + 1);
+    }
+  }
   const problems = [
     ...new Set(
       outcomes.flatMap((outcome) => [
@@ -515,19 +785,22 @@ export function describeResult(
           ? [
               outcome.status === "changed" &&
               outcome.reason === "failed" &&
-              (change.kind === "move" || change.kind === "delete")
+              (change.kind === "place" || change.kind === "delete")
                 ? partialText(change.kind, outcome.skill.name)
                 : problemText(
                     outcome.reason,
                     outcome.skill.name,
                     undefined,
-                    change.kind === "move" ? change.to : undefined,
+                    change.kind === "place" ? placeWhere(change) : undefined,
                   ),
             ]
           : []),
-        ...outcome.blocked.map((blocked) =>
-          problemText(blocked.reason, outcome.skill.name, nameOf(blocked.instanceId)),
-        ),
+        ...outcome.blocked.map((blocked) => {
+          const count = held.get(`${blocked.reason}\0${blocked.instanceId}`) ?? 0;
+          return count > 1
+            ? manyProblemText(blocked.reason, nameOf(blocked.instanceId), count)
+            : problemText(blocked.reason, outcome.skill.name, nameOf(blocked.instanceId));
+        }),
       ]),
     ),
   ];
@@ -537,8 +810,8 @@ export function describeResult(
         return "Already on.";
       case "disable":
         return "Already off.";
-      case "move":
-        return `Already in ${destinationName(change.to)}.`;
+      case "place":
+        return "Already there.";
       case "delete":
         return "Nothing to delete.";
     }

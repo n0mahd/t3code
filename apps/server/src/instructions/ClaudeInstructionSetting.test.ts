@@ -6,18 +6,34 @@ import * as Path from "effect/Path";
 import {
   addAgentsMdImport,
   agentsMdImportLine,
+  claudeInstructionChanges,
   hasAgentsMdImport,
+  parseSettingsJson,
   readClaudeInstructionSetting,
   removeAgentsMdImport,
   supportsAgentsMd,
-  withClaudeInstructionSetting,
 } from "./ClaudeInstructionSetting.ts";
+import { editJsoncText } from "../skills/JsoncSettings.ts";
 
 const NEW_ID = "cc-plugin-agents-md@builtin";
 const LEGACY_ID = "agents-md@builtin";
 
 const entry = (value: unknown, extra: Record<string, unknown> = {}) => ({
   options: { instructionFiles: value, ...extra },
+});
+
+describe("settings.json text", () => {
+  it.each(["", "{", "null", "[]", "3", '"text"'])("is not a settings object: %j", (text) => {
+    expect(parseSettingsJson(text)).toBeUndefined();
+  });
+
+  it("parses an object, comments and trailing commas included", () => {
+    expect(parseSettingsJson('{"theme":"dark","list":[1,2]}')).toEqual({
+      theme: "dark",
+      list: [1, 2],
+    });
+    expect(parseSettingsJson('{\n  // a note\n  "theme": "dark",\n}')).toEqual({ theme: "dark" });
+  });
 });
 
 describe("readClaudeInstructionSetting", () => {
@@ -64,7 +80,17 @@ describe("readClaudeInstructionSetting", () => {
   });
 });
 
-describe("withClaudeInstructionSetting", () => {
+/** The settings after the shared editor makes the changes, `undefined` when it refuses. */
+const withClaudeInstructionSetting = (
+  settings: Record<string, unknown>,
+  value: Parameters<typeof claudeInstructionChanges>[1],
+) => {
+  const text = JSON.stringify(settings, null, 2);
+  const edited = editJsoncText(text, claudeInstructionChanges(settings, value));
+  return edited === undefined ? undefined : parseSettingsJson(edited);
+};
+
+describe("claudeInstructionChanges", () => {
   it("creates the nested objects in empty settings", () => {
     expect(withClaudeInstructionSetting({}, "claude-md-and-agents-md")).toEqual({
       pluginConfigs: { [NEW_ID]: entry("claude-md-and-agents-md") },
@@ -92,12 +118,17 @@ describe("withClaudeInstructionSetting", () => {
     expect(Object.keys(updated ?? {})).toEqual(["theme", "pluginConfigs", "hooks"]);
   });
 
-  it("does not modify its input", () => {
-    const settings = { pluginConfigs: { [NEW_ID]: entry("claude-md") } };
-    const snapshot = structuredClone(settings);
-    withClaudeInstructionSetting(settings, "managed-only");
-    withClaudeInstructionSetting(settings, null);
-    expect(settings).toEqual(snapshot);
+  it("keeps the comments of a file it edits", () => {
+    const text = '{\n  // my theme\n  "theme": "dark"\n}\n';
+    const edited = editJsoncText(
+      text,
+      claudeInstructionChanges(parseSettingsJson(text) ?? {}, "claude-md"),
+    );
+    expect(edited).toContain("// my theme");
+    expect(parseSettingsJson(edited ?? "")).toEqual({
+      theme: "dark",
+      pluginConfigs: { [NEW_ID]: entry("claude-md") },
+    });
   });
 
   it("updates a legacy entry that has a value, and leaves one that has none", () => {
@@ -166,9 +197,8 @@ describe("withClaudeInstructionSetting", () => {
     });
   });
 
-  it("returns the same object when there is nothing to remove", () => {
-    const settings = { pluginConfigs: {}, theme: "dark" };
-    expect(withClaudeInstructionSetting(settings, null)).toBe(settings);
+  it("has nothing to change when there is nothing to remove", () => {
+    expect(claudeInstructionChanges({ pluginConfigs: {}, theme: "dark" }, null)).toEqual([]);
   });
 
   it("refuses to overwrite a value that isn't an object, and leaves it alone on removal", () => {
@@ -179,7 +209,7 @@ describe("withClaudeInstructionSetting", () => {
       { pluginConfigs: { [NEW_ID]: { options: "x" } } },
     ]) {
       expect(withClaudeInstructionSetting(settings, "claude-md")).toBeUndefined();
-      expect(withClaudeInstructionSetting(settings, null)).toBe(settings);
+      expect(withClaudeInstructionSetting(settings, null)).toEqual(settings);
     }
   });
 

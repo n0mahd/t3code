@@ -87,6 +87,9 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
+import * as InstructionCatalog from "./instructions/InstructionCatalog.ts";
+import * as InstructionManager from "./instructions/InstructionManager.ts";
+import * as InstructionTracking from "./instructions/InstructionTracking.ts";
 import * as SkillCatalog from "./skills/SkillCatalog.ts";
 import { RegisteredProjects } from "./skills/SkillLibrary.ts";
 import * as SkillManager from "./skills/SkillManager.ts";
@@ -600,6 +603,12 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   SkillManager.layer,
   // Reads through SkillCatalog and runs git through VcsProcess.
   SkillTracking.layer,
+  // Instruction files. The manager checks folders against ProjectService, so, like SkillManager,
+  // being here makes it one instance and instruction writes run one request at a time. All three
+  // read through one InstructionCatalog, which reads the file index and the provider snapshots.
+  Layer.mergeAll(InstructionManager.layer, InstructionTracking.layer).pipe(
+    Layer.provideMerge(InstructionCatalog.layer),
+  ),
 ).pipe(
   // Core Services
   // It checks a project's folder against ProjectService, which the next layer provides.

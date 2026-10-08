@@ -17,17 +17,12 @@
  *
  * @module ClaudeInstructionSetting
  */
+import { ClaudeInstructionValue } from "@t3tools/contracts";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import type * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
-export const CLAUDE_INSTRUCTION_VALUES = [
-  "claude-md-or-agents-md",
-  "claude-md-and-agents-md",
-  "claude-md",
-  "managed-only",
-] as const;
-
-export type ClaudeInstructionValue = (typeof CLAUDE_INSTRUCTION_VALUES)[number];
+import { parseJsonc, type JsoncChange } from "../skills/JsoncSettings.ts";
 
 /** What Claude does when the setting is absent: AGENTS.md only when there is no CLAUDE.md. */
 export const DEFAULT_CLAUDE_INSTRUCTION_VALUE: ClaudeInstructionValue = "claude-md-or-agents-md";
@@ -47,8 +42,7 @@ export type JsonObject = Record<string, unknown>;
 const isObject = (value: unknown): value is JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const isInstructionValue = (value: unknown): value is ClaudeInstructionValue =>
-  CLAUDE_INSTRUCTION_VALUES.some((known) => known === value);
+const isInstructionValue = Schema.is(ClaudeInstructionValue);
 
 const getIn = (root: unknown, keys: readonly string[]): unknown => {
   let current = root;
@@ -59,37 +53,13 @@ const getIn = (root: unknown, keys: readonly string[]): unknown => {
   return current;
 };
 
-/** A copy of `root` with `keys` set, or `undefined` when a step on the way isn't an object. */
-const setIn = (
-  root: JsonObject,
-  keys: readonly string[],
-  value: unknown,
-): JsonObject | undefined => {
-  const [key, ...rest] = keys;
-  if (key === undefined) return undefined;
-  if (rest.length === 0) return { ...root, [key]: value };
-  const child = root[key];
-  if (child !== undefined && !isObject(child)) return undefined;
-  const updated = setIn(child ?? {}, rest, value);
-  return updated === undefined ? undefined : { ...root, [key]: updated };
-};
-
-const withoutKey = (root: JsonObject, key: string): JsonObject =>
-  Object.fromEntries(Object.entries(root).filter(([name]) => name !== key));
-
 /**
- * A copy of `root` without `keys`. Objects that this empties go too; objects that were already
- * empty, and anything the removal doesn't touch, stay. Returns `root` itself when nothing changed.
+ * The text of a `settings.json` as an object, or `undefined` when Claude couldn't read it as one.
+ * Comments and trailing commas are fine, as they are for the skill settings in the same file.
  */
-const deleteIn = (root: JsonObject, keys: readonly string[]): JsonObject => {
-  const [key, ...rest] = keys;
-  if (key === undefined || !Object.hasOwn(root, key)) return root;
-  if (rest.length === 0) return withoutKey(root, key);
-  const child = root[key];
-  if (!isObject(child)) return root;
-  const updated = deleteIn(child, rest);
-  if (updated === child) return root;
-  return Object.keys(updated).length === 0 ? withoutKey(root, key) : { ...root, [key]: updated };
+export const parseSettingsJson = (text: string): JsonObject | undefined => {
+  const { value, valid } = parseJsonc(text);
+  return valid && isObject(value) ? value : undefined;
 };
 
 export interface ClaudeInstructionSetting {
@@ -108,23 +78,29 @@ export const readClaudeInstructionSetting = (settings: unknown): ClaudeInstructi
 };
 
 /**
- * `settings` with "Project instructions" set to `value`, or back at Claude's default when `value`
- * is null: the entry goes, and so do objects it leaves empty. A legacy entry that has a value is
- * kept in step. Everything else is untouched and `settings` is never modified. Returns
- * `undefined` when `value` is set but `pluginConfigs` or the plugin's entry isn't an object, so
- * a caller never overwrites something it doesn't understand.
+ * What to change in a `settings.json` (for `editJsoncFile`) to set "Project instructions" to
+ * `value`, or back to Claude's default when `value` is null: the entry goes, and the editor takes
+ * the objects it leaves empty with it. A legacy entry that has a value is kept in step. Everything
+ * else is left as it is, so the editor refuses (and the caller leaves the file alone) when
+ * `pluginConfigs` or the plugin's entry exists but isn't an object.
  */
-export const withClaudeInstructionSetting = (
+export const claudeInstructionChanges = (
   settings: JsonObject,
   value: ClaudeInstructionValue | null,
-): JsonObject | undefined => {
+): ReadonlyArray<JsoncChange> => {
   if (value === null) {
-    return deleteIn(deleteIn(settings, settingPath(PLUGIN_ID)), settingPath(LEGACY_PLUGIN_ID));
+    return [PLUGIN_ID, LEGACY_PLUGIN_ID].flatMap((pluginId) =>
+      getIn(settings, settingPath(pluginId)) === undefined
+        ? []
+        : [{ path: settingPath(pluginId), value: undefined }],
+    );
   }
-  const updated = setIn(settings, settingPath(PLUGIN_ID), value);
-  if (updated === undefined) return undefined;
-  if (getIn(updated, settingPath(LEGACY_PLUGIN_ID)) === undefined) return updated;
-  return setIn(updated, settingPath(LEGACY_PLUGIN_ID), value);
+  return [
+    { path: settingPath(PLUGIN_ID), value },
+    ...(getIn(settings, settingPath(LEGACY_PLUGIN_ID)) === undefined
+      ? []
+      : [{ path: settingPath(LEGACY_PLUGIN_ID), value }]),
+  ];
 };
 
 /**

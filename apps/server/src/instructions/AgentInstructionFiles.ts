@@ -115,6 +115,10 @@ export interface ProjectInstructionRules {
    * folders on the way up are read (`none`).
    */
   readonly subfolders: "none" | "on-demand";
+  /** Environment variables that switch off the files after the first name in `files`. */
+  readonly fallbackDisabledByEnv?: readonly string[];
+  /** The agent skips files git ignores, which `CLAUDE.local.md` is meant to be. */
+  readonly skipsGitIgnored?: boolean;
 }
 
 /** A folder of another agent that this one reads too, at a fixed place under the home directory. */
@@ -134,6 +138,8 @@ export interface HomeInstructionRules {
   /** In the order the agent prefers them. */
   readonly files: readonly string[];
   readonly selection: Exclude<InstructionSelection, "first-name">;
+  /** A file with no text is passed over, so the next name in `files` is the one that loads. */
+  readonly skipsEmpty?: boolean;
   /** The variable that names the folder itself. */
   readonly folderEnv?: string;
   /** The default folder sits under `$XDG_CONFIG_HOME` when that is set, else under `~/.config`. */
@@ -182,6 +188,12 @@ const GROK_FILE_NAMES = [
   "AGENTS.md",
 ] as const;
 
+/** The variables that turn off OpenCode's reading of Claude's files, its project `CLAUDE.md` too. */
+const OPENCODE_CLAUDE_COMPAT_ENV = [
+  "OPENCODE_DISABLE_CLAUDE_CODE",
+  "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT",
+] as const;
+
 export const AGENT_INSTRUCTION_FILES: ReadonlyArray<AgentInstructionRules> = [
   {
     agent: ProviderDriverKind.make("claudeAgent"),
@@ -224,6 +236,7 @@ export const AGENT_INSTRUCTION_FILES: ReadonlyArray<AgentInstructionRules> = [
       folder: ".codex",
       files: ["AGENTS.override.md", "AGENTS.md"],
       selection: "first-per-folder",
+      skipsEmpty: true,
       folderEnv: "CODEX_HOME",
       instanceHomePath: true,
       shared: { file: "AGENTS.md", join: "link" },
@@ -238,6 +251,7 @@ export const AGENT_INSTRUCTION_FILES: ReadonlyArray<AgentInstructionRules> = [
       selection: "first-name",
       parents: "repo-root",
       subfolders: "on-demand",
+      fallbackDisabledByEnv: OPENCODE_CLAUDE_COMPAT_ENV,
     },
     home: {
       folder: ".config/opencode",
@@ -251,7 +265,7 @@ export const AGENT_INSTRUCTION_FILES: ReadonlyArray<AgentInstructionRules> = [
           folder: ".claude",
           files: ["CLAUDE.md"],
           when: "no-own-file",
-          disabledByEnv: ["OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_CLAUDE_CODE_PROMPT"],
+          disabledByEnv: OPENCODE_CLAUDE_COMPAT_ENV,
         },
       ],
     },
@@ -301,6 +315,7 @@ export const AGENT_INSTRUCTION_FILES: ReadonlyArray<AgentInstructionRules> = [
       selection: "all",
       parents: "repo-root",
       subfolders: "on-demand",
+      skipsGitIgnored: true,
     },
     home: {
       folder: ".grok",

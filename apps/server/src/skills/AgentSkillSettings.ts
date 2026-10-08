@@ -43,6 +43,8 @@ import * as Effect from "effect/Effect";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 
+import type * as VcsProcess from "../vcs/VcsProcess.ts";
+
 import { claudeSwitches, setClaudeSwitch } from "./ClaudeSkillSettings.ts";
 import { codexSwitches } from "./CodexSkillSettings.ts";
 import { openCodeSwitches, setOpenCodeSwitch } from "./OpenCodeSkillSettings.ts";
@@ -153,7 +155,11 @@ export const setSkillSwitch = (
   context: SkillSwitchContext,
   skill: SwitchedSkill,
   off: boolean,
-): Effect.Effect<SkillSwitchWrite, never, FileSystem.FileSystem | Path.Path> => {
+): Effect.Effect<
+  SkillSwitchWrite,
+  never,
+  FileSystem.FileSystem | Path.Path | VcsProcess.VcsProcess
+> => {
   switch (SWITCHES[context.driver]?.kind) {
     case "claude":
       return setClaudeSwitch(context, skill, off);

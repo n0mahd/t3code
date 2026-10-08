@@ -49,6 +49,7 @@ import { ownProjectFolderFor } from "@t3tools/provider-core/server/AgentSkillFol
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import { setSkillSwitch, type SkillSwitchWrite, type SwitchedSkill } from "./AgentSkillSettings.ts";
 import {
   codexRulesSwitchOff,
@@ -285,7 +286,9 @@ const make = Effect.gen(function* () {
   const homeDirectory = yield* HostProcess.HomeDirectory;
   const writeLock = yield* Semaphore.make(1);
   // The link primitives take the filesystem from their environment.
-  const filesystemContext = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+  const filesystemContext = yield* Effect.context<
+    FileSystem.FileSystem | Path.Path | VcsProcess.VcsProcess
+  >();
 
   /** Links are only written under a folder the environment knows as a project. */
   const requireProject = (cwd: string) =>

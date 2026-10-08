@@ -8,6 +8,10 @@
  * git repository has no exclude file, so its links need nothing. The same repository's other
  * worktrees (`worktreesOf`) hold the links the worktree hook made in them.
  *
+ * A file T3 Code creates in a project that isn't meant to be committed, Claude's
+ * `.claude/settings.local.json`, is kept out of git the same way (`excludeNewFile`), in a block of
+ * its own.
+ *
  * @module SkillGitExclude
  */
 import * as Effect from "effect/Effect";
@@ -20,6 +24,18 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 export const EXCLUDE_BLOCK_START = "# T3 Code: skills used from Global";
 export const EXCLUDE_BLOCK_END = "# End T3 Code: skills used from Global";
 
+/** The lines T3 Code owns in the exclude file are between a start and an end marker. */
+export interface ExcludeBlock {
+  readonly start: string;
+  readonly end: string;
+}
+
+const LIBRARY_BLOCK: ExcludeBlock = { start: EXCLUDE_BLOCK_START, end: EXCLUDE_BLOCK_END };
+const LOCAL_SETTINGS_BLOCK: ExcludeBlock = {
+  start: "# T3 Code: local settings",
+  end: "# End T3 Code: local settings",
+};
+
 /** A path as one exclude line: anchored at the repository root, with its glob characters quoted. */
 const excludeLine = (relative: string) =>
   `/${relative.replace(/[\\*?[\]]/g, "\\$&").replace(/ +$/, (spaces) => "\\ ".repeat(spaces.length))}`;
@@ -31,21 +47,22 @@ const excludeLine = (relative: string) =>
 export const editExcludeBlock = (
   text: string,
   change: { readonly add: readonly string[]; readonly remove: readonly string[] },
+  block: ExcludeBlock = LIBRARY_BLOCK,
 ) => {
   const lines = text === "" ? [] : text.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  const start = lines.indexOf(EXCLUDE_BLOCK_START);
-  const end = start < 0 ? -1 : lines.indexOf(EXCLUDE_BLOCK_END, start + 1);
+  const start = lines.indexOf(block.start);
+  const end = start < 0 ? -1 : lines.indexOf(block.end, start + 1);
   const kept = start >= 0 && end > start ? lines.slice(start + 1, end) : [];
   const removed = new Set(change.remove);
   const inBlock = [...kept.filter((line) => !removed.has(line)), ...change.add].filter(
     (line, index, all) => all.indexOf(line) === index,
   );
-  const block = inBlock.length === 0 ? [] : [EXCLUDE_BLOCK_START, ...inBlock, EXCLUDE_BLOCK_END];
+  const marked = inBlock.length === 0 ? [] : [block.start, ...inBlock, block.end];
   const next =
     start >= 0 && end > start
-      ? [...lines.slice(0, start), ...block, ...lines.slice(end + 1)]
-      : [...lines, ...block];
+      ? [...lines.slice(0, start), ...marked, ...lines.slice(end + 1)]
+      : [...lines, ...marked];
   return next.length === 0 ? "" : `${next.join("\n")}\n`;
 };
 
@@ -58,6 +75,8 @@ export const updateExclude = Effect.fn("SkillGitExclude.updateExclude")(function
   readonly projectRoot: string;
   readonly links: ReadonlyArray<string>;
   readonly action: "add" | "remove";
+  /** The block the lines are kept in; the one for skill links by default. */
+  readonly block?: ExcludeBlock;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -90,6 +109,7 @@ export const updateExclude = Effect.fn("SkillGitExclude.updateExclude")(function
   const next = editExcludeBlock(
     text,
     input.action === "add" ? { add: lines, remove: [] } : { add: [], remove: lines },
+    input.block,
   );
   if (next === text || (text === "" && next === "")) return;
   yield* writeFileStringAtomically({ filePath: file, contents: next });
@@ -119,4 +139,43 @@ export const worktreesOf = Effect.fn("SkillGitExclude.worktreesOf")(function* (
     .split("\n")
     .filter((line) => line.startsWith("worktree ") && line.length > "worktree ".length)
     .map((line) => line.slice("worktree ".length));
+});
+
+/**
+ * Keeps a file T3 Code has just created in a project out of git: Claude Code's own
+ * `.claude/settings.local.json`, which is the user's and not the repository's. Claude Code does
+ * this itself when it creates the file: "Claude Code keeps it out of git when it creates the file"
+ * (https://code.claude.com/docs/en/settings, "Settings files"), by adding it to the global git
+ * excludes the first time it writes the file in a repository that doesn't already ignore it. T3
+ * Code follows that rule, but in the repository's own `info/exclude`, since it doesn't edit the
+ * user's global git configuration. A file the repository already ignores or tracks is left alone,
+ * and so is a project that isn't in a git repository.
+ */
+export const excludeNewFile = Effect.fn("SkillGitExclude.excludeNewFile")(function* (input: {
+  readonly projectRoot: string;
+  readonly file: string;
+}) {
+  const vcs = yield* VcsProcess.VcsProcess;
+  const asked = (args: ReadonlyArray<string>) =>
+    vcs
+      .run({
+        operation: "SkillGitExclude.excludeNewFile",
+        command: "git",
+        args,
+        cwd: input.projectRoot,
+        allowNonZeroExit: true,
+        timeoutMs: 5_000,
+        maxOutputBytes: 16 * 1024,
+      })
+      .pipe(Effect.orElseSucceed(() => undefined));
+  // `check-ignore` is 0 for an ignored file; `ls-files` is 0 for a tracked one.
+  const ignored = yield* asked(["check-ignore", "-q", "--", input.file]);
+  const tracked = yield* asked(["ls-files", "--error-unmatch", "--", input.file]);
+  if (ignored?.exitCode === 0 || tracked?.exitCode === 0) return;
+  yield* updateExclude({
+    projectRoot: input.projectRoot,
+    links: [input.file],
+    action: "add",
+    block: LOCAL_SETTINGS_BLOCK,
+  });
 });

@@ -10,6 +10,7 @@ import {
   EXCLUDE_BLOCK_END,
   EXCLUDE_BLOCK_START,
   editExcludeBlock,
+  excludeNewFile,
   updateExclude,
 } from "./SkillGitExclude.ts";
 
@@ -23,6 +24,24 @@ const git = (cwd: string, args: ReadonlyArray<string>) =>
       args: ["-C", cwd, "-c", "user.name=Test", "-c", "user.email=test@example.com", ...args],
     });
   }).pipe(Effect.provide(ProcessRunner.layer));
+
+const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(Effect.provide(VcsProcess.layer));
+
+const makeRepo = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped({ prefix: "t3code-exclude-" }));
+  const repo = path.join(root, "acme-web");
+  yield* fs.makeDirectory(repo, { recursive: true });
+  yield* git(repo, ["init", "-q", "-b", "main"]);
+  // Not the machine's own global ignore file, which may already name what a test creates.
+  yield* git(repo, ["config", "core.excludesFile", path.join(root, "global-ignore")]);
+  yield* fs.writeFileString(path.join(repo, "README.md"), "# acme-web\n");
+  yield* git(repo, ["add", "-A"]);
+  yield* git(repo, ["commit", "-q", "-m", "init"]);
+  return { fs, path, root, repo };
+});
 
 it.layer(NodeServices.layer, { excludeTestServices: true })("SkillGitExclude", (it) => {
   describe("editExcludeBlock", () => {
@@ -68,24 +87,6 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillGitExclude", (
   });
 
   describe("updateExclude", () => {
-    const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      effect.pipe(Effect.provide(VcsProcess.layer));
-
-    const makeRepo = Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const root = yield* fs.realPath(
-        yield* fs.makeTempDirectoryScoped({ prefix: "t3code-exclude-" }),
-      );
-      const repo = path.join(root, "acme-web");
-      yield* fs.makeDirectory(repo, { recursive: true });
-      yield* git(repo, ["init", "-q", "-b", "main"]);
-      yield* fs.writeFileString(path.join(repo, "README.md"), "# acme-web\n");
-      yield* git(repo, ["add", "-A"]);
-      yield* git(repo, ["commit", "-q", "-m", "init"]);
-      return { fs, path, root, repo };
-    });
-
     it.effect("keeps links out of git status, and takes the lines out again", () =>
       Effect.gen(function* () {
         const { fs, path, repo } = yield* makeRepo;
@@ -192,6 +193,71 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillGitExclude", (
 
         expect(failure).toBeDefined();
         expect(yield* fs.readFileString(path.join(repo, ".git/info"))).toBe("not a folder");
+      }),
+    );
+  });
+
+  describe("excludeNewFile", () => {
+    const LOCAL_BLOCK =
+      "# T3 Code: local settings\n/.claude/settings.local.json\n# End T3 Code: local settings\n";
+
+    it.effect("keeps a file that was just created out of git, in a block of its own", () =>
+      Effect.gen(function* () {
+        const { fs, path, repo } = yield* makeRepo;
+        const file = path.join(repo, ".claude/settings.local.json");
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+        yield* fs.writeFileString(file, "{}\n");
+        expect((yield* git(repo, ["status", "--porcelain"])).stdout).toBe("?? .claude/\n");
+
+        yield* run(excludeNewFile({ projectRoot: repo, file }));
+
+        expect(yield* fs.readFileString(path.join(repo, ".git/info/exclude"))).toContain(
+          LOCAL_BLOCK,
+        );
+        expect((yield* git(repo, ["status", "--porcelain", "-uall"])).stdout).toBe("");
+        // Doing it again changes nothing.
+        const before = yield* fs.readFileString(path.join(repo, ".git/info/exclude"));
+        yield* run(excludeNewFile({ projectRoot: repo, file }));
+        expect(yield* fs.readFileString(path.join(repo, ".git/info/exclude"))).toBe(before);
+      }),
+    );
+
+    it.effect("leaves a file the repository ignores already, or tracks, alone", () =>
+      Effect.gen(function* () {
+        const { fs, path, repo } = yield* makeRepo;
+        const exclude = path.join(repo, ".git/info/exclude");
+        const before = yield* fs.readFileString(exclude);
+        const ignored = path.join(repo, ".claude/settings.local.json");
+        yield* fs.makeDirectory(path.dirname(ignored), { recursive: true });
+        yield* fs.writeFileString(ignored, "{}\n");
+        yield* fs.writeFileString(
+          path.join(repo, ".gitignore"),
+          "**/.claude/settings.local.json\n",
+        );
+
+        yield* run(excludeNewFile({ projectRoot: repo, file: ignored }));
+        expect(yield* fs.readFileString(exclude)).toBe(before);
+
+        // Tracked, whatever ignores it.
+        yield* fs.remove(path.join(repo, ".gitignore"));
+        yield* git(repo, ["add", "-f", ".claude/settings.local.json"]);
+        yield* git(repo, ["commit", "-q", "-m", "track it"]);
+        yield* run(excludeNewFile({ projectRoot: repo, file: ignored }));
+        expect(yield* fs.readFileString(exclude)).toBe(before);
+      }),
+    );
+
+    it.effect("does nothing for a project that isn't in a git repository", () =>
+      Effect.gen(function* () {
+        const { fs, path, root } = yield* makeRepo;
+        const loose = path.join(root, "marketing-site");
+        const file = path.join(loose, ".claude/settings.local.json");
+        yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+        yield* fs.writeFileString(file, "{}\n");
+
+        yield* run(excludeNewFile({ projectRoot: loose, file }));
+
+        expect(yield* fs.exists(path.join(loose, ".git"))).toBe(false);
       }),
     );
   });

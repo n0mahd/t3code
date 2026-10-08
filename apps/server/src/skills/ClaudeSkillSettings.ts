@@ -10,11 +10,15 @@
  * edits a file a team shares). What the result would be is worked out first, over every layer, so
  * a layer above the one written (a project's local file over the user's, or the managed policy)
  * that keeps the skill the way it is makes this `setElsewhere` and writes nothing. Turning a skill
- * on removes the key; `"on"` is written only when a layer below the target still says off.
+ * on removes the key; `"on"` is written only when a layer below the target still says off. When
+ * the project's local file is created here, it is kept out of git as Claude Code does when it
+ * creates the file (`excludeNewFile`).
  *
  * @module ClaudeSkillSettings
  */
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
@@ -25,6 +29,7 @@ import {
 } from "../provider/Drivers/ClaudeSkills.ts";
 import type { SkillSwitchContext, SkillSwitchView, SwitchedSkill } from "./AgentSkillSettings.ts";
 import { editJsoncFile } from "./JsoncSettings.ts";
+import { excludeNewFile } from "./SkillGitExclude.ts";
 
 type OverrideValue = typeof SkillOverrideValue.Type;
 
@@ -66,6 +71,7 @@ export const setClaudeSwitch = Effect.fn("setClaudeSwitch")(function* (
   off: boolean,
 ) {
   const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
   const targetPath =
     skill.scope === "global"
       ? path.join(context.configHome, "settings.json")
@@ -81,12 +87,27 @@ export const setClaudeSwitch = Effect.fn("setClaudeSwitch")(function* (
   if (targetPath === undefined || index < 0) return "failed" as const;
 
   const current = layers[index]?.overrides?.get(skill.name);
+  // Only a project's local file is kept out of git, and only when this write is what makes it.
+  const existed = yield* fileSystem.exists(targetPath).pipe(Effect.orElseSucceed(() => true));
   const edit = Effect.fnUntraced(function* (value: OverrideValue | undefined) {
     const result = yield* editJsoncFile({
       file: targetPath,
       changes: [{ path: ["skillOverrides", skill.name], value }],
       accept: isValidSettings,
     });
+    if (result === "written" && !existed && skill.scope === "project" && context.cwd) {
+      // The file works either way; it would only show up in git status.
+      yield* excludeNewFile({ projectRoot: context.cwd, file: targetPath }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.logWarning("could not keep Claude's local settings out of git", {
+                file: targetPath,
+                cause: Cause.pretty(cause),
+              }),
+        ),
+      );
+    }
     return result === "invalid" ? ("failed" as const) : result;
   });
 

@@ -93,6 +93,8 @@ const makeMachine = Effect.gen(function* () {
   for (const repo of [web, api, marketing]) {
     yield* fs.makeDirectory(repo, { recursive: true });
     yield* git(repo, ["init", "-q", "-b", "main"]);
+    // Not the machine's own global ignore file, which may already name what a test creates.
+    yield* git(repo, ["config", "core.excludesFile", path.join(home, "global-ignore")]);
     yield* fs.writeFileString(path.join(repo, "README.md"), `# ${path.basename(repo)}\n`);
     yield* git(repo, ["add", "-A"]);
     yield* git(repo, ["commit", "-q", "-m", "init"]);
@@ -1843,6 +1845,57 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
                 );
               }
               expect(blockLines(yield* exclude(web))).toEqual([]);
+            }),
+          );
+        }),
+    );
+  });
+
+  describe("Claude's local settings file", () => {
+    const LOCAL_BLOCK =
+      "# T3 Code: local settings\n/.claude/settings.local.json\n# End T3 Code: local settings";
+
+    it.effect.skipIf(!symlinksSupported)(
+      "stays out of git when T3 Code creates it, and is left alone when it was there",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, api, write } = yield* makeMachine;
+          yield* write("repos/acme-web/.claude/skills/own/SKILL.md", skillFile("own"));
+          yield* write("repos/acme-web/.claude/skills/other/SKILL.md", skillFile("other"));
+          yield* write("repos/acme-api/.claude/skills/own/SKILL.md", skillFile("own"));
+          yield* write("repos/acme-api/.claude/settings.local.json", '{"theme":"dark"}\n');
+          yield* withManager(home, [web, api], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const off = (cwd: string, name: string) =>
+                Effect.gen(function* () {
+                  const skill = refOf((yield* catalog.list({ cwd })).skills, "project", name);
+                  return yield* manager.disable({
+                    cwd,
+                    skills: [skill],
+                    agents: [agent("claudeAgent")],
+                  });
+                });
+
+              // A new file in a git repository: ignored by git from then on.
+              const created = yield* off(web, "own");
+              expect(created.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+              expect(
+                JSON.parse(yield* fs.readFileString(path.join(web, ".claude/settings.local.json"))),
+              ).toEqual({ skillOverrides: { own: "off" } });
+              expect(yield* exclude(web)).toContain(LOCAL_BLOCK);
+              expect(yield* status(web)).not.toContain("settings.local.json");
+              const text = yield* exclude(web);
+
+              // Editing it again doesn't touch the exclude file.
+              yield* off(web, "other");
+              expect(yield* exclude(web)).toBe(text);
+
+              // A file that was already there is not T3 Code's to hide.
+              yield* off(api, "own");
+              expect(
+                JSON.parse(yield* fs.readFileString(path.join(api, ".claude/settings.local.json"))),
+              ).toEqual({ theme: "dark", skillOverrides: { own: "off" } });
+              expect(yield* exclude(api)).not.toContain("settings.local.json");
             }),
           );
         }),

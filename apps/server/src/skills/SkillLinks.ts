@@ -77,7 +77,7 @@ const errorCode = (error: unknown) =>
   typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
 
 /** What a path is, as far as links go. `stat` follows links, so only `readLink` can tell. */
-const readLinkTarget = Effect.fnUntraced(function* (link: string) {
+export const readLinkTarget = Effect.fnUntraced(function* (link: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   return yield* fileSystem.readLink(link).pipe(
     Effect.map((target): { readonly _tag: "Link"; readonly target: string } => ({

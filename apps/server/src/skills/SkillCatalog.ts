@@ -41,7 +41,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import {
@@ -55,15 +54,12 @@ import {
   type SkillCollision,
 } from "@t3tools/provider-core/server/AgentSkillFolders";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
-import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
-import {
-  parseSkillFrontmatter,
-  resolveClaudeConfigDirPath,
-} from "../provider/Drivers/ClaudeSkills.ts";
+import { parseSkillFrontmatter } from "../provider/Drivers/ClaudeSkills.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as Settings from "../serverSettings.ts";
+import { resolveAgentConfigHome } from "./AgentConfigHome.ts";
 import {
   loadSkillSwitches,
   skillSwitchKind,
@@ -96,10 +92,6 @@ const SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
 const CONCURRENCY = 16;
 
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-const decodeHomePath = Schema.decodeUnknownOption(
-  Schema.Struct({ homePath: Schema.optional(Schema.String) }),
-);
-
 /**
  * A skill's folder name is whatever the agents' scanners accept, short of what could leave the
  * folder (`.`, `..`, separators, NUL) or hides it (a leading dot).
@@ -428,34 +420,24 @@ const make = Effect.gen(function* () {
   };
 
   /**
-   * Where an instance keeps its config, which its own global skill folder lives under. This
-   * follows the setting or variable that moves the agent's home, in the order the agent applies
-   * them; an agent without one stays at its default folder under the home directory.
+   * Where an instance keeps its config, which its own global skill folder lives under; an agent
+   * without a setting or variable that moves it stays at its default folder under the home
+   * directory.
    */
-  const configHomeOf = Effect.fnUntraced(function* (
+  const configHomeOf = (
     instance: ProviderInstanceConfig,
     table: AgentSkillFolderList,
     cwd: string | undefined,
-  ) {
-    const env = yield* mergeProviderInstanceEnvironment(instance.environment, environment).pipe(
+  ) =>
+    resolveAgentConfigHome({
+      instance,
+      fallback: path.join(homeDirectory, table.configHome ?? ""),
+      environment,
+      cwd,
+    }).pipe(
+      Effect.provideService(Path.Path, path),
       Effect.provideService(HostProcess.HomeDirectory, homeDirectory),
     );
-    const setting = Option.getOrUndefined(decodeHomePath(instance.config))?.homePath?.trim() ?? "";
-    const fallback = path.join(homeDirectory, table.configHome ?? "");
-    const absoluteOr = (value: string | undefined) =>
-      value && path.isAbsolute(value) ? value : fallback;
-    if (instance.driver === "claudeAgent") {
-      return yield* resolveClaudeConfigDirPath({ homePath: setting }, env, cwd).pipe(
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(HostProcess.HomeDirectory, homeDirectory),
-      );
-    }
-    if (instance.driver === "codex") {
-      return absoluteOr(expandHomePath(setting || (env.CODEX_HOME?.trim() ?? ""), homeDirectory));
-    }
-    if (instance.driver === "grok") return absoluteOr(env.GROK_HOME?.trim());
-    return fallback;
-  });
 
   /** The enabled provider instances whose folders T3 Code knows, in the table's order. */
   const loadInstances = Effect.fnUntraced(function* (cwd: string | undefined) {

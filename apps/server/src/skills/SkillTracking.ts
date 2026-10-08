@@ -15,6 +15,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
+import { trackedFiles } from "../vcs/GitTrackedFiles.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
 
@@ -64,31 +65,13 @@ const make = Effect.gen(function* () {
       }
       if (files.size === 0) return { tracked: [] };
 
-      const result = yield* vcs
-        .run({
-          operation: "SkillTracking.tracked",
-          command: "git",
-          args: [
-            "--literal-pathspecs",
-            "-c",
-            "core.fsmonitor=false",
-            "ls-files",
-            "--cached",
-            "-z",
-            "--",
-            ...files.keys(),
-          ],
-          cwd: input.cwd,
-          allowNonZeroExit: true,
-          timeoutMs: 5_000,
-          maxOutputBytes: 256 * 1024,
-        })
-        .pipe(Effect.orElseSucceed(() => undefined));
-      if (result === undefined || result.exitCode !== 0) return { tracked: [] };
-
-      const listed = new Set(result.stdout.split("\0"));
+      const trackedFilePaths = yield* trackedFiles(vcs, {
+        operation: "SkillTracking.tracked",
+        cwd: input.cwd,
+        files: [...files.keys()],
+      });
       return {
-        tracked: [...files].flatMap(([file, name]) => (listed.has(file) ? [name] : [])),
+        tracked: [...files].flatMap(([file, name]) => (trackedFilePaths.has(file) ? [name] : [])),
       };
     },
   );

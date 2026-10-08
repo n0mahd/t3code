@@ -36,8 +36,11 @@ Turning a skill on for an agent that reads a different folder makes a link in th
 folder that points at the skill's real folder, so the files stay in one place. Turning it off
 removes that link and nothing else.
 
-- An agent that reads the skill's own folder directly, with no setting T3 Code can change, has its
-  switch disabled and stays on. To stop it using the skill, move the skill out of that folder
+- An agent that reads the skill's own folder directly has no link to remove. Claude, Codex and
+  OpenCode (and Pi, for Global skills) have a setting for it, so turning the skill off writes that
+  setting, and turning it on takes it away again. A project or organization setting can still
+  decide, and T3 Code says so. Cursor, Grok and Antigravity have no such setting, so their switch is
+  disabled and the skill stays on. To stop one using the skill, move the skill out of that folder
   yourself.
 - Agents that read the same folder share one link, so turning a skill on or off for one can change
   it for the others. T3 Code says who else is affected.
@@ -65,6 +68,12 @@ still Global, with one copy, so an edit shows up in all of them. It has a badge 
 projects**. Each change asks first, and never merges into or replaces a skill with the same name;
 T3 Code leaves both and says so. When git tracks a project skill that leaves its project, the
 confirmation says you can undo it with git.
+
+Such a skill is linked into each project that uses it, outside git, and into the worktrees T3 Code
+makes for those projects. The agents that read `.agents/skills` have it in all of them. Turning on
+an agent with a folder of its own, such as Claude, adds its link in each of those projects, never
+in Global. If a moved skill's installer record can't go with it, T3 Code says the skill won't
+update from its source any more.
 
 **Delete** removes the skill's folder and the links to it, and can't be undone. Only a skill kept
 in an agent's own skill folder can be deleted. One that is only linked there, such as a skill from

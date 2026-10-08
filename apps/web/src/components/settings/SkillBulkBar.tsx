@@ -1,3 +1,4 @@
+import { MoreHorizontalIcon } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -9,7 +10,108 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
-import type { SkillPlan } from "./SkillsSettings.logic";
+import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import {
+  planDelete,
+  planTurnOffAll,
+  planTurnOnAll,
+  type Skill,
+  type SkillPlan,
+  type SkillsContext,
+} from "./SkillsSettings.logic";
+
+/**
+ * Acts on every ticked row. It sticks to the bottom of the page, so it is in reach on a phone,
+ * where Turn on, Turn off and Delete fold into one menu.
+ */
+export function BulkBar({
+  selected,
+  ctx,
+  busy,
+  onPlan,
+}: {
+  selected: readonly Skill[];
+  ctx: SkillsContext;
+  /** A change is being made, so nothing else can start. */
+  busy: boolean;
+  onPlan: (plan: SkillPlan) => void;
+}) {
+  const turnOn = planTurnOnAll(selected, ctx);
+  const turnOff = planTurnOffAll(selected, ctx, { ask: selected.length > 1 });
+  const del = planDelete(selected, ctx);
+  return (
+    <div
+      role="region"
+      aria-label="Actions for selected skills"
+      className="sticky bottom-0 z-20 rounded-xl border border-border/60 bg-background px-3 py-2 shadow-xs/5"
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mr-auto text-sm font-medium">{selected.length} selected</span>
+        <span className="hidden items-center gap-2 sm:flex">
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={busy || !turnOn}
+            title={turnOn ? undefined : "Already on for every agent"}
+            onClick={() => turnOn && onPlan(turnOn)}
+          >
+            Turn on
+          </Button>
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={busy || !turnOff}
+            title={turnOff ? undefined : "Already off for every agent"}
+            onClick={() => turnOff && onPlan(turnOff)}
+          >
+            Turn off
+          </Button>
+          {del && (
+            <Button
+              size="xs"
+              variant="destructive-outline"
+              disabled={busy}
+              title="Deletes the skills' folders. This can't be undone."
+              onClick={() => onPlan(del)}
+            >
+              Delete…
+            </Button>
+          )}
+        </span>
+        <span className="sm:hidden">
+          <Menu>
+            <MenuTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="outline"
+                  aria-label="More actions"
+                  disabled={busy}
+                />
+              }
+            >
+              <MoreHorizontalIcon />
+            </MenuTrigger>
+            <MenuPopup align="end" side="top">
+              <MenuItem disabled={!turnOn} onClick={() => turnOn && onPlan(turnOn)}>
+                Turn on
+              </MenuItem>
+              <MenuItem disabled={!turnOff} onClick={() => turnOff && onPlan(turnOff)}>
+                Turn off
+              </MenuItem>
+              {del && <MenuSeparator />}
+              {del && (
+                <MenuItem variant="destructive" onClick={() => onPlan(del)}>
+                  Delete…
+                </MenuItem>
+              )}
+            </MenuPopup>
+          </Menu>
+        </span>
+      </div>
+    </div>
+  );
+}
 
 /** Asks before a plan changes anything, with the same plain words for one skill or many. */
 export function ConfirmPlan({

@@ -12,7 +12,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { Skeleton } from "../ui/skeleton";
-import { ConfirmPlan } from "./SkillBulkBar";
+import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
 import { SkillDetail } from "./SkillDetail";
 import { SkillSection, StandardInfo } from "./SkillList";
 import { SettingsGroup } from "./SettingsGroup";
@@ -69,6 +69,9 @@ export function SkillsSettings() {
   const missingProject = (scope.kind === "project" || scope.kind === "checkout") && !project;
   // On a phone, an open skill gets the whole screen under its Back row.
   const [subpage, setSubpage] = useState(false);
+  /** Rows have checkboxes, and a bar at the bottom acts on the ticked ones. */
+  const [selecting, setSelecting] = useState(false);
+  const canSelect = environment !== undefined && !missingProject && !subpage;
   return (
     <SettingsPageContainer width="expanded" hideScopeOnPhone={subpage}>
       <div className={cn("space-y-1", subpage && "hidden sm:block")}>
@@ -76,6 +79,16 @@ export function SkillsSettings() {
           <BookOpenIcon className="size-5 text-muted-foreground" />
           <h1 className="text-lg font-semibold">Skills</h1>
           <StandardInfo />
+          <span className="flex-1" />
+          {canSelect && (
+            <Button
+              size="xs"
+              variant={selecting ? "secondary" : "outline"}
+              onClick={() => setSelecting((value) => !value)}
+            >
+              {selecting ? "Done" : "Select"}
+            </Button>
+          )}
         </div>
       </div>
       {!environment ? (
@@ -91,6 +104,7 @@ export function SkillsSettings() {
           key={`${environment.environmentId}:${picked?.id ?? "global"}`}
           environment={environment}
           project={picked}
+          selecting={selecting}
           onSubpageChange={setSubpage}
         />
       )}
@@ -101,11 +115,14 @@ export function SkillsSettings() {
 function EnvironmentSkills({
   environment,
   project,
+  selecting,
   onSubpageChange,
 }: {
   environment: ReturnType<typeof useEnvironments>["environments"][number];
-  /** The project picked above the page, or null for "All projects". */
+  /** The project picked above the page, or null when none is. */
   project: PickedProject | null;
+  /** Rows have checkboxes, and a bar at the bottom acts on the ticked ones. */
+  selecting: boolean;
   /** True while a skill is open instead of the list. */
   onSubpageChange: (open: boolean) => void;
 }) {
@@ -139,6 +156,7 @@ function EnvironmentSkills({
   const [query, setQuery] = useState("");
   const [onlyAttention, setOnlyAttention] = useState(false);
   const [detailReload, setDetailReload] = useState(0);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   /** A change that is waiting for the person to confirm it. */
   const [confirming, setConfirming] = useState<SkillPlan | null>(null);
   /** A change is being made and the list read again; nothing else can start meanwhile. */
@@ -294,6 +312,7 @@ function EnvironmentSkills({
     } catch {
       setLoadError(LOAD_ERROR);
     }
+    setSelected(new Set());
     setBusy(false);
   };
   /**
@@ -329,6 +348,26 @@ function EnvironmentSkills({
     runPlanRef.current = runPlan;
   });
   const onPlan = useCallback((plan: SkillPlan) => runPlanRef.current(plan), []);
+  const chosen = useMemo(
+    () => (skills ?? []).filter((skill) => selected.has(skill.id)),
+    [skills, selected],
+  );
+  const setSelection = useCallback((ids: readonly string[], checked: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const id of ids) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+  // Leaving Select mode leaves nothing ticked.
+  const [wasSelecting, setWasSelecting] = useState(selecting);
+  if (wasSelecting !== selecting) {
+    setWasSelecting(selecting);
+    if (!selecting) setSelected(new Set());
+  }
   const offline = !connected;
   const empty = skills !== null && skills.length === 0;
   const emptyText = (total: number, none: string) =>
@@ -440,8 +479,12 @@ function EnvironmentSkills({
                   visible={visible(projectSkills)}
                   ctx={ctx}
                   emptyText={emptyText(projectSkills.length, "No skills in this project.")}
+                  flat={needle !== ""}
+                  selecting={selecting}
+                  selected={selected}
                   showFix={onlyAttention}
                   busy={locked}
+                  onSelect={setSelection}
                   onPlan={onPlan}
                   onOpen={openSkill}
                 />
@@ -451,12 +494,19 @@ function EnvironmentSkills({
                 visible={visible(globalSkills)}
                 ctx={ctx}
                 emptyText={emptyText(globalSkills.length, "No Global skills yet.")}
+                flat={needle !== ""}
+                selecting={selecting}
+                selected={selected}
                 showFix={onlyAttention}
                 busy={locked}
+                onSelect={setSelection}
                 onPlan={onPlan}
                 onOpen={openSkill}
               />
               {empty && <p className="text-sm text-muted-foreground">No skills yet.</p>}
+              {selecting && chosen.length > 0 && (
+                <BulkBar selected={chosen} ctx={ctx} busy={locked} onPlan={onPlan} />
+              )}
             </>
           )}
         </>

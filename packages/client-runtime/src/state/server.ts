@@ -1198,6 +1198,46 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:skills-tracked",
       tag: WS_METHODS.serverSkillsTracked,
     }),
+    listInstructions: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:list-instructions",
+      tag: WS_METHODS.serverListInstructions,
+    }),
+    readInstruction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:read-instruction",
+      tag: WS_METHODS.serverReadInstruction,
+    }),
+    writeInstruction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:write-instruction",
+      tag: WS_METHODS.serverWriteInstruction,
+    }),
+    enableInstruction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:enable-instruction",
+      tag: WS_METHODS.serverEnableInstruction,
+    }),
+    disableInstruction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:disable-instruction",
+      tag: WS_METHODS.serverDisableInstruction,
+    }),
+    setClaudeInstructionFiles: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:set-claude-instruction-files",
+      tag: WS_METHODS.serverSetClaudeInstructionFiles,
+    }),
+    shareInstruction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:share-instruction",
+      tag: WS_METHODS.serverShareInstruction,
+    }),
+    adoptInstruction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:adopt-instruction",
+      tag: WS_METHODS.serverAdoptInstruction,
+    }),
+    deleteInstruction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:delete-instruction",
+      tag: WS_METHODS.serverDeleteInstruction,
+    }),
+    instructionsTracked: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:instructions-tracked",
+      tag: WS_METHODS.serverInstructionsTracked,
+    }),
     refreshProviders: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:refresh-providers",
       tag: WS_METHODS.serverRefreshProviders,

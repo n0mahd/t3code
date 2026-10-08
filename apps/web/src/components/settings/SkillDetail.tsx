@@ -18,7 +18,6 @@ import {
   attention,
   planDelete,
   planMove,
-  planRemove,
   planToggle,
   planTurnOnAll,
   scriptFiles,
@@ -97,7 +96,7 @@ export function SkillDetail({
   /** A change is being made, so nothing else can start. */
   busy: boolean;
   onBack: () => void;
-  /** Turns an agent on or off, moves, removes or deletes the skill; a plan with a confirmation asks first. */
+  /** Turns an agent on or off, moves or deletes the skill; a plan with a confirmation asks first. */
   onPlan: (plan: SkillPlan) => void;
   /** Opens this skill again, which reads its files again. */
   onReload: () => void;
@@ -137,7 +136,6 @@ export function SkillDetail({
   const warning = attention(skill, ctx);
   const sameCopies = skill.copies.filter((copy) => copy.same);
   const turnOnAll = planTurnOnAll([skill], ctx);
-  const remove = planRemove([skill], ctx);
   const del = planDelete([skill], ctx);
   // Moving into a project needs one picked above the page.
   const move =
@@ -203,7 +201,7 @@ export function SkillDetail({
             />
           ))}
           <span className="flex-1" />
-          {(skillFolder || turnOnAll || move || remove || del) && (
+          {(skillFolder || turnOnAll || move || del) && (
             <Menu>
               <MenuTrigger
                 render={<Button size="icon-xs" variant="outline" aria-label="More actions" />}
@@ -224,12 +222,7 @@ export function SkillDetail({
                     {skill.scope === "global" ? "Move to this project" : "Move to Global"}
                   </MenuItem>
                 )}
-                {(remove || del) && <MenuSeparator />}
-                {remove && (
-                  <MenuItem variant="destructive" disabled={busy} onClick={() => onPlan(remove)}>
-                    Remove from agents…
-                  </MenuItem>
-                )}
+                {del && <MenuSeparator />}
                 {del && (
                   <MenuItem variant="destructive" disabled={busy} onClick={() => onPlan(del)}>
                     Delete…

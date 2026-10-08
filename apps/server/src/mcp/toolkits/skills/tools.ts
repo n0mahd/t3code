@@ -47,7 +47,7 @@ const resultNotes =
 const SkillListTool = Tool.make("t3_skill_list", {
   ...shared,
   description:
-    "List the agent skills T3 Code can see, in a project and in the user's home folder, and which agents can use each (access: direct = reads the skill's folder, link = reached through a link, none = cannot use it). A skill is named by scope, name and home. Use t3_skill_enable and t3_skill_disable to change who uses it. Removing, deleting and moving skills is not available to agents.",
+    "List the agent skills T3 Code can see, in a project and in the user's home folder, and which agents can use each (access: direct = reads the skill's folder, link = reached through a link, none = cannot use it). A skill is named by scope, name and home. Use t3_skill_enable and t3_skill_disable to change who uses it. Deleting and moving skills is not available to agents.",
   parameters: Schema.Struct({ projectId }),
   success: SkillListResult,
   dependencies: [...shared.dependencies, SkillCatalog.SkillCatalog],

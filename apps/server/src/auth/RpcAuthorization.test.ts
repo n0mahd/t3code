@@ -73,8 +73,7 @@ describe("RPC authorization scopes", () => {
     for (const method of [
       WS_METHODS.serverEnableSkills,
       WS_METHODS.serverDisableSkills,
-      WS_METHODS.serverRemoveSkills,
-      WS_METHODS.serverMoveSkills,
+      WS_METHODS.serverPlaceSkills,
       WS_METHODS.serverDeleteSkills,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);

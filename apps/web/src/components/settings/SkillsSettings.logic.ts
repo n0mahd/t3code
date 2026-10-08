@@ -193,7 +193,6 @@ export type SkillChange =
       readonly skills: readonly SkillRef[];
       readonly agents: readonly ProviderInstanceId[];
     }
-  | { readonly kind: "remove"; readonly skills: readonly SkillRef[] }
   | { readonly kind: "move"; readonly skills: readonly SkillRef[]; readonly to: SkillScope }
   | { readonly kind: "delete"; readonly skills: readonly SkillRef[] };
 
@@ -307,61 +306,6 @@ export function planTurnOff(
   };
 }
 
-/** Agents that read the skill through a link, not from the skill's own folder. */
-const readsThroughLink = (skill: Skill) =>
-  skill.access.filter(
-    (access) => access.state !== "none" && `${access.folder}/${skill.name}` !== skill.home,
-  );
-
-/** Removing every link to the skills. The skills' own folders stay, so some agents may keep them. */
-export function planRemove(selected: readonly Skill[], ctx: SkillsContext): SkillPlan | null {
-  const targets = selected.filter((skill) => readsThroughLink(skill).length > 0);
-  if (targets.length === 0) return null;
-  const change: SkillChange = { kind: "remove", skills: targets.map(skillRef) };
-  const notes: string[] = [];
-  const idle = selected.length - targets.length;
-  if (idle > 0) {
-    notes.push(
-      `${plural(idle, "skill")} ${idle === 1 ? "is" : "are"} only in ${idle === 1 ? "its" : "their"} own folder, so nothing changes there.`,
-    );
-  }
-  if (targets.length === 1) {
-    const skill = targets[0]!;
-    const linked = new Set(readsThroughLink(skill).map((access) => access.instanceId));
-    const losing = ctx.installed.filter((agent) => linked.has(agent.instanceId));
-    const keeping = ctx.installed.filter(
-      (agent) => hasAccess(skill, agent) && !linked.has(agent.instanceId),
-    );
-    if (keeping.length > 0) {
-      notes.push(
-        `${joinNames(keeping.map((agent) => agent.displayName))} still ${keeping.length === 1 ? "uses" : "use"} it from its own folder.`,
-      );
-    }
-    return {
-      change,
-      affected: 1,
-      confirmation: {
-        title: `Remove ${skill.name} from your agents?`,
-        body: `${joinNames(losing.map((agent) => agent.displayName)) || "No agent"} will stop using it; the original in ${skill.home} isn't deleted.`,
-        notes,
-        confirm: "Remove",
-        destructive: true,
-      },
-    };
-  }
-  return {
-    change,
-    affected: targets.length,
-    confirmation: {
-      title: `Remove ${targets.length} skills from your agents?`,
-      body: "Agents will stop using them; the originals aren't deleted.",
-      notes,
-      confirm: "Remove",
-      destructive: true,
-    },
-  };
-}
-
 // -- Moving and deleting ----------------------------------------------------------------------
 
 /** Whether the skill's own folder is in an agent's skill folder, which is what can move or go. */
@@ -378,11 +322,11 @@ const someNames = (skills: readonly Skill[], shown = 4) =>
     : `${quoted(skills.slice(0, shown)).join(", ")} and ${skills.length - shown} more`;
 
 /** Skills that stay because they are reached through a link, not kept in an agent's folder. */
-const linkedNote = (kept: readonly Skill[], afterwards = "") =>
+const linkedNote = (kept: readonly Skill[]) =>
   kept.length === 0
     ? []
     : [
-        `${plural(kept.length, "skill")} ${kept.length === 1 ? "is" : "are"} reached through a link, so ${kept.length === 1 ? "it stays" : "they stay"}.${afterwards}`,
+        `${plural(kept.length, "skill")} ${kept.length === 1 ? "is" : "are"} reached through a link, so ${kept.length === 1 ? "it stays" : "they stay"}.`,
       ];
 
 /**
@@ -415,9 +359,8 @@ export function planMove(selected: readonly Skill[], to: SkillScope): SkillPlan 
 }
 
 /**
- * Deleting the skills' own folders and the links that lead to them. This is not Remove: Remove
- * only takes the links away and leaves the original, and a skill that is only linked here, such
- * as one from a synced library, can't be deleted from this page at all.
+ * Deleting the skills' own folders and the links that lead to them. A skill that is only linked
+ * here, such as one from a synced library, can't be deleted from this page at all.
  */
 export function planDelete(selected: readonly Skill[], ctx: SkillsContext): SkillPlan | null {
   const targets = selected.filter(hasOwnFolder);
@@ -432,12 +375,7 @@ export function planDelete(selected: readonly Skill[], ctx: SkillsContext): Skil
   } else {
     notes.push(`${someNames(targets)}.`);
   }
-  notes.push(
-    ...linkedNote(
-      kept,
-      ` Remove takes ${kept.length === 1 ? "it" : "them"} away from your agents.`,
-    ),
-  );
+  notes.push(...linkedNote(kept));
   return {
     change: { kind: "delete", skills: targets.map(skillRef) },
     affected: targets.length,
@@ -525,6 +463,8 @@ const problemText = (
       return `${to === undefined ? "The other side" : capitalize(destinationName(to))} already has a “${name}”, so it stays.`;
     case "inUse":
       return `“${name}” is in use by another program, so it wasn't moved.`;
+    case "setElsewhere":
+      return `${who ?? "An agent"}'s settings decide “${name}”, so it stays as it is.`;
     case "failed":
       return who === undefined
         ? `Couldn't change “${name}”.`
@@ -562,8 +502,6 @@ export function describeResult(
         return `Turned on ${count} for ${joinNames(change.agents.map(nameOf))}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "gets" : "get"} ${them} too.` : ""}`;
       case "disable":
         return `Turned off ${count} for ${joinNames(change.agents.map(nameOf))}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "loses" : "lose"} ${them} too.` : ""}`;
-      case "remove":
-        return `Removed ${count} from your agents.`;
       case "move":
         return `Moved ${count} to ${destinationName(change.to)}.${also.length > 0 ? ` ${alsoNames} ${also.length === 1 ? "gets" : "get"} ${them} too.` : ""}`;
       case "delete":
@@ -599,8 +537,6 @@ export function describeResult(
         return "Already on.";
       case "disable":
         return "Already off.";
-      case "remove":
-        return "Nothing to remove.";
       case "move":
         return `Already in ${destinationName(change.to)}.`;
       case "delete":

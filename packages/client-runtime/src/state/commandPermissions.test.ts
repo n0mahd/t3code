@@ -296,8 +296,7 @@ it.effect("needs the operate grant to change skills, but not to list or read the
       for (const method of [
         WS_METHODS.serverEnableSkills,
         WS_METHODS.serverDisableSkills,
-        WS_METHODS.serverRemoveSkills,
-        WS_METHODS.serverMoveSkills,
+        WS_METHODS.serverPlaceSkills,
         WS_METHODS.serverDeleteSkills,
       ]) {
         const change = createCommandPermissions(runtime, method);

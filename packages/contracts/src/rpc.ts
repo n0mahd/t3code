@@ -332,8 +332,7 @@ import {
   SkillGetResult,
   SkillListInput,
   SkillListResult,
-  SkillMoveInput,
-  SkillRemoveInput,
+  SkillPlaceInput,
   SkillRequestError,
   SkillTrackedInput,
   SkillTrackedResult,
@@ -486,8 +485,7 @@ export const WS_METHODS = {
   serverGetSkill: "server.getSkill",
   serverEnableSkills: "server.enableSkills",
   serverDisableSkills: "server.disableSkills",
-  serverRemoveSkills: "server.removeSkills",
-  serverMoveSkills: "server.moveSkills",
+  serverPlaceSkills: "server.placeSkills",
   serverDeleteSkills: "server.deleteSkills",
   serverSkillsTracked: "server.skillsTracked",
   serverUpdateProvider: "server.updateProvider",
@@ -645,14 +643,8 @@ const WsServerDisableSkillsRpc = Rpc.make(WS_METHODS.serverDisableSkills, {
   error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
 });
 
-const WsServerRemoveSkillsRpc = Rpc.make(WS_METHODS.serverRemoveSkills, {
-  payload: SkillRemoveInput,
-  success: SkillBatchResult,
-  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
-});
-
-const WsServerMoveSkillsRpc = Rpc.make(WS_METHODS.serverMoveSkills, {
-  payload: SkillMoveInput,
+const WsServerPlaceSkillsRpc = Rpc.make(WS_METHODS.serverPlaceSkills, {
+  payload: SkillPlaceInput,
   success: SkillBatchResult,
   error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
 });
@@ -1906,8 +1898,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetSkillRpc,
   WsServerEnableSkillsRpc,
   WsServerDisableSkillsRpc,
-  WsServerRemoveSkillsRpc,
-  WsServerMoveSkillsRpc,
+  WsServerPlaceSkillsRpc,
   WsServerDeleteSkillsRpc,
   WsServerSkillsTrackedRpc,
   WsServerUpdateProviderRpc,

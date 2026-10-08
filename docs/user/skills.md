@@ -40,9 +40,8 @@ removes that link and nothing else.
   the skill. On Windows, global links are junctions, and project links need Developer Mode or
   administrator rights.
 
-Tick the boxes beside skills to act on several at once: turn them on for all agents, turn them off
-for one agent, or remove them. **Remove from agents** takes away every link to the skills so agents
-stop using them. It never deletes the original folders.
+Tick the boxes beside skills to act on several at once: turn them on for all agents, or turn them off
+for one agent.
 
 ## Moving and deleting
 
@@ -55,7 +54,7 @@ Only a skill kept in an agent's own skill folder can be moved or deleted. One th
 there, such as a skill from a synced folder, stays where it is.
 
 Agents running in T3 Code can list skills and turn them on or off for agents too; they can't
-remove or delete them.
+move or delete them.
 
 ## Needs attention
 

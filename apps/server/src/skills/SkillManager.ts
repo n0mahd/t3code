@@ -5,7 +5,7 @@
  * folder itself (`direct`) or because a link in a folder the agent reads points at it (`link`).
  * Turning a skill on makes such a link in the agent's own folder; turning it off removes it. Those
  * writes only touch links this service can show lead to the skill's home: a real folder is never
- * replaced by them. Moving and deleting are the only writes that take a real folder, and only one
+ * replaced by them. Placing and deleting are the only writes that take a real folder, and only one
  * that sits in an agent's skill folder itself (`own`), never a synced library behind a link.
  *
  * Every write starts from what the folders hold now, not from what a client last saw: a skill
@@ -22,11 +22,11 @@ import {
   type SkillDeleteInput,
   type SkillDisableInput,
   type SkillEnableInput,
-  type SkillMoveInput,
+  type SkillAgentState,
   type SkillOutcome,
   type SkillOutcomeReason,
+  type SkillPlaceInput,
   type SkillRef,
-  type SkillRemoveInput,
   type SkillScope,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -130,7 +130,7 @@ const planDisable = (
   return { unlinks: [...unlinks.values()], blocked };
 };
 
-const hasSkill = (state: "direct" | "link" | "none") => state !== "none";
+const hasSkill = (state: SkillAgentState) => state === "direct" || state === "link";
 
 export class SkillManager extends Context.Service<
   SkillManager,
@@ -149,12 +149,8 @@ export class SkillManager extends Context.Service<
     readonly disable: (
       input: SkillDisableInput,
     ) => Effect.Effect<SkillBatchResult, SkillRequestError>;
-    /** Remove every link to each skill. The skills' own folders are never touched. */
-    readonly remove: (
-      input: SkillRemoveInput,
-    ) => Effect.Effect<SkillBatchResult, SkillRequestError>;
-    /** Move each skill's folder to the other scope; the agents that used it keep using it. */
-    readonly move: (input: SkillMoveInput) => Effect.Effect<SkillBatchResult, SkillRequestError>;
+    /** Put each skill where `to` says, moving its folder; the agents that used it keep using it. */
+    readonly place: (input: SkillPlaceInput) => Effect.Effect<SkillBatchResult, SkillRequestError>;
     /** Delete each skill's own folder and every link to it. */
     readonly delete: (
       input: SkillDeleteInput,
@@ -256,16 +252,6 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const removeOne = Effect.fnUntraced(function* (skill: SkillCatalog.ResolvedSkill) {
-    const results = new Set((yield* removeAll(linksTo([skill]))).values());
-    const reason: SkillOutcomeReason | undefined = results.has("failed")
-      ? "failed"
-      : results.has("changed")
-        ? "changed"
-        : undefined;
-    return { wrote: results.has("removed"), blocked: [], reason } satisfies SkillChange;
-  });
-
   const skipped = (reason: SkillOutcomeReason): SkillChange => ({
     wrote: false,
     blocked: [],
@@ -288,7 +274,7 @@ const make = Effect.gen(function* () {
   const moveOne = Effect.fnUntraced(function* (
     skill: SkillCatalog.ResolvedSkill,
     to: SkillScope,
-    cwd: string,
+    cwd: string | undefined,
     projectRoot: string | undefined,
     all: ReadonlyArray<SkillCatalog.ResolvedSkill>,
   ) {
@@ -534,22 +520,31 @@ const make = Effect.gen(function* () {
         change: disableOne,
       });
     }),
-    remove: Effect.fn("SkillManager.remove")(function* (input) {
+    place: Effect.fn("SkillManager.place")(function* (input) {
+      const { to } = input;
+      if (input.cwd !== undefined) yield* requireProject(input.cwd);
+      if (to.kind === "projects") {
+        // Stage B implements this: one copy in the library, linked into each of these projects.
+        for (const cwd of to.cwds) yield* requireProject(cwd);
+        return {
+          outcomes: input.skills.map((skill) => ({
+            skill,
+            status: "skipped" as const,
+            reason: "failed" as const,
+            blocked: [],
+            affected: [],
+          })),
+        } satisfies SkillBatchResult;
+      }
+      // Stage B: a project skill placed into a different project than the list was read for.
+      const cwd = to.kind === "project" ? to.cwd : input.cwd;
       return yield* run({
-        cwd: input.cwd,
+        cwd,
         skills: input.skills,
         agents: new Set(),
-        change: (skill) => removeOne(skill),
-      });
-    }),
-    move: Effect.fn("SkillManager.move")(function* (input) {
-      return yield* run({
-        cwd: input.cwd,
-        skills: input.skills,
-        agents: new Set(),
-        alsoLookUp: input.skills.map((ref) => ({ scope: input.to, name: ref.name })),
+        alsoLookUp: input.skills.map((ref) => ({ scope: to.kind, name: ref.name })),
         change: (skill, _agents, projectRoot, all) =>
-          moveOne(skill, input.to, input.cwd, projectRoot, all),
+          moveOne(skill, to.kind, cwd, projectRoot, all),
       });
     }),
     delete: Effect.fn("SkillManager.delete")(function* (input) {

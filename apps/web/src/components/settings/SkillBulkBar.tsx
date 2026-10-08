@@ -14,7 +14,6 @@ import { SkillAgentIcon } from "./skillAgentIcon";
 import {
   planDelete,
   planMove,
-  planRemove,
   planTurnOff,
   planTurnOnAll,
   type Skill,
@@ -43,7 +42,6 @@ export function BulkBar({
   const turnOn = planTurnOnAll(selected, ctx);
   const toGlobal = planMove(selected, "global");
   const toProject = hasProject ? planMove(selected, "project") : null;
-  const remove = planRemove(selected, ctx);
   const del = planDelete(selected, ctx);
   return (
     <div
@@ -98,17 +96,6 @@ export function BulkBar({
           {toProject && (
             <Button size="xs" variant="outline" disabled={busy} onClick={() => onPlan(toProject)}>
               Move to this project
-            </Button>
-          )}
-          {remove && (
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              disabled={busy}
-              title="Agents stop using the skills. The originals aren't deleted."
-              onClick={() => onPlan(remove)}
-            >
-              Remove from agents…
             </Button>
           )}
           {del && (

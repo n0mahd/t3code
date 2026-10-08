@@ -113,8 +113,7 @@ function EnvironmentSkills({
   const listSkills = useAtomCommand(serverEnvironment.listSkills, { reportFailure: false });
   const enableSkills = useAtomCommand(serverEnvironment.enableSkills, { reportFailure: false });
   const disableSkills = useAtomCommand(serverEnvironment.disableSkills, { reportFailure: false });
-  const removeSkills = useAtomCommand(serverEnvironment.removeSkills, { reportFailure: false });
-  const moveSkills = useAtomCommand(serverEnvironment.moveSkills, { reportFailure: false });
+  const placeSkills = useAtomCommand(serverEnvironment.placeSkills, { reportFailure: false });
   const deleteSkills = useAtomCommand(serverEnvironment.deleteSkills, { reportFailure: false });
   const skillsTracked = useAtomCommand(serverEnvironment.skillsTracked, { reportFailure: false });
   // Reading the list needs no grant; each change needs its command's.
@@ -124,11 +123,8 @@ function EnvironmentSkills({
   const canDisable = useAtomValue(
     serverEnvironment.disableSkills.permissionAtom(environment.environmentId),
   );
-  const canRemove = useAtomValue(
-    serverEnvironment.removeSkills.permissionAtom(environment.environmentId),
-  );
-  const canMove = useAtomValue(
-    serverEnvironment.moveSkills.permissionAtom(environment.environmentId),
+  const canPlace = useAtomValue(
+    serverEnvironment.placeSkills.permissionAtom(environment.environmentId),
   );
   const canDelete = useAtomValue(
     serverEnvironment.deleteSkills.permissionAtom(environment.environmentId),
@@ -150,7 +146,7 @@ function EnvironmentSkills({
   /** A change is being made and the list read again; nothing else can start meanwhile. */
   const [busy, setBusy] = useState(false);
   /** The controls that change skills are off while a change runs or the grant is missing. */
-  const locked = busy || !(canEnable && canDisable && canRemove && canMove && canDelete);
+  const locked = busy || !(canEnable && canDisable && canPlace && canDelete);
   const [notice, setNotice] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const mounted = useRef(true);
@@ -274,17 +270,19 @@ function EnvironmentSkills({
                 ...base,
                 input: { ...scoped, skills: change.skills, agents: change.agents },
               })
-            : change.kind === "remove"
-              ? await removeSkills({ ...base, input: { ...scoped, skills: change.skills } })
-              : change.kind === "move"
-                ? // A move is between a project and Global, so it needs the project picked above.
-                  cwd
-                  ? await moveSkills({
-                      ...base,
-                      input: { cwd, skills: change.skills, to: change.to },
-                    })
-                  : null
-                : await deleteSkills({ ...base, input: { ...scoped, skills: change.skills } });
+            : change.kind === "move"
+              ? // A move is between a project and Global, so it needs the project picked above.
+                cwd
+                ? await placeSkills({
+                    ...base,
+                    input: {
+                      cwd,
+                      skills: change.skills,
+                      to: change.to === "global" ? { kind: "global" } : { kind: "project", cwd },
+                    },
+                  })
+                : null
+              : await deleteSkills({ ...base, input: { ...scoped, skills: change.skills } });
       setNotice(
         result?._tag === "Success"
           ? describeResult(change, result.value.outcomes, ctx)

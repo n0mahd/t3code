@@ -20,7 +20,6 @@ import {
   planDelete,
   planFix,
   planMove,
-  planRemove,
   planToggle,
   planTurnOff,
   planTurnOnAll,
@@ -559,49 +558,6 @@ describe("turning off for one agent", () => {
   });
 });
 
-describe("removing skills from the agents", () => {
-  it("names who stops using one skill, and who keeps it from its own folder", () => {
-    const tdd = reached(
-      "tdd",
-      {
-        claudeAgent: { state: "link", folder: "~/.claude/skills" },
-        codex: { state: "direct", folder: "~/.agents/skills" },
-        cursor: { state: "none", folder: "~/.cursor/skills" },
-      },
-      "~/.agents/skills/tdd",
-    );
-    const plan = planRemove([tdd], ctx);
-    expect(plan?.change).toEqual({ kind: "remove", skills: [ref("tdd", "~/.agents/skills/tdd")] });
-    expect(plan?.confirmation).toEqual({
-      title: "Remove tdd from your agents?",
-      body: "Claude will stop using it; the original in ~/.agents/skills/tdd isn't deleted.",
-      notes: ["Codex still uses it from its own folder."],
-      confirm: "Remove",
-      destructive: true,
-    });
-  });
-
-  it("counts skills for a bulk removal and leaves out those with no link to remove", () => {
-    const linked = (name: string) =>
-      reached(name, { claudeAgent: { state: "link", folder: "~/.claude/skills" } });
-    const own = reached(
-      "own",
-      { claudeAgent: { state: "direct", folder: "~/.claude/skills" } },
-      "~/.claude/skills/own",
-    );
-    const plan = planRemove([linked("a"), linked("b"), own], ctx);
-    expect(plan?.affected).toBe(2);
-    expect(plan?.change).toMatchObject({ skills: [ref("a"), ref("b")] });
-    expect(plan?.confirmation).toMatchObject({
-      title: "Remove 2 skills from your agents?",
-      body: "Agents will stop using them; the originals aren't deleted.",
-      notes: ["1 skill is only in its own folder, so nothing changes there."],
-      destructive: true,
-    });
-    expect(planRemove([own], ctx)).toBeNull();
-  });
-});
-
 /** A global skill kept in an agent's folder itself, so it can move or be deleted. */
 const owned = (name: string, extra: Partial<Skill> = {}): Skill => ({
   ...reached(
@@ -677,7 +633,7 @@ describe("moving skills between this project and Global", () => {
 });
 
 describe("deleting skills", () => {
-  it("names the folder that goes and who stops using the skill, apart from Remove", () => {
+  it("names the folder that goes and who stops using the skill", () => {
     const plan = planDelete([owned("tdd")], ctx);
     expect(plan?.change).toEqual({
       kind: "delete",
@@ -690,7 +646,6 @@ describe("deleting skills", () => {
       confirm: "Delete",
       destructive: true,
     });
-    expect(planRemove([owned("tdd")], ctx)?.confirmation?.body).toContain("isn't deleted");
   });
 
   it("counts the folders in a bulk delete and names some of the skills", () => {
@@ -707,13 +662,11 @@ describe("deleting skills", () => {
     });
   });
 
-  it("never offers to delete a skill that is only linked, and says Remove is for those", () => {
+  it("never offers to delete a skill that is only linked", () => {
     const linked = owned("synced", { realFolder: undefined });
     const plan = planDelete([owned("tdd"), linked], ctx);
     expect(plan?.change).toMatchObject({ skills: [{ name: "tdd" }] });
-    expect(plan?.confirmation?.notes).toContain(
-      "1 skill is reached through a link, so it stays. Remove takes it away from your agents.",
-    );
+    expect(plan?.confirmation?.notes).toContain("1 skill is reached through a link, so it stays.");
     expect(planDelete([linked], ctx)).toBeNull();
   });
 
@@ -773,9 +726,6 @@ describe("telling what a change did", () => {
         ctx,
       ),
     ).toBe("Turned off 1 skill for Codex. Claude and Cursor lose it too.");
-    expect(
-      describeResult({ kind: "remove", skills: [ref("a")] }, [outcome({ name: "a" })], ctx),
-    ).toBe("Removed 1 skill from your agents.");
   });
 
   it("says where skills went and who else got them, and what a delete took", () => {
@@ -855,6 +805,22 @@ describe("telling what a change did", () => {
     );
   });
 
+  it("says when a setting outside T3 Code decides, so the switch can't", () => {
+    expect(
+      describeResult(
+        { kind: "disable", skills: [ref("a")], agents: [claude.instanceId] },
+        [
+          outcome({
+            name: "a",
+            status: "skipped",
+            blocked: [{ instanceId: claude.instanceId, reason: "setElsewhere" }],
+          }),
+        ],
+        ctx,
+      ),
+    ).toBe("Claude's settings decide “a”, so it stays as it is.");
+  });
+
   it("names an agent the page doesn't list by its id, and cuts a long list short", () => {
     const blocked = (name: string, reason: SkillOutcome["blocked"][number]["reason"]) =>
       outcome({
@@ -886,9 +852,6 @@ describe("telling what a change did", () => {
     );
     expect(describeResult({ kind: "disable", skills: [], agents: [] }, unchanged, ctx)).toBe(
       "Already off.",
-    );
-    expect(describeResult({ kind: "remove", skills: [] }, unchanged, ctx)).toBe(
-      "Nothing to remove.",
     );
     expect(describeResult({ kind: "move", skills: [], to: "global" }, unchanged, ctx)).toBe(
       "Already in Global.",

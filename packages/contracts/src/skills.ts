@@ -14,11 +14,11 @@ export type SkillListInput = typeof SkillListInput.Type;
 /**
  * How one agent reaches a skill. `direct`: it reads a real folder holding the skill (its own
  * folder, or one shared with other agents). `link`: a link in a folder it reads points at the
- * skill. `none`: it doesn't load this copy of the skill, because it can't see it, because
- * another skill of the same name comes first in its folders, or because its own settings switch
- * the skill off.
+ * skill. `off`: it can see the skill, but its own settings switch the skill off. `none`: it
+ * doesn't load this copy of the skill, because it can't see it or because another skill of the
+ * same name comes first in its folders.
  */
-export const SkillAgentState = Schema.Literals(["direct", "link", "none"]);
+export const SkillAgentState = Schema.Literals(["direct", "link", "off", "none"]);
 export type SkillAgentState = typeof SkillAgentState.Type;
 
 export const SkillAgentAccess = Schema.Struct({
@@ -28,6 +28,11 @@ export const SkillAgentAccess = Schema.Struct({
   state: SkillAgentState,
   /** Where the agent reads the skill from, or for `none` where it looks for skills. */
   folder: Schema.String,
+  /**
+   * T3 Code can't switch this agent for this skill: the agent reads the folder directly and has
+   * no per-skill setting T3 Code knows. A client disables that agent's switch.
+   */
+  fixed: Schema.optional(Schema.Boolean),
 });
 export type SkillAgentAccess = typeof SkillAgentAccess.Type;
 
@@ -58,6 +63,13 @@ export const SkillSummary = Schema.Struct({
   /** The other skills with the same name, in either scope. */
   copies: Schema.Array(SkillCopy),
   access: Schema.Array(SkillAgentAccess),
+  /** `owner/repo` from the installer's record of where the skill came from, for grouping. */
+  source: Schema.optional(Schema.String),
+  /**
+   * Set only for a Global skill that is used in some projects instead of every one: the
+   * workspace roots of the registered projects it is used in.
+   */
+  projects: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 export type SkillSummary = typeof SkillSummary.Type;
 
@@ -122,7 +134,10 @@ const SkillAgents = Schema.Array(ProviderInstanceId).check(
   Schema.isMaxLength(64),
 );
 
-/** Make a link in each agent's own skill folder, so the agent can use the skill. */
+/**
+ * Switch each agent on for the skill: make a link in the agent's own skill folder, or take away
+ * the setting that switches it off.
+ */
 export const SkillEnableInput = Schema.Struct({
   /** A registered project's folder, for project skills and for the order its folders are read in. */
   cwd: Schema.optional(TrimmedNonEmptyString),
@@ -131,29 +146,38 @@ export const SkillEnableInput = Schema.Struct({
 });
 export type SkillEnableInput = typeof SkillEnableInput.Type;
 
-/** Remove each agent's link to the skill. An agent that reads the skill's folder itself stays on. */
+/**
+ * Switch each agent off for the skill: remove its link, or write the agent's own setting. An agent
+ * T3 Code can't switch (`fixed`) stays as it is.
+ */
 export const SkillDisableInput = SkillEnableInput;
 export type SkillDisableInput = typeof SkillDisableInput.Type;
 
-/** Remove every link to the skills. The skills' own folders are never touched. */
-export const SkillRemoveInput = Schema.Struct({
-  cwd: Schema.optional(TrimmedNonEmptyString),
-  skills: SkillRefs,
-});
-export type SkillRemoveInput = typeof SkillRemoveInput.Type;
+/** Where skills should live and be used. Every `cwd` must be a registered project. */
+export const SkillPlacement = Schema.Union([
+  /** A project's own skills. */
+  Schema.Struct({ kind: Schema.Literal("project"), cwd: TrimmedNonEmptyString }),
+  /** Global skills, used in every project. */
+  Schema.Struct({ kind: Schema.Literal("global") }),
+  /** Global skills used only in these projects, as one copy that each of them links to. */
+  Schema.Struct({
+    kind: Schema.Literal("projects"),
+    cwds: Schema.Array(TrimmedNonEmptyString).check(Schema.isMinLength(1), Schema.isMaxLength(64)),
+  }),
+]);
+export type SkillPlacement = typeof SkillPlacement.Type;
 
 /**
- * Move each skill's folder to the other scope: from a project to the user's global folder, or the
- * other way. Agents that used the skill keep using it.
+ * Put each skill where `to` says, moving its folder when it has to. Agents that used the skill
+ * keep using it.
  */
-export const SkillMoveInput = Schema.Struct({
-  /** A registered project's folder: the project the skills move from or into. */
-  cwd: TrimmedNonEmptyString,
+export const SkillPlaceInput = Schema.Struct({
+  /** The registered project the list was read for, which project skills in `skills` belong to. */
+  cwd: Schema.optional(TrimmedNonEmptyString),
   skills: SkillRefs,
-  /** Where the skills go. A skill that is there already is left as it is. */
-  to: SkillScope,
+  to: SkillPlacement,
 });
-export type SkillMoveInput = typeof SkillMoveInput.Type;
+export type SkillPlaceInput = typeof SkillPlaceInput.Type;
 
 /** Which of these project skills git tracks, so a move or delete of them shows in git. */
 export const SkillTrackedInput = Schema.Struct({
@@ -170,7 +194,10 @@ export const SkillTrackedResult = Schema.Struct({
 export type SkillTrackedResult = typeof SkillTrackedResult.Type;
 
 /** Delete each skill's own folder and the links agents use to reach it. This can't be undone. */
-export const SkillDeleteInput = SkillRemoveInput;
+export const SkillDeleteInput = Schema.Struct({
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  skills: SkillRefs,
+});
 export type SkillDeleteInput = typeof SkillDeleteInput.Type;
 
 /** Why a skill or an agent was left as it was. A client words each one. */
@@ -195,6 +222,8 @@ export const SkillOutcomeReason = Schema.Literals([
   "destinationTaken",
   /** Another program is using the folder, so it couldn't be moved. */
   "inUse",
+  /** A project or organization setting decides it, so switching the agent here can't. */
+  "setElsewhere",
 ]);
 export type SkillOutcomeReason = typeof SkillOutcomeReason.Type;
 

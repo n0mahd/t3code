@@ -1196,3 +1196,49 @@ describe("telling what a change did", () => {
     );
   });
 });
+
+describe("telling that a moved skill lost its source", () => {
+  const listed = (name: string, source: string | undefined) =>
+    ({
+      name,
+      scope: "project" as const,
+      home: `.agents/skills/${name}`,
+      description: `The ${name} skill.`,
+      copies: [],
+      access: [],
+      ...(source === undefined ? {} : { source }),
+    }) satisfies SkillListResult["skills"][number];
+  const dropped = (name: string) =>
+    outcome({
+      name,
+      skill: { scope: "project", name, home: `.agents/skills/${name}` },
+      sourceDropped: true,
+    });
+
+  it("names the skill and where it came from, from the plan the page made", () => {
+    const { skills } = ingestSkills({
+      skills: [listed("write-a-prd", "mattpocock/skills")],
+      unreadable: [],
+    });
+    const plan = planPlace(skills, { kind: "global" });
+
+    expect(describeResult(plan!.change, [dropped("write-a-prd")], ctx)).toBe(
+      "Made 1 skill Global. write-a-prd won't update from mattpocock/skills any more.",
+    );
+  });
+
+  it("counts them when there are several, and says nothing when none lost it", () => {
+    const { skills } = ingestSkills({
+      skills: [listed("a", "acme/skills"), listed("b", "acme/other")],
+      unreadable: [],
+    });
+    const plan = planPlace(skills, { kind: "global" });
+
+    expect(describeResult(plan!.change, [dropped("a"), dropped("b")], ctx)).toBe(
+      "Made 2 skills Global. 2 skills won't update from their sources any more.",
+    );
+    expect(
+      describeResult(plan!.change, [outcome({ name: "a" }), outcome({ name: "b" })], ctx),
+    ).toBe("Made 2 skills Global.");
+  });
+});

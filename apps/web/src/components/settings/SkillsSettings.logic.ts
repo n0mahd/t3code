@@ -194,6 +194,8 @@ export type SkillChange =
       readonly to: SkillPlacement;
       /** The projects `to` names, for telling the person where the skills went. */
       readonly projectNames: readonly string[];
+      /** Where each skill came from (`owner/repo`), by `Skill.id`, for telling one that lost it. */
+      readonly sources?: Readonly<Record<string, string>>;
     }
   | { readonly kind: "delete"; readonly skills: readonly SkillRef[] };
 
@@ -533,6 +535,9 @@ export function planPlace(selected: readonly Skill[], target: PlaceTarget): Skil
   const alreadyGlobal = coming.every((skill) => skill.scope === "global");
   const names = projectNamesOf(target);
   const where = joinNames(names);
+  const sources = coming.flatMap((skill) =>
+    skill.source ? [[skill.id, skill.source] as const] : [],
+  );
   const confirmation = (() => {
     switch (target.kind) {
       case "project":
@@ -564,6 +569,7 @@ export function planPlace(selected: readonly Skill[], target: PlaceTarget): Skil
       skills: coming.map(skillRef),
       to: placement(target),
       projectNames: names,
+      ...(sources.length > 0 ? { sources: Object.fromEntries(sources) } : {}),
     },
     affected: coming.length,
     confirmation: { ...confirmation, notes: [], destructive: false },
@@ -762,6 +768,20 @@ export function describeResult(
         return `Deleted ${count}.`;
     }
   })();
+  // A skill whose record of where it came from couldn't go along won't be updated from there.
+  const dropped = changed.filter((outcome) => outcome.sourceDropped === true);
+  const droppedText = (() => {
+    const [first] = dropped;
+    if (first === undefined) return "";
+    if (dropped.length > 1) {
+      return `${plural(dropped.length, "skill")} won't update from their sources any more.`;
+    }
+    const source =
+      change.kind === "place"
+        ? change.sources?.[`${first.skill.scope}\0${first.skill.name}\0${first.skill.home}`]
+        : undefined;
+    return `${first.skill.name} won't update${source === undefined ? "" : ` from ${source}`} any more.`;
+  })();
   // Skills held back for the same agent and reason are counted once, so a bulk change stays short.
   const held = new Map<string, number>();
   for (const outcome of outcomes) {
@@ -813,7 +833,7 @@ export function describeResult(
   if (problems.length > shown.length) {
     shown.push(`${problems.length - shown.length} more couldn't be changed.`);
   }
-  return [lead, ...shown].filter((part) => part !== "").join(" ");
+  return [lead, droppedText, ...shown].filter((part) => part !== "").join(" ");
 }
 
 // -- Search -----------------------------------------------------------------------------------

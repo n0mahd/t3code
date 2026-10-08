@@ -75,6 +75,8 @@ interface SkillChange {
   readonly affected?: readonly ProviderInstanceId[] | undefined;
   /** Agents whose skill list changed, when the change works that out; their `$` picker is refreshed. */
   readonly touched?: readonly ProviderInstanceId[] | undefined;
+  /** The skill's source record couldn't go along with a placement, so it has none now. */
+  readonly sourceDropped?: boolean | undefined;
 }
 
 /**
@@ -525,6 +527,47 @@ const make = Effect.gen(function* () {
     return combine(unlinked, switched);
   });
 
+  /**
+   * Codex names a skill it switches off by the real path of its SKILL.md, so a moved folder leaves
+   * that entry behind and the skill on. The setting goes to the new path and the old entry is
+   * cleared, through Codex like any other write. A rule that names the skill by its name needs no
+   * change. The agents it couldn't carry over are returned.
+   */
+  const followCodexMove = Effect.fnUntraced(function* (
+    skill: SkillCatalog.ResolvedSkill,
+    home: string,
+    writers: SettingsWriters,
+  ) {
+    const blocked: Blocked[] = [];
+    const old = switchedSkillOf(skill);
+    const from = codexSkillFile(path, old);
+    const moved: SwitchedSkill = { ...old, home, entryPaths: [] };
+    for (const agent of skill.agents) {
+      if (agent.driver !== "codex" || agent.settings === undefined) continue;
+      const rules = yield* readCodexSkillRules(agent.settings).pipe(
+        Effect.provideContext(filesystemContext),
+      );
+      const keyed = rules.findLast(
+        (rule) => "path" in rule.selector && rule.selector.path === from,
+      );
+      if (keyed === undefined || keyed.enabled) continue;
+      const wrote = yield* switchCodex(agent, moved, true, writers);
+      if (wrote === "failed" || wrote === "setElsewhere") {
+        blocked.push({ instanceId: agent.instanceId, reason: wrote });
+        continue;
+      }
+      const write = yield* writers(agent.instanceId);
+      const cleared =
+        write === undefined
+          ? undefined
+          : yield* write({ path: from, enabled: true }).pipe(Effect.option);
+      if (cleared === undefined || Option.isNone(cleared)) {
+        blocked.push({ instanceId: agent.instanceId, reason: "failed" });
+      }
+    }
+    return blocked;
+  });
+
   /** The links among the skills' entries, with what each points at as written. */
   const linksTo = (skills: ReadonlyArray<SkillCatalog.ResolvedSkill>) =>
     skills.flatMap((skill) =>
@@ -695,6 +738,7 @@ const make = Effect.gen(function* () {
                   ? "skipped"
                   : "unchanged",
               ...(change.reason === undefined ? {} : { reason: change.reason }),
+              ...(change.sourceDropped === true ? { sourceDropped: true } : {}),
               blocked: change.blocked.filter(
                 (item, index, all) =>
                   all.findIndex((other) => other.instanceId === item.instanceId) === index,
@@ -731,6 +775,8 @@ const make = Effect.gen(function* () {
       });
     }, Effect.scoped),
     place: Effect.fn("SkillManager.place")(function* (input) {
+      // Codex, if its setting has to follow a moved folder, stays open for the whole request.
+      const writers = makeWriters(yield* Scope.Scope);
       const { to } = input;
       if (input.cwd !== undefined) yield* requireProject(input.cwd);
       if (to.kind === "project") yield* requireProject(to.cwd);
@@ -745,9 +791,13 @@ const make = Effect.gen(function* () {
           { scope: "project" as const, name: ref.name },
         ]),
         change: (skill, _agents, _projectRoot, all) =>
-          placement.place(skill, to, { cwd: input.cwd, all }),
+          placement.place(skill, to, {
+            cwd: input.cwd,
+            all,
+            followMove: (home) => followCodexMove(skill, home, writers),
+          }),
       });
-    }),
+    }, Effect.scoped),
     delete: Effect.fn("SkillManager.delete")(function* (input) {
       return yield* run({
         cwd: input.cwd,

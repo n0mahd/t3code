@@ -19,6 +19,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import { parse as parseToml } from "smol-toml";
 
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -1073,12 +1074,14 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
                 const before = (yield* catalog.list({ cwd: web })).skills;
                 expect(summaryOf(before, "project", "db-migrations")?.source).toBe("acme/skills");
 
-                yield* manager.place({
+                const result = yield* manager.place({
                   cwd: web,
                   skills: [refOf(before, "project", "db-migrations")],
                   to: { kind: "global" },
                 });
 
+                // Nothing was lost on the way, so there is nothing to say about it.
+                expect(result.outcomes[0]?.sourceDropped).toBeUndefined();
                 const lock = JSON.parse(
                   yield* fs.readFileString(path.join(home, "state/skills/.skill-lock.json")),
                 );
@@ -1232,7 +1235,8 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
                 to: { kind: "project", cwd: web },
               });
 
-              expect(result.outcomes[0]).toMatchObject({ status: "changed" });
+              expect(result.outcomes[0]).toMatchObject({ status: "changed", sourceDropped: true });
+              yield* encodeResult(result);
               expect(yield* fs.exists(path.join(web, "skills-lock.json"))).toBe(false);
               expect(
                 summaryOf((yield* catalog.list({ cwd: web })).skills, "project", "exact")?.source,
@@ -1265,7 +1269,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
                 to: { kind: "global" },
               });
 
+              // A lock that wasn't touched still holds the record: nothing was dropped.
               expect(result.outcomes[0]).toMatchObject({ status: "changed" });
+              expect(result.outcomes[0]?.sourceDropped).toBeUndefined();
               expect(
                 yield* fs.exists(path.join(home, ".agents/skills/db-migrations/SKILL.md")),
               ).toBe(true);
@@ -1547,6 +1553,177 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
           }),
         );
       }),
+    );
+  });
+
+  describe("Codex's setting for a skill whose folder moves", () => {
+    const rulesOf = (text: string) =>
+      (parseToml(text) as { skills?: { config?: Array<Record<string, unknown>> } }).skills
+        ?.config ?? [];
+
+    it.effect.skipIf(!symlinksSupported)(
+      "follows the real SKILL.md from a project to Global, the library and another project",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, api, library } = yield* makeMachine;
+          const codex = yield* makeCodexDouble(path.join(home, ".codex"));
+          yield* withManager(
+            home,
+            [web, api],
+            ({ manager, catalog }) =>
+              Effect.gen(function* () {
+                const verify = refOf(
+                  (yield* catalog.list({ cwd: web })).skills,
+                  "project",
+                  "db-migrations",
+                );
+                yield* manager.disable({ cwd: web, skills: [verify], agents: [agent("codex")] });
+                const rules = Effect.map(fs.readFileString(codex.file), rulesOf);
+                const codexState = (scope: SkillScope, cwd?: string) =>
+                  Effect.map(
+                    catalog.list(cwd === undefined ? {} : { cwd }),
+                    ({ skills }) => stateOf(skills, scope, "db-migrations").codex,
+                  );
+                expect(yield* rules).toEqual([
+                  { path: path.join(web, ".agents/skills/db-migrations/SKILL.md"), enabled: false },
+                ]);
+                expect(yield* codexState("project", web)).toBe("off");
+
+                // Project -> Global.
+                const toGlobal = yield* manager.place({
+                  cwd: web,
+                  skills: [verify],
+                  to: { kind: "global" },
+                });
+                expect(toGlobal.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+                expect(yield* rules).toEqual([
+                  {
+                    path: path.join(home, ".agents/skills/db-migrations/SKILL.md"),
+                    enabled: false,
+                  },
+                ]);
+                expect(yield* codexState("global")).toBe("off");
+
+                // Global -> only some projects: the library's folder.
+                const global = refOf((yield* catalog.list({})).skills, "global", "db-migrations");
+                const toLibrary = yield* manager.place({
+                  skills: [global],
+                  to: { kind: "projects", cwds: [web, api] },
+                });
+                expect(toLibrary.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+                expect(yield* rules).toEqual([
+                  { path: path.join(library, "db-migrations/SKILL.md"), enabled: false },
+                ]);
+                expect(yield* codexState("global", web)).toBe("off");
+
+                // Some projects -> one project.
+                const inLibrary = refOf(
+                  (yield* catalog.list({})).skills,
+                  "global",
+                  "db-migrations",
+                );
+                const toProject = yield* manager.place({
+                  skills: [inLibrary],
+                  to: { kind: "project", cwd: api },
+                });
+                expect(toProject.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+                expect(yield* rules).toEqual([
+                  { path: path.join(api, ".agents/skills/db-migrations/SKILL.md"), enabled: false },
+                ]);
+                expect(yield* codexState("project", api)).toBe("off");
+                // Written through Codex each time, one new path then the old one cleared.
+                expect(codex.calls.map((call) => call.enabled)).toEqual([
+                  false,
+                  false,
+                  true,
+                  false,
+                  true,
+                  false,
+                  true,
+                ]);
+              }),
+            {},
+            codex,
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "leaves a setting that names the skill alone, and a skill Codex had on",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web } = yield* makeMachine;
+          const codex = yield* makeCodexDouble(path.join(home, ".codex"));
+          yield* fs.makeDirectory(path.join(home, ".codex"), { recursive: true });
+          yield* fs.writeFileString(
+            codex.file,
+            '[[skills.config]]\nname = "db-migrations"\nenabled = false\n',
+          );
+          yield* withManager(
+            home,
+            [web],
+            ({ manager, catalog }) =>
+              Effect.gen(function* () {
+                const verify = refOf(
+                  (yield* catalog.list({ cwd: web })).skills,
+                  "project",
+                  "db-migrations",
+                );
+
+                const result = yield* manager.place({
+                  cwd: web,
+                  skills: [verify],
+                  to: { kind: "global" },
+                });
+
+                expect(result.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+                expect(codex.calls).toEqual([]);
+                expect(rulesOf(yield* fs.readFileString(codex.file))).toEqual([
+                  { name: "db-migrations", enabled: false },
+                ]);
+              }),
+            {},
+            codex,
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "says Codex wasn't carried over when it can't be asked, and the skill still moves",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web } = yield* makeMachine;
+          yield* fs.makeDirectory(path.join(home, ".codex"), { recursive: true });
+          const old = path.join(web, ".agents/skills/db-migrations/SKILL.md");
+          yield* fs.writeFileString(
+            path.join(home, ".codex/config.toml"),
+            `[[skills.config]]\npath = "${old}"\nenabled = false\n`,
+          );
+          // No double: the registry has no Codex instance to open a writer on.
+          yield* withManager(home, [web], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const verify = refOf(
+                (yield* catalog.list({ cwd: web })).skills,
+                "project",
+                "db-migrations",
+              );
+
+              const result = yield* manager.place({
+                cwd: web,
+                skills: [verify],
+                to: { kind: "global" },
+              });
+
+              expect(result.outcomes[0]).toMatchObject({
+                status: "changed",
+                blocked: [{ instanceId: agent("codex"), reason: "failed" }],
+              });
+              expect(
+                yield* fs.exists(path.join(home, ".agents/skills/db-migrations/SKILL.md")),
+              ).toBe(true);
+            }),
+          );
+        }),
     );
   });
 

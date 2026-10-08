@@ -15,8 +15,10 @@
  * Every transition re-reads the folders it works on, replaces nothing that is in the way
  * (`destinationTaken`), and undoes the steps it has taken when a later one fails, so a failure
  * leaves the skill where it was. What an agent used it through (its own link, its settings) goes
- * with the skill. The skill's source record in the `skills` CLI's lock (`SkillLockFiles`) moves
- * with it between a project and Global.
+ * with the skill: Codex's switch-off is keyed by the real SKILL.md, so it follows a moved folder
+ * (`PlacementView.followMove`). The skill's source record in the `skills` CLI's lock
+ * (`SkillLockFiles`) moves with it between a project and Global, or is dropped when the lock
+ * can't take it, which the result says (`sourceDropped`).
  *
  * The agents of a skill used in only some projects are switched through its project links: a link
  * in each project's folder for an agent that doesn't read the shared one (`addLibraryLinks`,
@@ -49,7 +51,7 @@ import type * as SkillCatalog from "./SkillCatalog.ts";
 import { updateExclude, worktreesOf } from "./SkillGitExclude.ts";
 import { LIBRARY_FOLDER, libraryLinksOf, linkLeadsTo, type LibraryLink } from "./SkillLibrary.ts";
 import { createLink, removeLink, type RemoveLinkResult } from "./SkillLinks.ts";
-import { moveRecord, type LockScope } from "./SkillLockFiles.ts";
+import { moveRecord, type LockScope, type MoveRecordResult } from "./SkillLockFiles.ts";
 import { moveFolder } from "./SkillMove.ts";
 
 type Blocked = SkillOutcome["blocked"][number];
@@ -66,6 +68,8 @@ export interface PlacementChange {
   readonly affected?: readonly ProviderInstanceId[] | undefined;
   /** Agents whose skill list changed; their `$` picker is refreshed. */
   readonly touched?: readonly ProviderInstanceId[] | undefined;
+  /** The skill's source record couldn't go along with it, so the skill no longer has one. */
+  readonly sourceDropped?: boolean | undefined;
 }
 
 /** A step found the placement can't be done; what was done before it is undone. */
@@ -92,6 +96,11 @@ export interface PlacementView {
   /** The project the list was read for. */
   readonly cwd: string | undefined;
   readonly all: ReadonlyArray<SkillCatalog.ResolvedSkill>;
+  /**
+   * Called once the skill's real folder has moved to `home`, so the agents' own settings that name
+   * the old place can name the new one. Agents it couldn't carry over are returned.
+   */
+  readonly followMove?: (home: string) => Effect.Effect<readonly Blocked[]>;
 }
 
 /** A skill kept in the library, whose registered projects' links the catalog found. */
@@ -334,7 +343,10 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       (link) => results.get(link.path) === "changed" || results.get(link.path) === "failed",
     );
 
-  /** The skill's source record goes along; a failure is logged and never undoes the placement. */
+  /**
+   * The skill's source record goes along; a failure is logged and never undoes the placement.
+   * Whether the record had to be dropped is told, since the skill then has no source any more.
+   */
   const moveSourceRecord = (input: {
     readonly name: string;
     readonly from: LockScope;
@@ -342,13 +354,17 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     readonly folder: string;
   }) =>
     inContext(moveRecord({ ...input, environment: deps.environment, home: deps.home })).pipe(
+      Effect.map((result: MoveRecordResult) => result === "dropped"),
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.interrupt
-          : Effect.logWarning("could not move a skill's source record", {
-              name: input.name,
-              cause: Cause.pretty(cause),
-            }),
+          : Effect.as(
+              Effect.logWarning("could not move a skill's source record", {
+                name: input.name,
+                cause: Cause.pretty(cause),
+              }),
+              false,
+            ),
       ),
     );
 
@@ -360,6 +376,7 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     readonly home: string;
     readonly blocked: readonly Blocked[];
     readonly reason?: SkillOutcomeReason | undefined;
+    readonly sourceDropped?: boolean | undefined;
   }) {
     const after = yield* deps.catalog.resolve({
       cwd: input.view.cwd,
@@ -377,6 +394,7 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       reason: input.reason,
       touched,
       affected: touched.filter((id) => input.had.has(id) !== has.has(id) && !unreached.has(id)),
+      ...(input.sourceDropped === true ? { sourceDropped: true } : {}),
     } satisfies PlacementChange;
   });
 
@@ -440,15 +458,17 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
         : { kind: "global" };
     const to: LockScope =
       dest.scope === "global" ? { kind: "global" } : { kind: "project", root: dest.cwd };
-    yield* moveSourceRecord({ name: skill.name, from, to, folder: real });
+    const sourceDropped = yield* moveSourceRecord({ name: skill.name, from, to, folder: real });
+    const followed = view.followMove === undefined ? [] : yield* view.followMove(real);
 
     const landed = yield* resolveLanded();
     if (landed === undefined) {
       return {
         wrote: true,
-        blocked: [],
+        blocked: followed,
         reason: "failed",
         touched: [...had],
+        ...(sourceDropped ? { sourceDropped } : {}),
       } satisfies PlacementChange;
     }
     // Every agent that used the skill keeps using it. One that reads the new scope's shared folder
@@ -471,8 +491,9 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       skill,
       had,
       home: real,
-      blocked: relinked.blocked,
+      blocked: [...relinked.blocked, ...followed],
       reason,
+      sourceDropped,
     });
   });
 
@@ -533,6 +554,7 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     // same path, as when the skill is already in one of the projects.
     yield* unlink(journal, stale);
     const home = yield* realPath(entry);
+    const followed = skill.own && view.followMove !== undefined ? yield* view.followMove(home) : [];
     const blocked = yield* linkProjects(journal, {
       projects,
       name: skill.name,
@@ -544,21 +566,23 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
           .filter((agent) => ownProjectFolderFor(agent.driver) === folder)
           .map((agent) => agent.instanceId),
     });
-    if (skill.scope === "project" && view.cwd !== undefined) {
-      yield* moveSourceRecord({
-        name: skill.name,
-        from: { kind: "project", root: view.cwd },
-        to: { kind: "global" },
-        folder: home,
-      });
-    }
+    const sourceDropped =
+      skill.scope === "project" && view.cwd !== undefined
+        ? yield* moveSourceRecord({
+            name: skill.name,
+            from: { kind: "project", root: view.cwd },
+            to: { kind: "global" },
+            folder: home,
+          })
+        : false;
     return yield* settle({
       view,
       skill,
       had,
       home,
-      blocked,
+      blocked: [...blocked, ...followed],
       reason,
+      sourceDropped,
     });
   });
 
@@ -697,14 +721,16 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     }
 
     const real = yield* realPath(destination);
-    if (dest.scope === "project") {
-      yield* moveSourceRecord({
-        name: skill.name,
-        from: { kind: "global" },
-        to: { kind: "project", root: dest.cwd },
-        folder: real,
-      });
-    }
+    const followed = skill.own && view.followMove !== undefined ? yield* view.followMove(real) : [];
+    const sourceDropped =
+      dest.scope === "project"
+        ? yield* moveSourceRecord({
+            name: skill.name,
+            from: { kind: "global" },
+            to: { kind: "project", root: dest.cwd },
+            folder: real,
+          })
+        : false;
     const landedIn = dest.scope === "global" ? view.cwd : dest.cwd;
     const landed = (yield* deps.catalog.resolve({
       cwd: landedIn,
@@ -728,8 +754,9 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       skill,
       had,
       home: real,
-      blocked: relinked.blocked,
+      blocked: [...relinked.blocked, ...followed],
       reason,
+      sourceDropped,
     });
   });
 

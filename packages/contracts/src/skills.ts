@@ -242,6 +242,11 @@ export const SkillOutcome = Schema.Struct({
   ),
   /** Agents that weren't asked for but gained or lost the skill, because they read the same folder. */
   affected: Schema.Array(ProviderInstanceId),
+  /**
+   * Set when a placement moved the skill but the installer's record of where it came from (`source`
+   * in the list) couldn't go along, so the skill no longer has one and won't be updated from there.
+   */
+  sourceDropped: Schema.optional(Schema.Boolean),
 });
 export type SkillOutcome = typeof SkillOutcome.Type;
 

@@ -1,12 +1,16 @@
 /**
- * SkillManager - turns skills on or off for each agent by making and removing links.
+ * SkillManager - turns skills on or off for each agent by making and removing links, or by writing
+ * the agent's own settings.
  *
  * A skill has one home, a real folder. An agent reads it either because the agent reads that
  * folder itself (`direct`) or because a link in a folder the agent reads points at it (`link`).
- * Turning a skill on makes such a link in the agent's own folder; turning it off removes it. Those
- * writes only touch links this service can show lead to the skill's home: a real folder is never
- * replaced by them. Placing and deleting are the only writes that take a real folder, and only one
- * that sits in an agent's skill folder itself (`own`), never a synced library behind a link.
+ * Turning a skill on makes such a link in the agent's own folder; turning it off removes it. An
+ * agent that reads the folder itself has no link to remove, so where it has a per-skill setting
+ * T3 Code knows (see `AgentSkillSettings`) that setting is written instead, and the agent is
+ * `off`; otherwise it is `fixed` and stays on. Those writes only touch links this service can show
+ * lead to the skill's home: a real folder is never replaced by them. Placing and deleting are the
+ * only writes that take a real folder, and only one that sits in an agent's skill folder itself
+ * (`own`), never a synced library behind a link.
  *
  * Every write starts from what the folders hold now, not from what a client last saw: a skill
  * whose home is not where the client said is refused, and each link is checked again right
@@ -37,9 +41,19 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
+import * as Scope from "effect/Scope";
+import type { SkillSettingsWriter } from "@t3tools/provider-core/server/driver";
 
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { setSkillSwitch, type SkillSwitchWrite, type SwitchedSkill } from "./AgentSkillSettings.ts";
+import {
+  codexRulesSwitchOff,
+  codexSkillFile,
+  planCodexSwitch,
+  readCodexSkillRules,
+} from "./CodexSkillSettings.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
 import { createLink, removeLink, type RemoveLinkResult } from "./SkillLinks.ts";
 import { deleteFolder, moveFolder } from "./SkillMove.ts";
@@ -63,7 +77,8 @@ interface SkillChange {
 /**
  * Links to make so each requested agent that doesn't use the skill yet gets it. An agent gets its
  * link in the shared folder when it reads that, else in its own first folder for the skill's
- * scope; agents that read the same folder share one link.
+ * scope; agents that read the same folder share one link. An agent whose own settings switch the
+ * skill off (`clears`) gets that setting taken away, unless the skill can't reach it anyway.
  */
 export const planEnable = (
   skill: SkillCatalog.ResolvedSkill,
@@ -71,8 +86,14 @@ export const planEnable = (
 ) => {
   const links = new Map<string, { directory: string; agents: ProviderInstanceId[] }>();
   const blocked: Blocked[] = [];
+  const clears: ProviderInstanceId[] = [];
   for (const agent of skill.agents) {
-    if (!requested.has(agent.instanceId) || agent.state !== "none") continue;
+    if (!requested.has(agent.instanceId)) continue;
+    if (agent.state === "off") {
+      clears.push(agent.instanceId);
+      continue;
+    }
+    if (agent.state !== "none") continue;
     const shared = agent.reads.findIndex((read) => read.scope === skill.scope && read.standard);
     const index =
       shared >= 0 ? shared : agent.reads.findIndex((read) => read.scope === skill.scope);
@@ -89,18 +110,21 @@ export const planEnable = (
       blocked.push({ instanceId: agent.instanceId, reason: "shadowed" });
       continue;
     }
+    if (agent.switchedOff) clears.push(agent.instanceId);
     // Linked there already, though the agent doesn't load it (Claude can't read its header).
     if (skill.entries.some((entry) => entry.directory === root.directory)) continue;
     const link = links.get(root.directory);
     if (link) link.agents.push(agent.instanceId);
     else links.set(root.directory, { directory: root.directory, agents: [agent.instanceId] });
   }
-  return { links: [...links.values()], blocked };
+  return { links: [...links.values()], blocked, clears };
 };
 
 /**
  * Links to remove so each requested agent stops using the skill. An agent that reads the
- * skill's own folder, or a link in the shared folder that serves other agents too, stays on.
+ * skill's own folder, or a link in the shared folder that serves other agents too, can't be
+ * switched by a link: if it has a per-skill setting that is written instead (`switchOffs`),
+ * otherwise it stays on. An agent that is off already is left as it is.
  */
 const planDisable = (
   skill: SkillCatalog.ResolvedSkill,
@@ -108,11 +132,18 @@ const planDisable = (
 ) => {
   const unlinks = new Map<string, { path: string; target: string; agents: ProviderInstanceId[] }>();
   const blocked: Blocked[] = [];
+  const switchOffs: ProviderInstanceId[] = [];
   for (const agent of skill.agents) {
-    if (!requested.has(agent.instanceId) || agent.state === "none") continue;
+    if (!requested.has(agent.instanceId) || agent.state === "none" || agent.state === "off") {
+      continue;
+    }
     const entries = skill.entries.filter((entry) => agent.via.includes(entry.path));
     if (agent.state === "direct" || entries.some((entry) => entry.target === undefined)) {
-      blocked.push({ instanceId: agent.instanceId, reason: "alwaysOn" });
+      if (agent.settings === undefined) {
+        blocked.push({ instanceId: agent.instanceId, reason: "alwaysOn" });
+      } else {
+        switchOffs.push(agent.instanceId);
+      }
       continue;
     }
     for (const entry of entries) {
@@ -127,10 +158,25 @@ const planDisable = (
         });
     }
   }
-  return { unlinks: [...unlinks.values()], blocked };
+  return { unlinks: [...unlinks.values()], blocked, switchOffs };
 };
 
 const hasSkill = (state: SkillAgentState) => state === "direct" || state === "link";
+
+/**
+ * Opens an agent's settings writer the first time a request needs it and keeps it for the rest of
+ * the request, so switching a hundred skills in Codex starts Codex once. Undefined when the
+ * agent has none or it can't be started.
+ */
+type SettingsWriters = (
+  instanceId: ProviderInstanceId,
+) => Effect.Effect<SkillSettingsWriter | undefined>;
+
+const combine = (first: SkillChange, second: SkillChange): SkillChange => ({
+  wrote: first.wrote || second.wrote,
+  blocked: [...first.blocked, ...second.blocked],
+  reason: first.reason ?? second.reason,
+});
 
 export class SkillManager extends Context.Service<
   SkillManager,
@@ -165,6 +211,7 @@ const make = Effect.gen(function* () {
   const catalog = yield* SkillCatalog.SkillCatalog;
   const projects = yield* ProjectService.ProjectService;
   const providers = yield* ProviderRegistry.ProviderRegistry;
+  const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const writeLock = yield* Semaphore.make(1);
   // The link primitives take the filesystem from their environment.
   const filesystemContext = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
@@ -242,6 +289,124 @@ const make = Effect.gen(function* () {
       }
     }
     return { wrote, blocked } satisfies SkillChange;
+  });
+
+  /** The writers of one request, each opened on first use inside the request's scope. */
+  const makeWriters = (scope: Scope.Scope): SettingsWriters => {
+    const opened = new Map<ProviderInstanceId, SkillSettingsWriter | undefined>();
+    return (instanceId) =>
+      Effect.gen(function* () {
+        if (opened.has(instanceId)) return opened.get(instanceId);
+        const instance = yield* providerInstances.getInstance(instanceId);
+        const writer =
+          instance?.enabled && instance.openSkillSettingsWriter
+            ? yield* instance.openSkillSettingsWriter.pipe(
+                Effect.provideService(Scope.Scope, scope),
+                Effect.tapError((error) => Effect.logWarning("skill settings writer", { error })),
+                Effect.option,
+                Effect.map(Option.getOrUndefined),
+              )
+            : undefined;
+        opened.set(instanceId, writer);
+        return writer;
+      });
+  };
+
+  const switchedSkillOf = (skill: SkillCatalog.ResolvedSkill): SwitchedSkill => ({
+    scope: skill.scope,
+    name: skill.name,
+    declaredName: skill.declaredName,
+    home: skill.home,
+    entryPaths: skill.entries.map((entry) => entry.path),
+  });
+
+  /** Codex's settings are written by Codex; the file is read before and after to check. */
+  const switchCodex = Effect.fnUntraced(function* (
+    agent: SkillCatalog.ResolvedSkill["agents"][number],
+    target: SwitchedSkill,
+    off: boolean,
+    writers: SettingsWriters,
+  ) {
+    if (agent.settings === undefined) return "failed" as const;
+    const context = agent.settings;
+    const file = codexSkillFile(path, target);
+    const rules = yield* readCodexSkillRules(context).pipe(
+      Effect.provideContext(filesystemContext),
+    );
+    const changes = planCodexSwitch(rules, file, target, off);
+    if (changes.length === 0) return "unchanged" as const;
+    const write = yield* writers(agent.instanceId);
+    if (write === undefined) return "failed" as const;
+
+    let decidedElsewhere = false;
+    for (const change of changes) {
+      const result = yield* write(change).pipe(Effect.option);
+      if (Option.isNone(result)) return "failed" as const;
+      // `effectiveEnabled` is what Codex decides after the write, with every layer it reads.
+      if (result.value.effectiveEnabled !== change.enabled) decidedElsewhere = true;
+    }
+    if (decidedElsewhere) return "setElsewhere" as const;
+    const after = yield* readCodexSkillRules(context).pipe(
+      Effect.provideContext(filesystemContext),
+    );
+    return codexRulesSwitchOff(after, file, target) === off
+      ? ("written" as const)
+      : ("failed" as const);
+  });
+
+  /** Writes the agent's own setting for the skill so the agent is `off` (or no longer off). */
+  const switchAgents = Effect.fnUntraced(function* (
+    skill: SkillCatalog.ResolvedSkill,
+    instanceIds: readonly ProviderInstanceId[],
+    off: boolean,
+    writers: SettingsWriters,
+  ) {
+    const target = switchedSkillOf(skill);
+    const blocked: Blocked[] = [];
+    let wrote = false;
+    for (const instanceId of instanceIds) {
+      const agent = skill.agents.find((candidate) => candidate.instanceId === instanceId);
+      if (agent === undefined) continue;
+      const result: SkillSwitchWrite =
+        agent.settings === undefined
+          ? "failed"
+          : agent.driver === "codex"
+            ? yield* switchCodex(agent, target, off, writers)
+            : yield* setSkillSwitch(agent.settings, target, off).pipe(
+                Effect.provideContext(filesystemContext),
+              );
+      if (result === "written") wrote = true;
+      else if (result === "setElsewhere" || result === "failed") {
+        blocked.push({ instanceId, reason: result });
+      }
+    }
+    return { wrote, blocked } satisfies SkillChange;
+  });
+
+  const enableAgents = Effect.fnUntraced(function* (
+    skill: SkillCatalog.ResolvedSkill,
+    requested: ReadonlySet<ProviderInstanceId>,
+    projectRoot: string | undefined,
+    writers: SettingsWriters,
+  ) {
+    const linked = yield* enableOne(skill, requested, projectRoot);
+    const cleared = yield* switchAgents(skill, planEnable(skill, requested).clears, false, writers);
+    return combine(linked, cleared);
+  });
+
+  const disableAgents = Effect.fnUntraced(function* (
+    skill: SkillCatalog.ResolvedSkill,
+    requested: ReadonlySet<ProviderInstanceId>,
+    writers: SettingsWriters,
+  ) {
+    const unlinked = yield* disableOne(skill, requested);
+    const switched = yield* switchAgents(
+      skill,
+      planDisable(skill, requested).switchOffs,
+      true,
+      writers,
+    );
+    return combine(unlinked, switched);
   });
 
   /** The links among the skills' entries, with what each points at as written. */
@@ -505,21 +670,24 @@ const make = Effect.gen(function* () {
 
   return SkillManager.of({
     enable: Effect.fn("SkillManager.enable")(function* (input) {
+      // Codex, if it has to be asked, stays open for the whole request.
+      const writers = makeWriters(yield* Scope.Scope);
       return yield* run({
         cwd: input.cwd,
         skills: input.skills,
         agents: input.agents === "all" ? "all" : new Set(input.agents),
-        change: enableOne,
+        change: (skill, agents, projectRoot) => enableAgents(skill, agents, projectRoot, writers),
       });
-    }),
+    }, Effect.scoped),
     disable: Effect.fn("SkillManager.disable")(function* (input) {
+      const writers = makeWriters(yield* Scope.Scope);
       return yield* run({
         cwd: input.cwd,
         skills: input.skills,
         agents: new Set(input.agents),
-        change: disableOne,
+        change: (skill, agents) => disableAgents(skill, agents, writers),
       });
-    }),
+    }, Effect.scoped),
     place: Effect.fn("SkillManager.place")(function* (input) {
       const { to } = input;
       if (input.cwd !== undefined) yield* requireProject(input.cwd);

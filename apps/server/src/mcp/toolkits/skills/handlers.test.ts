@@ -26,6 +26,7 @@ import { McpSchema, McpServer } from "effect/ai";
 
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as ProviderInstanceRegistry from "../../../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as Settings from "../../../serverSettings.ts";
 import * as SkillCatalog from "../../../skills/SkillCatalog.ts";
@@ -169,6 +170,12 @@ const layerFor = (
           noteRefresh({ instanceId, cwd: undefined, fresh: undefined }),
         refreshWorkspaceSnapshot: ({ instanceId, cwd, fresh }) =>
           noteRefresh({ instanceId, cwd, fresh }),
+      }),
+    ),
+    // No agent here has a settings writer, so none is ever looked up.
+    Layer.provide(
+      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        getInstance: () => Effect.succeed(undefined),
       }),
     ),
     Layer.provide(
@@ -358,14 +365,15 @@ describe("skills MCP tools", () => {
 
             const result = yield* call("t3_skill_disable", {
               skills: [refOf(skills, "global", "alpha")],
-              agents: ["codex"],
+              agents: ["cursor"],
             });
 
-            // Codex reads the shared folder itself, so there is no link of its own to remove.
+            // Cursor reads the shared folder itself and has no setting for one skill, so there
+            // is nothing of its own to remove or write.
             expect(result.isError).toBe(false);
             expect(result.structuredContent).toMatchObject({
               outcomes: [
-                { status: "skipped", blocked: [{ instanceId: "codex", reason: "alwaysOn" }] },
+                { status: "skipped", blocked: [{ instanceId: "cursor", reason: "alwaysOn" }] },
               ],
             });
             expect(yield* fs.exists(path.join(home, ".agents/skills/alpha"))).toBe(true);

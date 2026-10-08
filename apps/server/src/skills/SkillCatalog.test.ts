@@ -334,7 +334,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillCatalog", (it)
     );
 
     it.effect.skipIf(!symlinksSupported)(
-      "shows a skill that Claude's own settings switch off as one Claude doesn't use",
+      "shows a skill that Claude's own settings switch off as off for Claude",
       () =>
         Effect.gen(function* () {
           const { home, project, write } = yield* makeMachine;
@@ -359,20 +359,20 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillCatalog", (it)
           const { skills } = yield* withCatalog(home, (catalog) => catalog.list({ cwd: project }));
           const byName = byKey(skills);
 
-          // Off: Claude doesn't use it, the others still do.
+          // Off: Claude can see it but doesn't use it, the others still do.
           expect(accessOf(byName.get("global:cloudflare"))).toMatchObject({
-            claudeAgent: { state: "none", folder: "~/.claude/skills" },
+            claudeAgent: { state: "off", folder: "~/.claude/skills" },
             cursor: { state: "direct", folder: "~/.claude/skills" },
           });
           // The project's later layer turns the user's "off" back on.
           expect(states(byName.get("global:architect")).claudeAgent).toBe("link");
-          expect(states(byName.get("project:own-copy")).claudeAgent).toBe("none");
+          expect(states(byName.get("project:own-copy")).claudeAgent).toBe("off");
           // The user can still invoke a skill that only the model is kept from.
           expect(states(byName.get("global:user-only")).claudeAgent).toBe("direct");
 
           // Without the project, only the user's layer applies.
           const global = yield* withCatalog(home, (catalog) => catalog.list({}));
-          expect(states(byKey(global.skills).get("global:architect")).claudeAgent).toBe("none");
+          expect(states(byKey(global.skills).get("global:architect")).claudeAgent).toBe("off");
         }),
     );
 

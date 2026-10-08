@@ -42,12 +42,12 @@ const agentNames = Schema.Array(ProviderInstanceId).check(
 const agentsDescription =
   "agents are named by provider instance id or driver kind, as in the access entries t3_skill_list returns.";
 const resultNotes =
-  'Each outcome says changed, unchanged or skipped. blocked lists agents the change did not reach: "alwaysOn" means the agent reads the skill\'s own folder, so there is no link to remove; "shadowed" means it loads another skill with that name first; "entryTaken" means something else is where the link would go. affected lists agents that gained or lost the skill without being asked, because they read the same folder.';
+  'Each outcome says changed, unchanged or skipped. blocked lists agents the change did not reach: "alwaysOn" means the agent reads the skill\'s own folder and T3 Code knows no setting that switches one skill off for it (the access entry says fixed); "setElsewhere" means a project or organization setting decides it; "failed" means the agent\'s settings could not be written safely; "shadowed" means it loads another skill with that name first; "entryTaken" means something else is where the link would go. affected lists agents that gained or lost the skill without being asked, because they read the same folder.';
 
 const SkillListTool = Tool.make("t3_skill_list", {
   ...shared,
   description:
-    "List the agent skills T3 Code can see, in a project and in the user's home folder, and which agents can use each (access: direct = reads the skill's folder, link = reached through a link, none = cannot use it). A skill is named by scope, name and home. Use t3_skill_enable and t3_skill_disable to change who uses it. Deleting and moving skills is not available to agents.",
+    "List the agent skills T3 Code can see, in a project and in the user's home folder, and which agents can use each (access: direct = reads the skill's folder, link = reached through a link, off = it can see the skill but its own settings switch it off, none = cannot use it; fixed = T3 Code cannot switch that agent for that skill). A skill is named by scope, name and home. Use t3_skill_enable and t3_skill_disable to change who uses it. Deleting and moving skills is not available to agents.",
   parameters: Schema.Struct({ projectId }),
   success: SkillListResult,
   dependencies: [...shared.dependencies, SkillCatalog.SkillCatalog],
@@ -68,7 +68,7 @@ const SkillGetTool = Tool.make("t3_skill_get", {
 
 const SkillEnableTool = Tool.make("t3_skill_enable", {
   ...shared,
-  description: `Let agents use skills by linking each skill into the agent's own skill folder. Nothing is copied or deleted. agents is "all" for every enabled agent, or a list; ${agentsDescription} ${resultNotes} Requires a live full-access/default calling thread or a full-access client.`,
+  description: `Let agents use skills by linking each skill into the agent's own skill folder, or by taking away the setting that switches it off in the agent's own settings. Nothing is copied or deleted. agents is "all" for every enabled agent, or a list; ${agentsDescription} ${resultNotes} Requires a live full-access/default calling thread or a full-access client.`,
   parameters: Schema.Struct({
     projectId,
     skills,
@@ -80,7 +80,7 @@ const SkillEnableTool = Tool.make("t3_skill_enable", {
 
 const SkillDisableTool = Tool.make("t3_skill_disable", {
   ...shared,
-  description: `Stop agents using skills by removing the agent's link to each skill. The skill's own folder is never deleted, and an agent that reads that folder itself stays on (blocked: alwaysOn). Turn a skill back on with t3_skill_enable. ${agentsDescription} ${resultNotes} Requires a live full-access/default calling thread or a full-access client.`,
+  description: `Stop agents using skills by removing the agent's link to each skill, or, for an agent that reads the skill's folder itself, by switching the skill off in that agent's own settings (Claude Code, Codex, OpenCode and Pi have one). The skill's own folder is never deleted, and an agent T3 Code can't switch stays on (blocked: alwaysOn). Turn a skill back on with t3_skill_enable. ${agentsDescription} ${resultNotes} Requires a live full-access/default calling thread or a full-access client.`,
   parameters: Schema.Struct({ projectId, skills, agents: agentNames }),
   success: SkillBatchResult,
   dependencies: [...shared.dependencies, SkillManager.SkillManager],

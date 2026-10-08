@@ -10,6 +10,10 @@
  * copy in their folder order, so a copy that another folder shadows is `none` for that instance,
  * and others load every copy.
  *
+ * An agent that can see a skill but whose own settings switch it off is `off`, read from the
+ * agent's settings files and never by asking the agent (see `AgentSkillSettings`). One that reads
+ * the skill's folder directly, with no setting T3 Code can write, is `fixed`.
+ *
  * @module SkillCatalog
  */
 import {
@@ -53,12 +57,18 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 import {
   parseSkillFrontmatter,
-  readSkillOverrides,
   resolveClaudeConfigDirPath,
 } from "../provider/Drivers/ClaudeSkills.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as Settings from "../serverSettings.ts";
+import {
+  loadSkillSwitches,
+  skillSwitchKind,
+  type SkillSwitchContext,
+  type SkillSwitchView,
+  type SwitchedSkill,
+} from "./AgentSkillSettings.ts";
 
 const SKILL_FILE = "SKILL.md";
 const MAX_FOLDER_ENTRIES = 1_000;
@@ -110,11 +120,8 @@ interface AgentInstance {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly reads: readonly ReadRoot[];
-  /**
-   * Skill folder names the agent's own settings switch off: Claude's `skillOverrides`. It lists
-   * such a skill as disabled and loads none of the copies. Empty for an agent without the setting.
-   */
-  readonly switchedOff: ReadonlySet<string>;
+  /** What it takes to read and write the agent's own skill settings. */
+  readonly switches: SkillSwitchContext;
 }
 
 /** One folder entry that holds a skill: a real directory, or a link to one. */
@@ -128,6 +135,8 @@ interface FolderEntry {
 }
 
 interface SkillHeader {
+  /** The `name` in the header, which Codex names a skill by. */
+  readonly declaredName: string | undefined;
   readonly description: string;
   /** Claude Code can't read the header, so it skips the skill. */
   readonly invalid: boolean;
@@ -151,6 +160,8 @@ export interface ResolvedSkill {
   readonly name: string;
   /** The same display path as `SkillSummary.home`. */
   readonly displayHome: string;
+  /** The `name` in the skill's header, when it has one. */
+  readonly declaredName?: string | undefined;
   /** Absolute path of the skill's folder, after following links. */
   readonly home: string;
   /**
@@ -175,6 +186,12 @@ export interface ResolvedSkill {
     readonly state: SkillAgentState;
     /** Paths of the entries it loads the skill from; empty when `state` is `none`. */
     readonly via: readonly string[];
+    /** T3 Code can't switch this agent for this skill (see `SkillAgentAccess.fixed`). */
+    readonly fixed?: boolean;
+    /** The agent's own settings switch the skill off, whether or not it can see the skill. */
+    readonly switchedOff?: boolean;
+    /** Set when the agent has a settings switch for this skill, to read and write it. */
+    readonly settings?: SkillSwitchContext | undefined;
     /** The folders it reads, in the order it looks, across both scopes. */
     readonly reads: ReadonlyArray<{
       readonly scope: SkillScope;
@@ -257,6 +274,7 @@ const make = Effect.gen(function* () {
         : undefined;
     const header = parseSkillFrontmatter((longer ?? head).text);
     return {
+      declaredName: header.kind === "parsed" ? header.name : undefined,
       description:
         header.kind === "parsed" ? (header.description ?? "").replace(/\s+/g, " ").trim() : "",
       invalid: header.kind === "malformed",
@@ -402,26 +420,6 @@ const make = Effect.gen(function* () {
     return fallback;
   });
 
-  /**
-   * The skills Claude's settings switch off, resolved the way the `$` picker resolves them: the
-   * user's, the project's and its local file, then the managed policy, last one naming a skill
-   * wins.
-   */
-  const claudeSwitchedOff = Effect.fnUntraced(function* (
-    instance: ProviderInstanceConfig,
-    configHome: string,
-    cwd: string | undefined,
-  ) {
-    const env = yield* mergeProviderInstanceEnvironment(instance.environment, environment).pipe(
-      Effect.provideService(HostProcess.HomeDirectory, homeDirectory),
-    );
-    const overrides = yield* readSkillOverrides(configHome, cwd, env).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
-    return new Set([...overrides].flatMap(([name, override]) => (override.enabled ? [] : [name])));
-  });
-
   /** The enabled provider instances whose folders T3 Code knows, in the table's order. */
   const loadInstances = Effect.fnUntraced(function* (cwd: string | undefined) {
     const settings = yield* serverSettings.getSettings.pipe(Effect.option);
@@ -457,10 +455,16 @@ const make = Effect.gen(function* () {
           instanceId: ProviderInstanceId.make(instanceId),
           driver: table.agent,
           reads,
-          switchedOff:
-            table.agent === "claudeAgent"
-              ? yield* claudeSwitchedOff(config, configHome, cwd)
-              : new Set(),
+          switches: {
+            driver: table.agent,
+            configHome,
+            homeDirectory,
+            environment: yield* mergeProviderInstanceEnvironment(
+              config.environment,
+              environment,
+            ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDirectory)),
+            cwd,
+          },
         });
       }
     }
@@ -618,6 +622,33 @@ const make = Effect.gen(function* () {
       ),
     );
 
+    // What each agent's own settings switch off. Read once for the scan, from files only.
+    const views = new Map<ProviderInstanceId, SkillSwitchView>(
+      groups.length === 0
+        ? []
+        : yield* Effect.forEach(
+            instances.filter((instance) =>
+              (["global", "project"] as const).some(
+                (scope) => skillSwitchKind(instance.driver, scope) !== undefined,
+              ),
+            ),
+            (instance) =>
+              loadSkillSwitches(instance.switches).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+                Effect.map((view) => [instance.instanceId, view] as const),
+              ),
+            { concurrency: CONCURRENCY },
+          ),
+    );
+    const switchedSkillOf = (group: SkillGroup): SwitchedSkill => ({
+      scope: group.scope,
+      name: group.name,
+      declaredName: group.header.declaredName,
+      home: group.home,
+      entryPaths: group.entries.map((entry) => path.join(entry.root.directory, entry.name)),
+    });
+
     /** What an instance would load from one folder for this name, if anything. */
     const loadableAt = (group: SkillGroup, instance: AgentInstance, root: ReadRoot) => {
       const entry = entryAtRoot.get(rootKey(root))?.get(group.name);
@@ -636,26 +667,38 @@ const make = Effect.gen(function* () {
       // A first-wins agent loads only the first copy in its order; the others load every copy.
       const firstWins = skillCollisionFor(instance.driver) === "first-wins";
       const loaded =
-        instance.switchedOff.has(group.name) || (firstWins && found[0]?.owner !== group)
-          ? []
-          : found.filter((f) => f.owner === group);
+        firstWins && found[0]?.owner !== group ? [] : found.filter((f) => f.owner === group);
       // One copy can be reached through several of the agent's folders; the shared one is shown.
       const via = (loaded.find((f) => f.entry.root.standard) ?? loaded[0])?.entry;
       const loadedEntries = loaded.map((f) => f.entry);
+      // The agent's own settings, where T3 Code knows how to write them for this skill.
+      const settings =
+        skillSwitchKind(instance.driver, group.scope) === undefined ? undefined : instance.switches;
+      const switchedOff =
+        settings !== undefined &&
+        views.get(instance.instanceId)?.off(switchedSkillOf(group)) === true;
       if (via) {
+        // A link T3 Code made can be taken away; a folder the agent reads itself can't.
+        const reachedDirectly = via.root.standard || via.target === undefined;
+        const fixed = reachedDirectly && !switchedOff && settings === undefined;
         return {
           loadedEntries,
+          switchedOff,
+          settings,
           access: {
             instanceId: instance.instanceId,
             driver: instance.driver,
-            state: via.root.standard || via.target === undefined ? "direct" : "link",
+            state: switchedOff ? "off" : reachedDirectly ? "direct" : "link",
             folder: via.root.label,
+            ...(fixed ? { fixed } : {}),
           } satisfies SkillAgentAccess,
         };
       }
       const looksIn = instance.reads.find((root) => root.scope === group.scope);
       return {
         loadedEntries,
+        switchedOff,
+        settings,
         access: {
           instanceId: instance.instanceId,
           driver: instance.driver,
@@ -724,6 +767,7 @@ const make = Effect.gen(function* () {
           scope: group.scope,
           name: group.name,
           displayHome: displayPath(group.home, displayRoots),
+          declaredName: group.header.declaredName,
           home: group.home,
           own: isOwn(group),
           standardFolders,
@@ -733,13 +777,16 @@ const make = Effect.gen(function* () {
             target: entry.target,
           })),
           agents: instances.map((instance) => {
-            const { access, loadedEntries } = accessFor(group, instance);
+            const { access, loadedEntries, switchedOff, settings } = accessFor(group, instance);
             return {
               instanceId: instance.instanceId,
               driver: instance.driver,
               collision: skillCollisionFor(instance.driver),
               state: access.state,
               via: loadedEntries.map((entry) => path.join(entry.root.directory, entry.name)),
+              ...("fixed" in access ? { fixed: true } : {}),
+              ...(switchedOff ? { switchedOff } : {}),
+              settings,
               reads: instance.reads.map((root) => {
                 const loadable = loadableAt(group, instance, root);
                 return {

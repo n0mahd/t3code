@@ -313,7 +313,7 @@ export const readSkillOverrideLayers = Effect.fn("readSkillOverrideLayers")(func
   return layers;
 });
 
-export const readSkillOverrides = Effect.fn("readSkillOverrides")(function* (
+const readSkillOverrides = Effect.fn("readSkillOverrides")(function* (
   configDirPath: string,
   cwd: string | undefined,
   environment: NodeJS.ProcessEnv,

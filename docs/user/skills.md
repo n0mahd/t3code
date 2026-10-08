@@ -29,8 +29,13 @@ Open a skill and click an agent under **Used by**. Turning a skill on makes a li
 own folder that points at the skill's real folder, so the files stay in one place. Turning it off
 removes that link and nothing else.
 
-- An agent that reads the skill's own folder directly shows a lock: it is always on. To stop it
-  using the skill, move the skill out of that folder yourself.
+- An agent that reads the skill's own folder directly has no link to remove. For Claude Code,
+  Codex, OpenCode and Pi, T3 Code switches the skill off in that agent's own settings instead, and
+  takes that setting away to turn it back on; the rest of the file stays as it was. A project's
+  skill is switched in Claude Code's local project settings, and Pi can't switch a project's
+  skills. Other agents can't be switched: their switch is disabled, and to stop one using the
+  skill you move the skill out of that folder yourself. When a project or organization setting
+  decides it, T3 Code leaves it as it is and says so.
 - Agents that read the same folder share one link, so turning a skill on or off for one can change
   it for the others. T3 Code says who else is affected.
 - If something is already in the agent's folder under that name, such as a real folder, a file or

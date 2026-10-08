@@ -28,6 +28,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 
 import * as ProjectService from "../project/ProjectService.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
@@ -117,6 +118,10 @@ const withManager = <A, E, R>(
       refreshWorkspaceSnapshot: ({ instanceId, cwd, fresh }) =>
         Queue.offer(refreshes, { instanceId, cwd, fresh }).pipe(Effect.as([])),
     });
+    // No agent in these tests has a settings writer, so none of them is ever looked up.
+    const instances = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getInstance: () => Effect.succeed(undefined),
+    });
     const projects = Layer.mock(ProjectService.ProjectService)({
       getByWorkspaceRoot: (root) =>
         Effect.succeed(registered.includes(root) ? Option.some(makeProject(root)) : Option.none()),
@@ -145,6 +150,7 @@ const withManager = <A, E, R>(
           Layer.provideMerge(catalog),
           Layer.provide(projects),
           Layer.provide(registry),
+          Layer.provide(instances),
         ),
       ),
     );
@@ -507,18 +513,19 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillManager", (it)
 
               const result = yield* manager.disable({
                 skills: [refOf(skills, "global", "alpha"), refOf(skills, "global", "solo")],
-                // Codex reads the shared folder the alpha link is in; Claude reads solo's own folder.
-                agents: [agent("codex"), agent("claudeAgent")],
+                // Cursor reads the shared folder the alpha link is in and Claude's own folder
+                // that solo is in, and has no setting that names a skill.
+                agents: [agent("cursor")],
               });
 
               expect(result.outcomes.map(({ status, blocked }) => ({ status, blocked }))).toEqual([
                 {
                   status: "skipped",
-                  blocked: [{ instanceId: "codex", reason: "alwaysOn" }],
+                  blocked: [{ instanceId: "cursor", reason: "alwaysOn" }],
                 },
                 {
                   status: "skipped",
-                  blocked: [{ instanceId: "claudeAgent", reason: "alwaysOn" }],
+                  blocked: [{ instanceId: "cursor", reason: "alwaysOn" }],
                 },
               ]);
               expect(yield* fs.exists(path.join(home, ".agents/skills/alpha"))).toBe(true);

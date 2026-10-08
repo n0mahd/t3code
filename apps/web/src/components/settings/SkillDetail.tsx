@@ -12,6 +12,7 @@ import { Skeleton } from "../ui/skeleton";
 import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { AgentSwitchChip } from "./SkillAgentSwitch";
+import { UseInPopover, type PlaceOptions } from "./SkillUseIn";
 import {
   attention,
   planDelete,
@@ -79,6 +80,7 @@ export function SkillDetail({
   ctx,
   environmentId,
   projectRoot,
+  places,
   busy,
   onBack,
   onPlan,
@@ -88,6 +90,7 @@ export function SkillDetail({
   ctx: SkillsContext;
   environmentId: EnvironmentId;
   projectRoot: string | null;
+  places: PlaceOptions;
   /** A change is being made, so nothing else can start. */
   busy: boolean;
   onBack: () => void;
@@ -132,6 +135,7 @@ export function SkillDetail({
   const sameCopies = skill.copies.filter((copy) => copy.same);
   const turnOnAll = planTurnOnAll([skill], ctx);
   const del = planDelete([skill], ctx);
+  const own = useMemo(() => [skill], [skill]);
 
   const copyPath = (path: string) => {
     void writeTextToClipboard(path, "skill path").then(
@@ -191,6 +195,7 @@ export function SkillDetail({
             />
           ))}
           <span className="flex-1" />
+          <UseInPopover skills={own} places={places} busy={busy} onPlan={onPlan} />
           {(skillFolder || turnOnAll || del) && (
             <Menu>
               <MenuTrigger

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAfterDelay } from "../../hooks/useAfterDelay";
 import { cn } from "../../lib/utils";
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
+import { useProjects } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
@@ -15,6 +16,7 @@ import { Skeleton } from "../ui/skeleton";
 import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
 import { SkillDetail } from "./SkillDetail";
 import { SkillSection, StandardInfo } from "./SkillList";
+import type { PlaceOptions } from "./SkillUseIn";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -28,6 +30,7 @@ import {
   skillsToCheckWithGit,
   unreadableNote,
   withGitNote,
+  type ProjectOption,
   type Skill,
   type SkillPlan,
   type SkillsContext,
@@ -145,6 +148,7 @@ function EnvironmentSkills({
   const canDelete = useAtomValue(
     serverEnvironment.deleteSkills.permissionAtom(environment.environmentId),
   );
+  const allProjects = useProjects();
   const connected = environment.connection.phase === "connected";
   const providers = environment.serverConfig?.providers ?? NO_PROVIDERS;
   const cwd = project?.cwd ?? null;
@@ -232,6 +236,20 @@ function EnvironmentSkills({
     [data, providers],
   );
   const ctx = useMemo<SkillsContext>(() => ({ installed }), [installed]);
+  // The projects "Use in…" can name: the ones registered in this environment.
+  const places = useMemo<PlaceOptions>(() => {
+    const projects = allProjects
+      .filter((entry) => entry.environmentId === environment.environmentId)
+      .map((entry): ProjectOption => ({ cwd: entry.workspaceRoot, label: entry.title }))
+      .toSorted((a, b) => a.label.localeCompare(b.label));
+    const picked = project
+      ? (projects.find((entry) => entry.cwd === project.cwd) ?? {
+          cwd: project.cwd,
+          label: project.label,
+        })
+      : null;
+    return { picked, projects };
+  }, [allProjects, environment.environmentId, project]);
   const loading = connected && skills === null && loadError === null;
   const showSkeleton = useAfterDelay(loading, SKELETON_DELAY_MS);
 
@@ -249,10 +267,16 @@ function EnvironmentSkills({
     [skills, ctx],
   );
   const needle = query.trim().toLowerCase();
-  const visible = (list: readonly Skill[]) =>
-    list.filter(
-      (skill) => (!onlyAttention || attentionIds.has(skill.id)) && matchesQuery(skill, needle),
-    );
+  // Memoized, so a row or group is only drawn again when what it shows changed.
+  const narrow = useCallback(
+    (list: readonly Skill[]) =>
+      list.filter(
+        (skill) => (!onlyAttention || attentionIds.has(skill.id)) && matchesQuery(skill, needle),
+      ),
+    [onlyAttention, attentionIds, needle],
+  );
+  const visibleProject = useMemo(() => narrow(projectSkills), [narrow, projectSkills]);
+  const visibleGlobal = useMemo(() => narrow(globalSkills), [narrow, globalSkills]);
 
   const current = view.kind === "skill" ? skills?.find((skill) => skill.id === view.id) : undefined;
   // A view whose skill is gone (a refresh dropped it) falls back to the list.
@@ -420,6 +444,7 @@ function EnvironmentSkills({
           ctx={ctx}
           environmentId={environment.environmentId}
           projectRoot={cwd}
+          places={places}
           busy={locked}
           onBack={toList}
           onPlan={runPlan}
@@ -476,8 +501,9 @@ function EnvironmentSkills({
               {project && (
                 <SkillSection
                   title="This project"
-                  visible={visible(projectSkills)}
+                  visible={visibleProject}
                   ctx={ctx}
+                  places={places}
                   emptyText={emptyText(projectSkills.length, "No skills in this project.")}
                   flat={needle !== ""}
                   selecting={selecting}
@@ -491,8 +517,9 @@ function EnvironmentSkills({
               )}
               <SkillSection
                 title="Global"
-                visible={visible(globalSkills)}
+                visible={visibleGlobal}
                 ctx={ctx}
+                places={places}
                 emptyText={emptyText(globalSkills.length, "No Global skills yet.")}
                 flat={needle !== ""}
                 selecting={selecting}
@@ -505,7 +532,13 @@ function EnvironmentSkills({
               />
               {empty && <p className="text-sm text-muted-foreground">No skills yet.</p>}
               {selecting && chosen.length > 0 && (
-                <BulkBar selected={chosen} ctx={ctx} busy={locked} onPlan={onPlan} />
+                <BulkBar
+                  selected={chosen}
+                  ctx={ctx}
+                  places={places}
+                  busy={locked}
+                  onPlan={onPlan}
+                />
               )}
             </>
           )}

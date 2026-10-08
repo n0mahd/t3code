@@ -103,13 +103,6 @@ export const hasAccess = (skill: Skill, agent: SkillAgent) => {
   return state === "direct" || state === "link";
 };
 
-/** Where the agent reads the skill from, or the folder it looks in when it can't see it. */
-export const agentSkillPath = (skill: Skill, agent: SkillAgent) => {
-  const access = accessOf(skill, agent);
-  if (!access) return null;
-  return hasAccess(skill, agent) ? `${access.folder}/${skill.name}` : access.folder;
-};
-
 /** Installed agents that don't load this copy of the skill. */
 const missingAgents = (skill: Skill, ctx: SkillsContext) =>
   ctx.installed.filter((agent) => !hasAccess(skill, agent));

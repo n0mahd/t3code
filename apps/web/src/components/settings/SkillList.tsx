@@ -1,5 +1,5 @@
 import { ChevronRightIcon, InfoIcon } from "lucide-react";
-import { memo, useMemo, useState, type MouseEvent } from "react";
+import { memo, useId, useMemo, useState, type MouseEvent } from "react";
 
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
@@ -11,6 +11,7 @@ import { GitHubIcon } from "../Icons";
 import { SettingsGroup } from "./SettingsGroup";
 import { AgentSwitchChip } from "./SkillAgentSwitch";
 import { SkillAgents } from "./skillAgentIcon";
+import { UseInPopover, type PlaceOptions } from "./SkillUseIn";
 import {
   GROUP_PREVIEW,
   attention,
@@ -38,6 +39,7 @@ const SkillRow = memo(function SkillRow({
   skill,
   ctx,
   nested = false,
+  places,
   selecting,
   selected,
   showFix,
@@ -48,6 +50,7 @@ const SkillRow = memo(function SkillRow({
 }: {
   skill: Skill;
   ctx: SkillsContext;
+  places: PlaceOptions;
   /** The row sits under a group's row, so it is indented. */
   nested?: boolean;
   /** Rows have a checkbox instead of a switch, and a click ticks them. */
@@ -75,7 +78,8 @@ const SkillRow = memo(function SkillRow({
     };
   }, [skill, ctx, showFix]);
   const { fix } = derived;
-  const panelId = `skill-panel-${skill.id}`;
+  const own = useMemo(() => [skill], [skill]);
+  const panelId = useId();
   return (
     <li className={cn("min-w-0", selected ? "bg-muted/60" : open && !selecting && "bg-muted/30")}>
       <div
@@ -176,6 +180,7 @@ const SkillRow = memo(function SkillRow({
             </div>
           )}
           <div className="flex flex-wrap justify-end gap-2">
+            <UseInPopover skills={own} places={places} busy={busy} onPlan={onPlan} />
             <Button size="xs" variant="outline" onClick={() => onOpen(skill.id)}>
               Edit skill
             </Button>
@@ -190,6 +195,7 @@ const SkillRow = memo(function SkillRow({
 const SkillGroupRows = memo(function SkillGroupRows({
   group,
   ctx,
+  places,
   selecting,
   selected,
   showFix,
@@ -200,6 +206,7 @@ const SkillGroupRows = memo(function SkillGroupRows({
 }: {
   group: SkillGroup;
   ctx: SkillsContext;
+  places: PlaceOptions;
   selecting: boolean;
   /** The ids of the ticked rows, across the page. */
   selected: ReadonlySet<string>;
@@ -283,6 +290,7 @@ const SkillGroupRows = memo(function SkillGroupRows({
             key={skill.id}
             skill={skill}
             ctx={ctx}
+            places={places}
             nested
             selecting={selecting}
             selected={selected.has(skill.id)}
@@ -316,7 +324,7 @@ export function StandardInfo() {
       <PopoverPopup align="start" width="md">
         <p className="text-xs leading-relaxed">
           Project skills live in the repo, so anyone who clones it gets them. Global skills are
-          yours and work in all your projects.
+          yours, and work in every project or just the ones you choose.
         </p>
       </PopoverPopup>
     </Popover>
@@ -327,6 +335,7 @@ export function SkillSection({
   title,
   visible,
   ctx,
+  places,
   emptyText,
   flat,
   selecting,
@@ -341,6 +350,7 @@ export function SkillSection({
   /** The skills that match the search and filters. */
   visible: readonly Skill[];
   ctx: SkillsContext;
+  places: PlaceOptions;
   emptyText: string;
   /** List the skills without groups, as a search does. */
   flat: boolean;
@@ -389,6 +399,7 @@ export function SkillSection({
                 key={group.source}
                 group={group}
                 ctx={ctx}
+                places={places}
                 selecting={selecting}
                 selected={selected}
                 showFix={showFix}
@@ -403,6 +414,7 @@ export function SkillSection({
                 key={skill.id}
                 skill={skill}
                 ctx={ctx}
+                places={places}
                 selecting={selecting}
                 selected={selected.has(skill.id)}
                 showFix={showFix}

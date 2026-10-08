@@ -11,6 +11,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
+import { UseInPopover, type PlaceOptions } from "./SkillUseIn";
 import {
   planDelete,
   planTurnOffAll,
@@ -27,11 +28,13 @@ import {
 export function BulkBar({
   selected,
   ctx,
+  places,
   busy,
   onPlan,
 }: {
   selected: readonly Skill[];
   ctx: SkillsContext;
+  places: PlaceOptions;
   /** A change is being made, so nothing else can start. */
   busy: boolean;
   onPlan: (plan: SkillPlan) => void;
@@ -47,6 +50,7 @@ export function BulkBar({
     >
       <div className="flex flex-wrap items-center gap-2">
         <span className="mr-auto text-sm font-medium">{selected.length} selected</span>
+        <UseInPopover skills={selected} places={places} busy={busy} side="top" onPlan={onPlan} />
         <span className="hidden items-center gap-2 sm:flex">
           <Button
             size="xs"

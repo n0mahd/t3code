@@ -56,8 +56,16 @@ function IconRow({ label, children }: { label: string; children: ReactNode }) {
  * the agents that do, and nothing when none does. Agents that aren't installed and enabled never
  * show.
  */
-export function SkillAgents({ value, ctx }: { value: Availability; ctx: SkillsContext }) {
-  const label = availabilityNote(value);
+export function SkillAgents({
+  value,
+  ctx,
+  label = availabilityNote(value),
+}: {
+  value: Availability;
+  ctx: SkillsContext;
+  /** What the tooltip says; skills and instructions word it differently. */
+  label?: string;
+}) {
   if (value.everyone)
     return (
       <IconRow label={label}>

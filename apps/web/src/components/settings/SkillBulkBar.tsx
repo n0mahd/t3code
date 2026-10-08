@@ -16,6 +16,7 @@ import {
   planDelete,
   planTurnOffAll,
   planTurnOnAll,
+  type PlanConfirmation,
   type Skill,
   type SkillPlan,
   type SkillsContext,
@@ -117,14 +118,17 @@ export function BulkBar({
   );
 }
 
-/** Asks before a plan changes anything, with the same plain words for one skill or many. */
+/**
+ * Asks before a plan changes anything, with the same plain words for one skill or many. Any plan
+ * with a confirmation will do, so the Instructions section asks the same way.
+ */
 export function ConfirmPlan({
   plan,
   onCancel,
   onConfirm,
 }: {
   /** The plan to confirm; a plan without a confirmation never opens the dialog. */
-  plan: SkillPlan | null;
+  plan: { readonly confirmation?: PlanConfirmation } | null;
   onCancel: () => void;
   onConfirm: () => void;
 }) {

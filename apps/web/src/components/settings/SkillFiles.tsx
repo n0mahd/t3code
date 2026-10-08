@@ -2,7 +2,6 @@ import { FileTree, useFileTree } from "@pierre/trees/react";
 import type { EnvironmentId, SkillFile } from "@t3tools/contracts";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { useMemo, useState } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
 
 import { useTheme } from "../../hooks/useTheme";
 import { T3_PIERRE_ICONS } from "../../pierre-icons";
@@ -10,6 +9,7 @@ import { PIERRE_TREE_UNSAFE_CSS, pierreTreeStyle } from "../../pierre-tree-theme
 import { Button } from "../ui/button";
 import { useProjectFileQuery } from "../files/projectFilesQueryState";
 import ReadOnlySourcePreview from "../files/ReadOnlySourcePreview";
+import { SkillMarkdown } from "./SkillMarkdown";
 import { compareSkillFiles, scriptFiles, skillBody } from "./SkillsSettings.logic";
 
 const SKILL_FILE = "SKILL.md";
@@ -130,9 +130,7 @@ function SkillTextPane({ skillText }: { skillText: string | null }) {
           <ReadOnlySourcePreview name={SKILL_FILE} text={skillText} />
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-sm break-words">
-            <ReactMarkdown components={SKILL_MARKDOWN_COMPONENTS}>
-              {skillBody(skillText)}
-            </ReactMarkdown>
+            <SkillMarkdown text={skillBody(skillText)} />
           </div>
         )}
       </div>
@@ -185,22 +183,3 @@ function OtherFilePane({
     </div>
   );
 }
-
-/**
- * The body without its header. Code wraps at phone width. Links and images stay plain text, so
- * reading a skill never opens a page or fetches anything.
- */
-const SKILL_MARKDOWN_COMPONENTS = {
-  pre: ({ children }) => (
-    <pre className="my-2 whitespace-pre-wrap break-all rounded-md bg-muted/30 p-2">{children}</pre>
-  ),
-  code: ({ children }) => <code className="font-mono text-xs">{children}</code>,
-  h1: ({ children }) => <h1 className="my-3 text-lg font-semibold">{children}</h1>,
-  h2: ({ children }) => <h2 className="my-2 font-semibold">{children}</h2>,
-  h3: ({ children }) => <h3 className="my-2 font-medium">{children}</h3>,
-  p: ({ children }) => <p className="my-2">{children}</p>,
-  ul: ({ children }) => <ul className="my-2 list-disc pl-5">{children}</ul>,
-  ol: ({ children }) => <ol className="my-2 list-decimal pl-5">{children}</ol>,
-  a: ({ children }) => <span className="underline">{children}</span>,
-  img: ({ alt }) => <span className="text-muted-foreground">{alt}</span>,
-} satisfies Components;

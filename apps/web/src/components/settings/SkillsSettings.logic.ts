@@ -20,7 +20,7 @@ export type SkillAgent = Pick<
   "instanceId" | "driverKind" | "displayName" | "accentColor"
 >;
 
-const joinNames = (names: readonly string[]) =>
+export const joinNames = (names: readonly string[]) =>
   names.length <= 1
     ? (names[0] ?? "")
     : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
@@ -199,20 +199,23 @@ export type SkillChange =
     }
   | { readonly kind: "delete"; readonly skills: readonly SkillRef[] };
 
+/** What the confirm dialog says before a change is made, in plain words. */
+export type PlanConfirmation = {
+  readonly title: string;
+  /** May be empty when the title says it all. */
+  readonly body: string;
+  /** Lines under the body, such as what stays on and why. */
+  readonly notes: readonly string[];
+  readonly confirm: string;
+  readonly destructive: boolean;
+};
+
 export type SkillPlan = {
   readonly change: SkillChange;
   /** How many skills it changes. */
   readonly affected: number;
-  /** Present when the change should be confirmed first, in plain words. */
-  readonly confirmation?: {
-    readonly title: string;
-    /** May be empty when the title says it all. */
-    readonly body: string;
-    /** Lines under the body, such as what stays on and why. */
-    readonly notes: readonly string[];
-    readonly confirm: string;
-    readonly destructive: boolean;
-  };
+  /** Present when the change should be confirmed first. */
+  readonly confirmation?: PlanConfirmation;
 };
 
 const skillRef = (skill: Skill): SkillRef => ({

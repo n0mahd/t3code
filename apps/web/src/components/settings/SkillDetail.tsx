@@ -1,16 +1,15 @@
 import type { EnvironmentId, SkillGetResult } from "@t3tools/contracts";
 import { AlertTriangleIcon, ArrowLeftIcon, MoreHorizontalIcon } from "lucide-react";
-import { lazy, Suspense, useEffect, useEffectEvent, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
-import { writeTextToClipboard } from "../../hooks/useCopyToClipboard";
 import { useAfterDelay } from "../../hooks/useAfterDelay";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Skeleton } from "../ui/skeleton";
-import { toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { copyPath, useEscapeToList } from "./SkillDetailChrome";
 import { AgentSwitchChip } from "./SkillAgentSwitch";
 import { UseInPopover, type PlaceOptions } from "./SkillUseIn";
 import {
@@ -46,33 +45,6 @@ function BackBar({ scope, onBack }: { scope: string; onBack: () => void }) {
       <span>/ {scope}</span>
     </nav>
   );
-}
-
-/**
- * Escape goes from a skill back to the list. Settings leaves the page on Escape from its own
- * window listener, so this one runs first, in the capture phase, and keeps Escape from reaching
- * it. Escape inside a field, dialog or menu belongs to that control.
- */
-function useEscapeToList(onBack: () => void) {
-  const goBack = useEffectEvent((event: KeyboardEvent) => {
-    if (event.key !== "Escape" || event.defaultPrevented || event.repeat || event.isComposing)
-      return;
-    if (
-      event.target instanceof Element &&
-      event.target.closest(
-        'input,textarea,select,[contenteditable],[role="dialog"],[role="alertdialog"],[role="menu"]',
-      )
-    )
-      return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    onBack();
-  });
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => goBack(event);
-    window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, []);
 }
 
 export function SkillDetail({
@@ -137,21 +109,6 @@ export function SkillDetail({
   const del = planDelete([skill], ctx);
   const own = useMemo(() => [skill], [skill]);
 
-  const copyPath = (path: string) => {
-    void writeTextToClipboard(path, "skill path").then(
-      (didCopy) => {
-        if (didCopy) toastManager.add({ type: "success", title: "Path copied", description: path });
-      },
-      (error: unknown) => {
-        toastManager.add({
-          type: "error",
-          title: "Failed to copy path",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        });
-      },
-    );
-  };
-
   return (
     <section aria-label={`${skill.name} details`} className="min-w-0 space-y-4">
       <BackBar scope={scopeLabel} onBack={onBack} />
@@ -205,7 +162,7 @@ export function SkillDetail({
               </MenuTrigger>
               <MenuPopup align="end">
                 {skillFolder && (
-                  <MenuItem onClick={() => copyPath(skillFolder)}>Copy path</MenuItem>
+                  <MenuItem onClick={() => copyPath(skillFolder, "skill path")}>Copy path</MenuItem>
                 )}
                 {turnOnAll && (
                   <MenuItem disabled={busy} onClick={() => onPlan(turnOnAll)}>

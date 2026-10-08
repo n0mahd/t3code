@@ -2,8 +2,9 @@
 
 Open **Settings → Skills** on web and desktop to see which skills your agents can use. The page
 reads the environment and project chosen at the top of Settings, so with a remote environment you
-see that machine's skills. You can turn each skill on or off for each agent here. To change what a
-skill says, edit it in your editor or ask an agent.
+see that machine's skills. You can turn each skill on or off for every agent, or for one agent at a
+time, and choose which projects use it. To change what a skill says, open it with **Edit skill**,
+edit it in your editor or ask an agent.
 
 The agents are your enabled provider instances. Two Claude instances show as two agents, each
 with its own config folder.
@@ -23,19 +24,21 @@ Each instance's config folder follows its settings: a Claude instance's config d
 agents reads isn't listed. If a folder exists but can't be read, the page says so above the list
 instead of showing it as empty.
 
-## Turning a skill on or off for an agent
+## Turning skills on or off
 
-Open a skill and click an agent under **Used by**. Turning a skill on makes a link in that agent's
-own folder that points at the skill's real folder, so the files stay in one place. Turning it off
+Every skill has a switch. It turns the skill on for every agent, or off for every agent. The icons
+beside it show who has the skill on: a sparkle when every agent does, otherwise the agents that
+do. Click a row to open it, switch single agents and use **Use in…** or **Edit skill**. The switch
+on **This project**, **Global** or a group turns all of its skills on or off at once, and asks
+before turning many off.
+
+Turning a skill on for an agent that reads a different folder makes a link in that agent's own
+folder that points at the skill's real folder, so the files stay in one place. Turning it off
 removes that link and nothing else.
 
-- An agent that reads the skill's own folder directly has no link to remove. For Claude Code,
-  Codex, OpenCode and Pi, T3 Code switches the skill off in that agent's own settings instead, and
-  takes that setting away to turn it back on; the rest of the file stays as it was. A project's
-  skill is switched in Claude Code's local project settings, and Pi can't switch a project's
-  skills. Other agents can't be switched: their switch is disabled, and to stop one using the
-  skill you move the skill out of that folder yourself. When a project or organization setting
-  decides it, T3 Code leaves it as it is and says so.
+- An agent that reads the skill's own folder directly, with no setting T3 Code can change, has its
+  switch disabled and stays on. To stop it using the skill, move the skill out of that folder
+  yourself.
 - Agents that read the same folder share one link, so turning a skill on or off for one can change
   it for the others. T3 Code says who else is affected.
 - If something is already in the agent's folder under that name, such as a real folder, a file or
@@ -45,18 +48,27 @@ removes that link and nothing else.
   the skill. On Windows, global links are junctions, and project links need Developer Mode or
   administrator rights.
 
-Tick the boxes beside skills to act on several at once: turn them on for all agents, or turn them off
-for one agent.
+Skills the installer recorded as coming from the same place, such as a GitHub repo, sit together
+under **From owner/repo** when there are two or more. A search lists skills without groups.
 
-## Moving and deleting
+## Acting on several skills
 
-**Move to Global** and **Move to this project** move a skill's folder between the project's
-`.agents/skills` and `~/.agents/skills`, and the agents that used it keep using it. A skill is never
-merged into or replaced by one with the same name on the other side; T3 Code leaves both and says
-so. **Delete** removes the skill's folder and the links to it, and can't be undone. When git tracks
-a project skill, both show up in `git status` and the confirmation says you can undo them with git.
-Only a skill kept in an agent's own skill folder can be moved or deleted. One that is only linked
-there, such as a skill from a synced folder, stays where it is.
+**Select** turns on checkboxes. A group's box ticks all of its skills. A bar at the bottom turns the
+ticked skills on or off for every agent, deletes them, or puts them in a project with **Use in…**.
+**Done** goes back to the switches.
+
+## Using a skill in projects
+
+**Use in…** chooses where a skill is used: **This project only**, **Globally**, or **Only these
+projects**, which lists the projects of this environment. A skill used in only some projects is
+still Global, with one copy, so an edit shows up in all of them. It has a badge such as **2
+projects**. Each change asks first, and never merges into or replaces a skill with the same name;
+T3 Code leaves both and says so. When git tracks a project skill that leaves its project, the
+confirmation says you can undo it with git.
+
+**Delete** removes the skill's folder and the links to it, and can't be undone. Only a skill kept
+in an agent's own skill folder can be deleted. One that is only linked there, such as a skill from
+a synced folder, stays where it is.
 
 Agents running in T3 Code can list skills and turn them on or off for agents too; they can't
 move or delete them.

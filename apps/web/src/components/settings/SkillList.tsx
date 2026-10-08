@@ -158,28 +158,29 @@ const SkillRow = memo(function SkillRow({
       {open && !selecting && (
         <div
           id={panelId}
-          className={cn("space-y-2.5 pr-3 pb-3 sm:pr-4", nested ? "pl-9 sm:pl-10" : "pl-3 sm:pl-4")}
+          className={cn(
+            "flex flex-wrap items-center gap-2 pr-3 pb-3 sm:pr-4",
+            nested ? "pl-9 sm:pl-10" : "pl-3 sm:pl-4",
+          )}
         >
           {ctx.installed.length === 0 ? (
             <p className="text-xs text-muted-foreground">No agents are installed.</p>
           ) : (
-            <div className="flex flex-wrap gap-2">
-              {ctx.installed.map((agent) => (
-                <AgentSwitchChip
-                  key={agent.instanceId}
-                  skill={skill}
-                  agent={agent}
-                  ctx={ctx}
-                  busy={busy}
-                  onToggle={() => {
-                    const plan = planToggle(skill, agent, ctx);
-                    if (plan) onPlan(plan);
-                  }}
-                />
-              ))}
-            </div>
+            ctx.installed.map((agent) => (
+              <AgentSwitchChip
+                key={agent.instanceId}
+                skill={skill}
+                agent={agent}
+                ctx={ctx}
+                busy={busy}
+                onToggle={() => {
+                  const plan = planToggle(skill, agent, ctx);
+                  if (plan) onPlan(plan);
+                }}
+              />
+            ))
           )}
-          <div className="flex flex-wrap justify-end gap-2">
+          <div className="ml-auto flex gap-2">
             <UseInPopover skills={own} places={places} busy={busy} onPlan={onPlan} />
             <Button size="xs" variant="outline" onClick={() => onOpen(skill.id)}>
               Edit skill
@@ -264,7 +265,9 @@ const SkillGroupRows = memo(function SkillGroupRows({
               {group.skills.length}
             </Badge>
           </button>
-          <SkillAgents value={derived.availability} ctx={ctx} />
+          <span className="hidden sm:contents">
+            <SkillAgents value={derived.availability} ctx={ctx} />
+          </span>
           {!selecting && (
             <>
               <span className="flex items-center" onClick={stopRowClick}>

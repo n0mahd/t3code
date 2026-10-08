@@ -44,6 +44,14 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverPlaceSkills]: AuthFilesystemWriteScope,
   [WS_METHODS.serverDeleteSkills]: AuthFilesystemWriteScope,
 
+  [WS_METHODS.serverWriteInstruction]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverEnableInstruction]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverDisableInstruction]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverSetClaudeInstructionFiles]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverShareInstruction]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverAdoptInstruction]: AuthOrchestrationOperateScope,
+  [WS_METHODS.serverDeleteInstruction]: AuthOrchestrationOperateScope,
+
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksDelete]: AuthOrchestrationOperateScope,

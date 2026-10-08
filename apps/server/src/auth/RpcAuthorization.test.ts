@@ -82,6 +82,27 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("lets a read-only client read instructions but not change them", () => {
+    for (const method of [
+      WS_METHODS.serverListInstructions,
+      WS_METHODS.serverReadInstruction,
+      WS_METHODS.serverInstructionsTracked,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      WS_METHODS.serverWriteInstruction,
+      WS_METHODS.serverEnableInstruction,
+      WS_METHODS.serverDisableInstruction,
+      WS_METHODS.serverSetClaudeInstructionFiles,
+      WS_METHODS.serverShareInstruction,
+      WS_METHODS.serverAdoptInstruction,
+      WS_METHODS.serverDeleteInstruction,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

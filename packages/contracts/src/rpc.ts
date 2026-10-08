@@ -324,6 +324,23 @@ import {
   ServerSettingsPatch,
 } from "./settings.ts";
 import {
+  ClaudeInstructionSettingInput,
+  InstructionAdoptInput,
+  InstructionAgentsInput,
+  InstructionAgentsResult,
+  InstructionDeleteInput,
+  InstructionError,
+  InstructionListInput,
+  InstructionListResult,
+  InstructionReadInput,
+  InstructionReadResult,
+  InstructionShareInput,
+  InstructionTrackedInput,
+  InstructionTrackedResult,
+  InstructionWriteInput,
+  InstructionWriteResult,
+} from "./instructions.ts";
+import {
   SkillBatchResult,
   SkillDeleteInput,
   SkillDisableInput,
@@ -488,6 +505,16 @@ export const WS_METHODS = {
   serverPlaceSkills: "server.placeSkills",
   serverDeleteSkills: "server.deleteSkills",
   serverSkillsTracked: "server.skillsTracked",
+  serverListInstructions: "server.listInstructions",
+  serverReadInstruction: "server.readInstruction",
+  serverWriteInstruction: "server.writeInstruction",
+  serverEnableInstruction: "server.enableInstruction",
+  serverDisableInstruction: "server.disableInstruction",
+  serverSetClaudeInstructionFiles: "server.setClaudeInstructionFiles",
+  serverShareInstruction: "server.shareInstruction",
+  serverAdoptInstruction: "server.adoptInstruction",
+  serverDeleteInstruction: "server.deleteInstruction",
+  serverInstructionsTracked: "server.instructionsTracked",
   serverUpdateProvider: "server.updateProvider",
   serverUpdateServer: "server.updateServer",
   serverUpdateServerWithProgress: "server.updateServerWithProgress",
@@ -659,6 +686,66 @@ const WsServerSkillsTrackedRpc = Rpc.make(WS_METHODS.serverSkillsTracked, {
   payload: SkillTrackedInput,
   success: SkillTrackedResult,
   error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerListInstructionsRpc = Rpc.make(WS_METHODS.serverListInstructions, {
+  payload: InstructionListInput,
+  success: InstructionListResult,
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerReadInstructionRpc = Rpc.make(WS_METHODS.serverReadInstruction, {
+  payload: InstructionReadInput,
+  success: InstructionReadResult,
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerWriteInstructionRpc = Rpc.make(WS_METHODS.serverWriteInstruction, {
+  payload: InstructionWriteInput,
+  success: InstructionWriteResult,
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerEnableInstructionRpc = Rpc.make(WS_METHODS.serverEnableInstruction, {
+  payload: InstructionAgentsInput,
+  success: InstructionAgentsResult,
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerDisableInstructionRpc = Rpc.make(WS_METHODS.serverDisableInstruction, {
+  payload: InstructionAgentsInput,
+  success: InstructionAgentsResult,
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerSetClaudeInstructionFilesRpc = Rpc.make(WS_METHODS.serverSetClaudeInstructionFiles, {
+  payload: ClaudeInstructionSettingInput,
+  success: Schema.Struct({}),
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerShareInstructionRpc = Rpc.make(WS_METHODS.serverShareInstruction, {
+  payload: InstructionShareInput,
+  success: Schema.Struct({}),
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerAdoptInstructionRpc = Rpc.make(WS_METHODS.serverAdoptInstruction, {
+  payload: InstructionAdoptInput,
+  success: Schema.Struct({}),
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerDeleteInstructionRpc = Rpc.make(WS_METHODS.serverDeleteInstruction, {
+  payload: InstructionDeleteInput,
+  success: Schema.Struct({}),
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerInstructionsTrackedRpc = Rpc.make(WS_METHODS.serverInstructionsTracked, {
+  payload: InstructionTrackedInput,
+  success: InstructionTrackedResult,
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
 });
 
 const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {
@@ -1890,7 +1977,7 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
-export const WsRpcGroup = RpcGroup.make(
+export const WsBaseRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2086,3 +2173,22 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
 ).middleware(RpcScopeAuthorization);
+
+/**
+ * The instruction RPCs are their own group so the server registers their handlers apart from
+ * the rest; one `toLayer` over every RPC is already near the compiler's instantiation limit.
+ */
+export const WsInstructionRpcGroup = RpcGroup.make(
+  WsServerListInstructionsRpc,
+  WsServerReadInstructionRpc,
+  WsServerWriteInstructionRpc,
+  WsServerEnableInstructionRpc,
+  WsServerDisableInstructionRpc,
+  WsServerSetClaudeInstructionFilesRpc,
+  WsServerShareInstructionRpc,
+  WsServerAdoptInstructionRpc,
+  WsServerDeleteInstructionRpc,
+  WsServerInstructionsTrackedRpc,
+).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = WsBaseRpcGroup.merge(WsInstructionRpcGroup);

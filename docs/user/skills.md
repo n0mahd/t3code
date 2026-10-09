@@ -3,8 +3,8 @@
 Open **Settings → Skills** on web and desktop to see which skills your agents can use. The page
 reads the environment and project chosen at the top of Settings, so with a remote environment you
 see that machine's skills. You can turn each skill on or off for every agent, or for one agent at a
-time, and choose which projects use it. To change what a skill says, open it with **Edit skill**,
-edit it in your editor or ask an agent.
+time, and choose which projects use it. To change what a skill says, edit its `SKILL.md` in your
+editor or ask an agent.
 
 The agents are your enabled provider instances. Two Claude instances show as two agents, each
 with its own config folder.
@@ -26,10 +26,8 @@ instead of showing it as empty.
 
 ## Turning skills on or off
 
-Every skill has a switch. It turns the skill on for every agent, or off for every agent. The icons
-beside it show who has the skill on: a sparkle when every agent does, otherwise the agents that
-do. Click a row to open it, switch single agents and use **Use in…** or **Edit skill**. The switch
-on **This project**, **Global** or a group turns all of its skills on or off at once, and asks
+A skill's switch turns it on or off for every agent. Open the skill to switch a single agent. The
+switch on **This project**, **Global** or a group changes all of its skills at once, and asks
 before turning many off.
 
 Turning a skill on for an agent that reads a different folder makes a link in that agent's own
@@ -51,23 +49,21 @@ removes that link and nothing else.
   the skill. On Windows, global links are junctions, and project links need Developer Mode or
   administrator rights.
 
-Skills the installer recorded as coming from the same place, such as a GitHub repo, sit together
-under **From owner/repo** when there are two or more. A search lists skills without groups.
+Skills the installer recorded as coming from the same place, such as a GitHub repo, are grouped
+together when there are two or more.
 
 ## Acting on several skills
 
-**Select** turns on checkboxes. A group's box ticks all of its skills. A bar at the bottom turns the
-ticked skills on or off for every agent, deletes them, or puts them in a project with **Use in…**.
-**Done** goes back to the switches.
+Choose **Select** to act on several skills at once: turn them on or off for every agent, delete
+them, or put them in projects with **Use in…**. Ticking a group ticks all of its skills.
 
 ## Using a skill in projects
 
 **Use in…** chooses where a skill is used: **This project only**, **Globally**, or **Only these
 projects**, which lists the projects of this environment. A skill used in only some projects is
-still Global, with one copy, so an edit shows up in all of them. It has a badge such as **2
-projects**. Each change asks first, and never merges into or replaces a skill with the same name;
-T3 Code leaves both and says so. When git tracks a project skill that leaves its project, the
-confirmation says you can undo it with git.
+still Global, with one copy, so an edit shows up in all of them. Each change asks first, and never
+merges into or replaces a skill with the same name; T3 Code leaves both and says so. When git
+tracks a project skill that leaves its project, the confirmation says you can undo it with git.
 
 Such a skill is linked into each project that uses it, outside git, and into the worktrees T3 Code
 makes for those projects. The agents that read `.agents/skills` have it in all of them. Turning on
@@ -86,13 +82,12 @@ move or delete them.
 
 **Needs attention** filters the list to skills that need a look. A skill is on it when:
 
-- an installed and enabled agent doesn't use it. Hover the icons to see which agent, or use the
-  button on the row to turn the skill on for it. An agent
-  loads one skill per name, the first it finds in its folders (Codex and OpenCode list every
-  copy), so a copy that another folder shadows is not used by that agent. Claude doesn't use a
-  skill that its own `skillOverrides` setting switches off either.
+- an installed and enabled agent doesn't use it. An agent loads one skill per name, the first it
+  finds in its folders (Codex and OpenCode list every copy), so a copy that another folder shadows
+  is not used by that agent. Claude doesn't use a skill that its own `skillOverrides` setting
+  switches off either.
 - the same name exists more than once with different text, in **This project**, in **Global**, or
-  across them. These rows have a **Conflict** badge.
+  across them.
 - Claude can't read the skill's header, the YAML between the `---` lines at the top of
   `SKILL.md`, so it skips the skill. Quote a value that contains a colon or brackets, for example
   a description.

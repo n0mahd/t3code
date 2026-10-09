@@ -82,6 +82,7 @@ import type { GitManagerServiceError } from "@t3tools/contracts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as SourceControlProvider from "@t3tools/source-control-core/server/SourceControlProvider";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
+import { restoreLibraryLinks } from "../skills/SkillLibrary.ts";
 import type { ChangeRequest } from "@t3tools/contracts";
 
 export interface GitActionProgressReporter {
@@ -746,6 +747,15 @@ export const make = Effect.gen(function* () {
     Effect.map((settings) => settings.worktreesDirectory),
     Effect.orElseSucceed(() => ""),
   );
+  /**
+   * A project's links to its library skills sit outside git, so a new checkout has none until
+   * they are made. A failure is logged and goes no further: the checkout is made either way.
+   */
+  const linkLibrarySkills = (project: string, worktree: string) =>
+    restoreLibraryLinks({ project, worktree }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
   const createWorktree: GitManager["Service"]["createWorktree"] = Effect.fn(
     "GitManager.createWorktree",
   )(function* (input, options) {
@@ -757,7 +767,13 @@ export const make = Effect.gen(function* () {
             Effect.orElseSucceed(() => null),
           );
     const worktreesDirectory = yield* readWorktreesDirectory;
-    return yield* gitCore.createWorktree(input, { worktreesDirectory, ...options, submodules });
+    const created = yield* gitCore.createWorktree(input, {
+      worktreesDirectory,
+      ...options,
+      submodules,
+    });
+    yield* linkLibrarySkills(input.cwd, created.worktree.path);
+    return created;
   });
 
   const readRepositoryInstructions = (cwd: string, fileName: string) =>
@@ -2655,6 +2671,7 @@ export const make = Effect.gen(function* () {
           ),
         },
       );
+      yield* linkLibrarySkills(input.cwd, worktree.worktree.path);
       yield* ensureExistingWorktreeUpstream(worktree.worktree.path);
       yield* maybeRunSetupScript(worktree.worktree.path);
 

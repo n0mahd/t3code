@@ -36,7 +36,6 @@ import { parseT3ProjectFile } from "@t3tools/shared/t3ProjectFile";
 import { resolveProjectFileBackedSetting } from "@t3tools/shared/projectSettings";
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../observability/Metrics.ts";
 import * as GitVcsDriver from "./GitVcsDriver.ts";
-import { restoreLibraryLinks } from "../skills/SkillLibrary.ts";
 import { resolveWorktreesDirectory } from "../worktreesDirectory.ts";
 import {
   parseRemoteNames,
@@ -3521,13 +3520,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         }),
       );
     }
-
-    // A project's links to its library skills sit outside git, so the new checkout has none until
-    // they are made. This logs a failure and goes on: the worktree is made either way.
-    yield* restoreLibraryLinks({ project: input.cwd, worktree: worktreePath }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
 
     if (input.newRefName && input.baseRefName) {
       const remoteNames = yield* listRemoteNames(input.cwd).pipe(Effect.orElseSucceed(() => []));

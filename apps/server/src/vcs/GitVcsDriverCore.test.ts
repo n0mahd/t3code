@@ -2,7 +2,6 @@
 import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import { assert, it, describe } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -3043,117 +3042,6 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         assert.match(rootError.detail, /not a drive root/);
       }),
     );
-
-    describe("a project's library skills", () => {
-      /** A project that uses `db-migrations` from the library and `solo` from a folder of its own. */
-      const projectWithLibrarySkill = Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const pathService = yield* Path.Path;
-        const home = yield* makeTmpDir("skill-home-");
-        const cwd = yield* makeTmpDir();
-        const { initialBranch } = yield* initRepoWithCommit(cwd);
-        const entry = pathService.join(home, ".agents/skill-library/db-migrations");
-        yield* writeTextFile(entry, "SKILL.md", "---\nname: db-migrations\n---\n");
-        yield* writeTextFile(cwd, "elsewhere/solo/SKILL.md", "---\nname: solo\n---\n");
-        for (const folder of [".agents/skills", ".claude/skills"]) {
-          yield* fileSystem.makeDirectory(pathService.join(cwd, folder), { recursive: true });
-          yield* fileSystem.symlink(entry, pathService.join(cwd, folder, "db-migrations"));
-        }
-        yield* fileSystem.symlink(
-          pathService.join(cwd, "elsewhere/solo"),
-          pathService.join(cwd, ".agents/skills/solo"),
-        );
-        return { home, cwd, entry, initialBranch };
-      });
-
-      it.effect.skipIf(!symlinksSupported)(
-        "links them into a new worktree, and leaves a project's other links behind",
-        () =>
-          Effect.gen(function* () {
-            const fileSystem = yield* FileSystem.FileSystem;
-            const pathService = yield* Path.Path;
-            const { home, cwd, entry, initialBranch } = yield* projectWithLibrarySkill;
-            const driver = yield* GitVcsDriver.GitVcsDriver;
-
-            const created = yield* driver
-              .createWorktree({
-                cwd,
-                path: pathService.join(yield* makeTmpDir("git-worktrees-"), "feature"),
-                refName: initialBranch,
-                newRefName: "feature/library-links",
-              })
-              .pipe(Effect.provideService(HostProcess.HomeDirectory, home));
-
-            for (const folder of [".agents/skills", ".claude/skills"]) {
-              assert.equal(
-                yield* fileSystem.readLink(
-                  pathService.join(created.worktree.path, folder, "db-migrations"),
-                ),
-                entry,
-              );
-            }
-            // A link to something other than the library is the project's own business.
-            assert.equal(
-              yield* fileSystem.exists(
-                pathService.join(created.worktree.path, ".agents/skills/solo"),
-              ),
-              false,
-            );
-          }),
-      );
-
-      it.effect.skipIf(!symlinksSupported)(
-        "makes the worktree all the same when the links can't be made",
-        () =>
-          Effect.gen(function* () {
-            const fileSystem = yield* FileSystem.FileSystem;
-            const pathService = yield* Path.Path;
-            const { home, cwd, initialBranch } = yield* projectWithLibrarySkill;
-            // On this branch `.agents` is a file, so no folder can be made under it.
-            yield* git(cwd, ["checkout", "-q", "-b", "agents-file"]);
-            yield* fileSystem.remove(pathService.join(cwd, ".agents"), { recursive: true });
-            yield* writeTextFile(cwd, ".agents", "not a folder\n");
-            yield* git(cwd, ["add", "-A"]);
-            yield* git(cwd, ["commit", "-q", "-m", "agents is a file"]);
-            yield* git(cwd, ["checkout", "-q", initialBranch]);
-            yield* fileSystem.makeDirectory(pathService.join(cwd, ".agents/skills"), {
-              recursive: true,
-            });
-            yield* fileSystem.symlink(
-              pathService.join(home, ".agents/skill-library/db-migrations"),
-              pathService.join(cwd, ".agents/skills/db-migrations"),
-            );
-            const driver = yield* GitVcsDriver.GitVcsDriver;
-            const worktree = pathService.join(yield* makeTmpDir("git-worktrees-"), "feature");
-            const warnings: string[] = [];
-            const logger = Logger.make<unknown, void>(({ message }) => {
-              warnings.push(String(message));
-            });
-
-            const created = yield* driver
-              .createWorktree({
-                cwd,
-                path: worktree,
-                refName: "agents-file",
-                newRefName: "feature/no-links",
-              })
-              .pipe(
-                Effect.provideService(HostProcess.HomeDirectory, home),
-                Effect.provideService(Logger.CurrentLoggers, new Set([logger])),
-              );
-
-            assert.equal(created.worktree.path, worktree);
-            assert.equal(
-              warnings.filter((line) => line.includes("could not link library skills")).length,
-              1,
-            );
-            assert.equal(
-              yield* fileSystem.readFileString(pathService.join(worktree, ".agents")),
-              "not a folder\n",
-            );
-          }),
-      );
-    });
 
     it.effect("resolves the submodule mode from the option, then t3.json", () =>
       Effect.gen(function* () {

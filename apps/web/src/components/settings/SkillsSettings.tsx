@@ -21,6 +21,7 @@ import {
   ingestSkills,
   installedAgents,
   matchesQuery,
+  skillsEnvironment,
   unreadableNote,
   type Skill,
   type SkillsContext,
@@ -39,10 +40,12 @@ export function SkillsSettings() {
   const { environment: scopedEnvironment, scope } = useSettingsScope();
   const { environments } = useEnvironments();
   const primaryId = usePrimaryEnvironmentId();
-  const environment =
-    scopedEnvironment ??
-    environments.find((item) => item.environmentId === primaryId) ??
-    environments[0];
+  const environment = skillsEnvironment({
+    connected: scopedEnvironment,
+    scopeEnvironmentIds: scope.environmentIds,
+    environments,
+    primaryId,
+  });
   // The settings scope picker at the top of the page decides what this page shows.
   const project =
     scope.kind === "checkout"
@@ -69,7 +72,11 @@ export function SkillsSettings() {
         </div>
       </div>
       {!environment ? (
-        <p className="text-sm text-muted-foreground">Connect an environment to see its skills.</p>
+        <p className="text-sm text-muted-foreground">
+          {scope.environmentIds.length > 0
+            ? "This environment isn't available."
+            : "Connect an environment to see its skills."}
+        </p>
       ) : missingProject ? (
         <p className="text-sm text-muted-foreground">This project isn't on {environment.label}.</p>
       ) : (

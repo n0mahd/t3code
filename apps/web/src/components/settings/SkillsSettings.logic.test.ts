@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import type { ServerProvider, SkillAgentAccess, SkillListResult } from "@t3tools/contracts";
 
 import {
@@ -13,6 +13,7 @@ import {
   matchesQuery,
   scriptFiles,
   skillBody,
+  skillsEnvironment,
   unreadableNote,
   type Skill,
   type SkillAgent,
@@ -85,6 +86,52 @@ describe("ingestSkills", () => {
     expect(new Set(skills.map((item) => item.id)).size).toBe(3);
     expect([...known].toSorted()).toEqual(["claudeAgent", "claude_work", "codex", "cursor"]);
     expect(unreadable).toEqual([{ scope: "global", folder: "~/.claude/skills" }]);
+  });
+});
+
+describe("skillsEnvironment", () => {
+  const home = { environmentId: EnvironmentId.make("home") };
+  const work = { environmentId: EnvironmentId.make("work") };
+  const all = [home, work];
+
+  it("uses the scope's connected environment", () => {
+    expect(
+      skillsEnvironment({
+        connected: work,
+        scopeEnvironmentIds: [work.environmentId],
+        environments: all,
+        primaryId: home.environmentId,
+      }),
+    ).toBe(work);
+  });
+
+  it("keeps an offline scoped environment instead of showing the primary one's skills", () => {
+    expect(
+      skillsEnvironment({
+        connected: null,
+        scopeEnvironmentIds: [work.environmentId],
+        environments: all,
+        primaryId: home.environmentId,
+      }),
+    ).toBe(work);
+  });
+
+  it("has no environment when the scope names one that is gone", () => {
+    expect(
+      skillsEnvironment({
+        connected: null,
+        scopeEnvironmentIds: [EnvironmentId.make("gone")],
+        environments: all,
+        primaryId: home.environmentId,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("falls back to the primary, then the first, when the scope names no environment", () => {
+    const fallback = { connected: null, scopeEnvironmentIds: [], environments: all };
+    expect(skillsEnvironment({ ...fallback, primaryId: work.environmentId })).toBe(work);
+    expect(skillsEnvironment({ ...fallback, primaryId: null })).toBe(home);
+    expect(skillsEnvironment({ ...fallback, environments: [], primaryId: null })).toBeUndefined();
   });
 });
 

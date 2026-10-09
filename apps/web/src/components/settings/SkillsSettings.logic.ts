@@ -1,4 +1,5 @@
 import type {
+  EnvironmentId,
   ProviderInstanceId,
   ServerProvider,
   SkillAgentAccess,
@@ -29,6 +30,31 @@ export type SkillsContext = {
   /** Provider instances that are installed, enabled and known to the server's folder table. */
   readonly installed: readonly SkillAgent[];
 };
+
+/**
+ * The environment the page reads skills from. The settings scope names it, connected or not: an
+ * offline environment is reported as offline, never swapped for another one, whose skills would
+ * be shown as the project's and which would be sent the project's folder. Only a scope that names
+ * no environment falls back to the primary one, then the first.
+ */
+export function skillsEnvironment<T extends { readonly environmentId: EnvironmentId }>(input: {
+  /** The scope's connected environment, when it has one. */
+  readonly connected: T | null;
+  readonly scopeEnvironmentIds: readonly EnvironmentId[];
+  readonly environments: readonly T[];
+  readonly primaryId: EnvironmentId | null;
+}): T | undefined {
+  if (input.connected) return input.connected;
+  if (input.scopeEnvironmentIds.length > 0) {
+    return input.environments.find((item) =>
+      input.scopeEnvironmentIds.includes(item.environmentId),
+    );
+  }
+  return (
+    input.environments.find((item) => item.environmentId === input.primaryId) ??
+    input.environments[0]
+  );
+}
 
 export function ingestSkills(result: SkillListResult) {
   const skills = result.skills.map((entry): Skill => ({

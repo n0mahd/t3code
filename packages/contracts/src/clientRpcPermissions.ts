@@ -44,13 +44,14 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverPlaceSkills]: AuthFilesystemWriteScope,
   [WS_METHODS.serverDeleteSkills]: AuthFilesystemWriteScope,
 
-  [WS_METHODS.serverWriteInstruction]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverEnableInstruction]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverDisableInstruction]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverSetClaudeInstructionFiles]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverShareInstruction]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverAdoptInstruction]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverDeleteInstruction]: AuthOrchestrationOperateScope,
+  // Instruction changes write, link, rename and delete the files agents read.
+  [WS_METHODS.serverWriteInstruction]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverEnableInstruction]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverDisableInstruction]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverSetClaudeInstructionFiles]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverShareInstruction]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverAdoptInstruction]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverDeleteInstruction]: AuthFilesystemWriteScope,
 
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,

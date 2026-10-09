@@ -82,13 +82,13 @@ describe("RPC authorization scopes", () => {
     }
   });
 
-  it("lets a read-only client read instructions but not change them", () => {
+  it("reads and changes instruction files under the filesystem scopes", () => {
     for (const method of [
       WS_METHODS.serverListInstructions,
       WS_METHODS.serverReadInstruction,
       WS_METHODS.serverInstructionsTracked,
     ]) {
-      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthFilesystemReadScope);
     }
     for (const method of [
       WS_METHODS.serverWriteInstruction,
@@ -99,7 +99,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.serverAdoptInstruction,
       WS_METHODS.serverDeleteInstruction,
     ]) {
-      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthFilesystemWriteScope);
     }
   });
 

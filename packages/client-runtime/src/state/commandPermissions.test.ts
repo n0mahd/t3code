@@ -329,36 +329,46 @@ it.effect("needs the filesystem write grant to change skills, but not to list or
   ),
 );
 
-it.effect("needs the operate grant to change instructions, but not to list or read them", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const registry = yield* setup;
-      for (const method of [
-        WS_METHODS.serverWriteInstruction,
-        WS_METHODS.serverEnableInstruction,
-        WS_METHODS.serverDisableInstruction,
-        WS_METHODS.serverSetClaudeInstructionFiles,
-        WS_METHODS.serverShareInstruction,
-        WS_METHODS.serverAdoptInstruction,
-        WS_METHODS.serverDeleteInstruction,
-      ]) {
-        const change = createCommandPermissions(runtime, method);
-        registry.set(sessions(env), AsyncResult.success(grant(false)));
-        expect(registry.get(change.permissionAtom(env))).toBe(false);
-        expect((yield* change.authorize(registry, env).pipe(Effect.flip)).requiredScope).toBe(
-          AuthOrchestrationOperateScope,
-        );
-        registry.set(sessions(env), AsyncResult.success(grant(true)));
-        expect(registry.get(change.permissionAtom(env))).toBe(true);
-        yield* change.authorize(registry, env);
-      }
-      for (const method of [
-        WS_METHODS.serverListInstructions,
-        WS_METHODS.serverReadInstruction,
-        WS_METHODS.serverInstructionsTracked,
-      ]) {
-        expect(createCommandPermissions(runtime, method).requiredScopes()).toEqual([]);
-      }
-    }),
-  ),
+it.effect(
+  "needs the filesystem write grant to change instructions, but not to list or read them",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const writeGrant: AuthSessionState = {
+          ...grant(false),
+          scopes: [AuthFilesystemWriteScope],
+          permissions: [AuthFilesystemWriteScope],
+        };
+        for (const method of [
+          WS_METHODS.serverWriteInstruction,
+          WS_METHODS.serverEnableInstruction,
+          WS_METHODS.serverDisableInstruction,
+          WS_METHODS.serverSetClaudeInstructionFiles,
+          WS_METHODS.serverShareInstruction,
+          WS_METHODS.serverAdoptInstruction,
+          WS_METHODS.serverDeleteInstruction,
+        ]) {
+          const change = createCommandPermissions(runtime, method);
+          // Being allowed to operate threads isn't enough to change files.
+          for (const withoutWrite of [grant(false), grant(true)]) {
+            registry.set(sessions(env), AsyncResult.success(withoutWrite));
+            expect(registry.get(change.permissionAtom(env))).toBe(false);
+            expect(
+              (yield* change.authorize(registry, env).pipe(Effect.flip)).requiredPermission,
+            ).toBe(AuthFilesystemWriteScope);
+          }
+          registry.set(sessions(env), AsyncResult.success(writeGrant));
+          expect(registry.get(change.permissionAtom(env))).toBe(true);
+          yield* change.authorize(registry, env);
+        }
+        for (const method of [
+          WS_METHODS.serverListInstructions,
+          WS_METHODS.serverReadInstruction,
+          WS_METHODS.serverInstructionsTracked,
+        ]) {
+          expect(createCommandPermissions(runtime, method).requiredScopes()).toEqual([]);
+        }
+      }),
+    ),
 );

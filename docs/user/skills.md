@@ -81,9 +81,9 @@ move or delete them.
 ## Instructions
 
 The **Instructions** section at the top of the page lists the files your agents read before they
-start work, under **Project** and **Global**. Open a file to edit it. Edits save as you type, and if the file
-changed on disk, T3 Code asks before overwriting it. A file that none of your enabled agents read,
-such as `CLAUDE.md` with Claude off, isn't listed.
+start work, under **Project** and **Global**. Open a file to edit it. Edits save as you type, and
+if the file changed on disk, T3 Code asks before overwriting it. A file that none of your enabled
+agents read, such as `CLAUDE.md` with Claude off, isn't listed.
 
 **Project** holds the project's `AGENTS.md`, shared through the repo, its `CLAUDE.md`, and your own
 `CLAUDE.local.md`, which only Claude reads. T3 Code keeps a new `CLAUDE.local.md` out of git.
@@ -91,20 +91,19 @@ such as `CLAUDE.md` with Claude off, isn't listed.
 only says `@AGENTS.md`, or is a link to `AGENTS.md`, already does its job, so it isn't listed.
 
 **Global** is yours alone and used in every project. It is `~/.agents/AGENTS.md`, or the file your
-agents already link to. Click its `AGENTS.md` to turn agents on or off for it, or **Edit** it. An
-agent with an `AGENTS.md` of its own is named on the row; **Use Global instead** adds its text to
-the end of Global and links the agent to it. T3 Code never replaces a file any other way. Global
-also lists Claude's `CLAUDE.md` and the file your organization sets, which is read-only.
+agents already link to. Turn agents on or off for its `AGENTS.md`, or edit it. An agent with an
+`AGENTS.md` of its own can use Global instead, which adds its text to the end of Global and links
+the agent to it. T3 Code never replaces a file any other way. Global also lists Claude's
+`CLAUDE.md` and the file your organization sets, which is read-only.
 
 Claude skips a project's `AGENTS.md` when the project has a `CLAUDE.local.md` or a `CLAUDE.md`. Set
 **Claude reads AGENTS.md** to **Alongside any CLAUDE.md** to read both. It applies in every
 project and needs Claude Code 2.1.277 or later.
 
-To make a project's `CLAUDE.md` the file every agent reads, use **Move to AGENTS.md**, which
-renames it, or **Merge into AGENTS.md** when the project already has an `AGENTS.md`, which adds its
-text to the end and deletes `CLAUDE.md`. If Claude
-would still skip `AGENTS.md` afterwards, the confirmation says it also turns **Claude reads
-AGENTS.md** on, for every project.
+To make a project's `CLAUDE.md` the file every agent reads, **Move to AGENTS.md** renames it, or
+**Merge into AGENTS.md**, when the project already has an `AGENTS.md`, adds its text to the end and
+deletes `CLAUDE.md`. If Claude would still skip `AGENTS.md` afterwards, the confirmation says it
+also turns **Claude reads AGENTS.md** on, for every project.
 
 Agents running in T3 Code can list these files and turn Global on or off for agents. They edit the
 files themselves, and the Claude choice stays yours.
@@ -113,8 +112,8 @@ files themselves, and the Claude choice stays yours.
 
 **Needs attention** filters the list to skills and instructions that need a look. An instruction
 file is on it when Claude skips a project's `AGENTS.md`, when an agent doesn't use Global or keeps
-an `AGENTS.md` of its own, or when other agents can't read a project's `CLAUDE.md`; each has a
-button for the fix. A skill is on it when:
+an `AGENTS.md` of its own, or when other agents can't read a project's `CLAUDE.md`. A skill is on
+it when:
 
 - an installed and enabled agent doesn't use it. An agent loads one skill per name, the first it
   finds in its folders (Codex and OpenCode list every copy), so a copy that another folder shadows

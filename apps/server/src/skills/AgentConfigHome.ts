@@ -6,6 +6,10 @@
  * them: Claude's `homePath` setting, then `CLAUDE_CONFIG_DIR`; Codex's `homePath`, then
  * `CODEX_HOME`; Grok's `GROK_HOME`. Anything else stays at the default folder.
  *
+ * This is where the agent's own folders are, not always where it reads its settings from: a Codex
+ * instance with a shadow home runs in that home, and `codexSettingsHome` says so for the settings
+ * file the skill switches read and write.
+ *
  * @module AgentConfigHome
  */
 import type { ProviderInstanceConfig } from "@t3tools/contracts";

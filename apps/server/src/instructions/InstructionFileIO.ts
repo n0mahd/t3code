@@ -74,7 +74,10 @@ export type ReadOutcome =
   | { readonly _tag: "TooLarge" }
   | { readonly _tag: "Read"; readonly text: string; readonly revision: string };
 
-const decoder = new TextDecoder("utf-8", { fatal: true });
+// A file's byte order mark stays in its text, as the character it is. Decoding without it would
+// drop the mark when the text is saved or an import line is added, and the BOM handling in
+// `ClaudeInstructionSetting` would never run.
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /** The text of the file at a path, following links, bounded to `INSTRUCTION_MAX_BYTES`. */
 export const readText = Effect.fn("InstructionFileIO.readText")(function* (target: string) {

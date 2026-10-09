@@ -447,6 +447,36 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionCatalog"
         }),
     );
 
+    it.effect("reads a settings.json and an AGENTS.md that start with a byte order mark", () =>
+      Effect.gen(function* () {
+        const { home, project, write } = yield* makeMachine;
+        yield* write(
+          ".claude/settings.json",
+          `\uFEFF${JSON.stringify({
+            pluginConfigs: {
+              "cc-plugin-agents-md@builtin": { options: { instructionFiles: "claude-md" } },
+            },
+          })}`,
+        );
+        yield* write("repos/app/AGENTS.md", "\uFEFFrules");
+        yield* onMachine(home, CLAUDE, (catalog) =>
+          Effect.gen(function* () {
+            const { claude, unreadable } = yield* listed(catalog, { cwd: project });
+            expect(claude[0]).toMatchObject({ value: "claude-md", explicit: true });
+            expect(unreadable).toEqual([]);
+            // The text is the file's, mark included, and its size is the file's bytes.
+            const read = yield* catalog.read({ cwd: project, id: "project:shared:AGENTS.md" });
+            expect(read.contents).toBe("\uFEFFrules");
+            expect(
+              (yield* listed(catalog, { cwd: project })).entries.find(
+                (entry) => entry.id === "project:shared:AGENTS.md",
+              ),
+            ).toMatchObject({ exists: true, size: 8 });
+          }),
+        );
+      }),
+    );
+
     it.effect("reports a settings.json that isn't JSON and falls back to Claude's default", () =>
       Effect.gen(function* () {
         const { home, project, write } = yield* makeMachine;

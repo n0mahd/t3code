@@ -388,6 +388,56 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
       }),
     );
 
+    it.effect("keeps a byte order mark first, through the import line and through an edit", () =>
+      Effect.gen(function* () {
+        const { home, fs, path, project, write } = yield* makeMachine;
+        // `fs.readFileString` drops a mark, so the files are read as bytes.
+        const read = (relative: string) =>
+          fs
+            .readFile(path.join(home, relative))
+            .pipe(
+              Effect.map((bytes) => new TextDecoder("utf-8", { ignoreBOM: true }).decode(bytes)),
+            );
+        yield* write(".claude/CLAUDE.md", "\uFEFF# My notes\n");
+        yield* write("repos/app/AGENTS.md", "\uFEFF# Project\n");
+        yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager, catalog }) =>
+          Effect.gen(function* () {
+            // The mark stays the first character, and the import line goes after it.
+            yield* manager.enable({ id: "global:shared", agents: agents("claudeAgent") });
+            expect(yield* read(".claude/CLAUDE.md")).toBe(
+              "\uFEFF@~/.agents/AGENTS.md\n# My notes\n",
+            );
+            expect(yield* stateOf(catalog, "global:shared")).toMatchObject({
+              claudeAgent: "import",
+            });
+            expect(
+              (yield* manager.enable({ id: "global:shared", agents: agents("claudeAgent") }))
+                .results,
+            ).toEqual([{ instanceId: "claudeAgent", outcome: "unchanged" }]);
+            yield* manager.disable({ id: "global:shared", agents: agents("claudeAgent") });
+            expect(yield* read(".claude/CLAUDE.md")).toBe("\uFEFF# My notes\n");
+
+            // The editor gets the text with its mark, and saving it back writes the mark too.
+            const opened = yield* catalog.read({ cwd: project, id: "project:shared:AGENTS.md" });
+            expect(opened.contents).toBe("\uFEFF# Project\n");
+            const saved = yield* manager.write({
+              cwd: project,
+              id: "project:shared:AGENTS.md",
+              contents: `${opened.contents}More.\n`,
+              expectedRevision: opened.revision,
+            });
+            const bytes = yield* fs.readFile(path.join(project, "AGENTS.md"));
+            expect(Array.from(bytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+            expect(new TextDecoder().decode(bytes.slice(3))).toBe("# Project\nMore.\n");
+            // The revision is of the bytes, mark included, so a fresh read agrees with the save.
+            expect(
+              (yield* catalog.read({ cwd: project, id: "project:shared:AGENTS.md" })).revision,
+            ).toBe(saved.revision);
+          }),
+        );
+      }),
+    );
+
     it.effect(
       "makes Claude's file for the import, and removes it again when nothing else is in it",
       () =>

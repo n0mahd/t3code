@@ -55,10 +55,11 @@ const getIn = (root: unknown, keys: readonly string[]): unknown => {
 
 /**
  * The text of a `settings.json` as an object, or `undefined` when Claude couldn't read it as one.
- * Comments and trailing commas are fine, as they are for the skill settings in the same file.
+ * Comments and trailing commas are fine, as they are for the skill settings in the same file. A
+ * byte order mark in front of the text, which the file reads keep, isn't part of the JSON.
  */
 export const parseSettingsJson = (text: string): JsonObject | undefined => {
-  const { value, valid } = parseJsonc(text);
+  const { value, valid } = parseJsonc(text.startsWith("\uFEFF") ? text.slice(1) : text);
   return valid && isObject(value) ? value : undefined;
 };
 

@@ -290,15 +290,11 @@ const make = Effect.gen(function* () {
     FileSystem.FileSystem | Path.Path | VcsProcess.VcsProcess
   >();
 
-  /** Links are only written under a folder the environment knows as a project. */
-  const requireProject = (cwd: string) =>
-    projects.getByWorkspaceRoot(cwd).pipe(
-      Effect.orDie,
-      Effect.filterOrFail(
-        Option.isSome,
-        () => new SkillRequestError({ reason: "projectNotRegistered" }),
-      ),
-    );
+  /**
+   * Links are only written under a folder the environment knows as a project. The catalog says
+   * which: it refuses any other folder, one that is gone included, before it reads anything.
+   */
+  const requireProject = (cwd: string) => catalog.resolve({ cwd, skills: [] }).pipe(Effect.asVoid);
 
   const removeAll = Effect.fnUntraced(function* (
     entries: ReadonlyArray<{ readonly path: string; readonly target: string }>,
@@ -670,7 +666,6 @@ const make = Effect.gen(function* () {
   }) =>
     writeLock.withPermits(1)(
       Effect.gen(function* () {
-        if (input.cwd !== undefined) yield* requireProject(input.cwd);
         const before = yield* catalog.resolve({
           cwd: input.cwd,
           skills: [...input.skills, ...(input.alsoLookUp ?? [])],
@@ -781,7 +776,7 @@ const make = Effect.gen(function* () {
       // Codex, if its setting has to follow a moved folder, stays open for the whole request.
       const writers = makeWriters(yield* Scope.Scope);
       const { to } = input;
-      if (input.cwd !== undefined) yield* requireProject(input.cwd);
+      // The skills' own folder is checked when they are looked up.
       if (to.kind === "project") yield* requireProject(to.cwd);
       if (to.kind === "projects") for (const cwd of to.cwds) yield* requireProject(cwd);
       return yield* run({

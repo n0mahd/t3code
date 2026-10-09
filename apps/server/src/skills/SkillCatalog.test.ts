@@ -13,7 +13,9 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -21,6 +23,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ProjectService from "../project/ProjectService.ts";
+import { ProjectOperationError } from "../project/ProjectService.ts";
 import * as Settings from "../serverSettings.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
 
@@ -720,6 +723,47 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillCatalog", (it)
   });
 
   describe("project folders", () => {
+    it.effect(
+      "refuses a folder that is gone as not a project, and dies on a failure of the lookup itself",
+      () =>
+        Effect.gen(function* () {
+          const { home } = yield* makeMachine;
+          const projects = Layer.mock(ProjectService.ProjectService)({
+            getByWorkspaceRoot: (root) =>
+              Effect.fail(
+                new ProjectOperationError({
+                  operation: root.endsWith("/gone") ? "normalize-workspace" : "list-projects",
+                  workspaceRoot: root,
+                  cause: "stand-in",
+                }),
+              ),
+          });
+          const onMachine = <A, E>(
+            use: (catalog: SkillCatalog.SkillCatalog["Service"]) => Effect.Effect<A, E>,
+          ) =>
+            Effect.gen(function* () {
+              return yield* use(yield* SkillCatalog.SkillCatalog);
+            }).pipe(
+              Effect.provide(
+                SkillCatalog.layer.pipe(
+                  Layer.provide(Layer.mergeAll(projects, Settings.layerTest({}))),
+                ),
+              ),
+              Effect.provideService(HostProcess.Environment, { HOME: home }),
+            );
+
+          const gone = yield* onMachine((catalog) =>
+            catalog.list({ cwd: `${home}/gone` }).pipe(Effect.flip),
+          );
+          expect(gone).toEqual(new SkillRequestError({ reason: "projectNotRegistered" }));
+
+          const failed = yield* onMachine((catalog) =>
+            catalog.list({ cwd: `${home}/there` }).pipe(Effect.exit),
+          );
+          expect(Exit.isFailure(failed) && Cause.hasDies(failed.cause)).toBe(true);
+        }),
+    );
+
     it.effect.skipIf(!symlinksSupported)(
       "reads a project's skill folders only when the folder is a registered project",
       () =>

@@ -80,8 +80,6 @@ class SkillPlacementRefused extends Schema.TaggedError<SkillPlacementRefused>()(
 
 const isRefused = Schema.is(SkillPlacementRefused);
 
-const refuse = (reason: SkillOutcomeReason) => new SkillPlacementRefused({ reason });
-
 const skipped = (reason: SkillOutcomeReason): PlacementChange => ({
   wrote: false,
   blocked: [],
@@ -260,7 +258,9 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
         if (result === "created") made.push(link);
         else if (result === "taken" || result === "notAllowed") {
           if (folder === STANDARD_SKILL_FOLDER) {
-            return yield* refuse(result === "taken" ? "destinationTaken" : "linkNotAllowed");
+            return yield* new SkillPlacementRefused({
+              reason: result === "taken" ? "destinationTaken" : "linkNotAllowed",
+            });
           }
           for (const instanceId of input.agentsOf(folder)) {
             blocked.push({
@@ -538,8 +538,9 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       const moved = yield* inContext(
         moveFolder({ from: skill.home, to: entry, platform: deps.platform }),
       );
-      if (moved === "taken") return yield* refuse("destinationTaken");
-      if (moved === "inUse") return yield* refuse("inUse");
+      if (moved === "taken")
+        return yield* new SkillPlacementRefused({ reason: "destinationTaken" });
+      if (moved === "inUse") return yield* new SkillPlacementRefused({ reason: "inUse" });
       journal.add(inContext(moveFolder({ from: entry, to: skill.home, platform: deps.platform })));
       if (moved === "movedWithLeftover") reason = "failed";
     } else {
@@ -549,7 +550,8 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
         { link: entry, target: skill.home, home: skill.home },
         "global",
       );
-      if (made !== "created") return yield* refuse("destinationTaken");
+      if (made !== "created")
+        return yield* new SkillPlacementRefused({ reason: "destinationTaken" });
     }
 
     // The links that led to the old place go before new ones are made: a new link may need the
@@ -701,8 +703,9 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       const moved = yield* inContext(
         moveFolder({ from: skill.library.entry, to: destination, platform: deps.platform }),
       );
-      if (moved === "taken") return yield* refuse("destinationTaken");
-      if (moved === "inUse") return yield* refuse("inUse");
+      if (moved === "taken")
+        return yield* new SkillPlacementRefused({ reason: "destinationTaken" });
+      if (moved === "inUse") return yield* new SkillPlacementRefused({ reason: "inUse" });
       journal.add(
         inContext(
           moveFolder({ from: destination, to: skill.library.entry, platform: deps.platform }),
@@ -715,11 +718,13 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
         { link: destination, target: skill.home, home: skill.home },
         dest.scope,
       );
-      if (made !== "created") return yield* refuse("destinationTaken");
+      if (made !== "created")
+        return yield* new SkillPlacementRefused({ reason: "destinationTaken" });
       const removed = yield* unlink(journal, [
         { path: skill.library.entry, target: skill.library.target ?? skill.home },
       ]);
-      if (removed.get(skill.library.entry) === "failed") return yield* refuse("failed");
+      if (removed.get(skill.library.entry) === "failed")
+        return yield* new SkillPlacementRefused({ reason: "failed" });
     }
 
     const real = yield* realPath(destination);

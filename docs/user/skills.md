@@ -28,7 +28,8 @@ instead of showing it as empty.
 
 - an installed and enabled agent doesn't use it. Hover the icons to see which agent. An agent
   loads one skill per name, the first it finds in its folders (Codex and OpenCode list every
-  copy), so a copy that another folder shadows is not used by that agent.
+  copy), so a copy that another folder shadows is not used by that agent. Claude doesn't use a
+  skill that its own `skillOverrides` setting switches off either.
 - the same name exists more than once with different text, in **This project**, in **Global**, or
   across them. These rows have a **Conflict** badge.
 - Claude can't read the skill's header, the YAML between the `---` lines at the top of

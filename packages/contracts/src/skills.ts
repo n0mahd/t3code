@@ -14,8 +14,9 @@ export type SkillListInput = typeof SkillListInput.Type;
 /**
  * How one agent reaches a skill. `direct`: it reads a real folder holding the skill (its own
  * folder, or one shared with other agents). `link`: a link in a folder it reads points at the
- * skill. `none`: it doesn't load this copy of the skill, because it can't see it or because
- * another skill of the same name comes first in its folders.
+ * skill. `none`: it doesn't load this copy of the skill, because it can't see it, because
+ * another skill of the same name comes first in its folders, or because its own settings switch
+ * the skill off.
  */
 export const SkillAgentState = Schema.Literals(["direct", "link", "none"]);
 export type SkillAgentState = typeof SkillAgentState.Type;

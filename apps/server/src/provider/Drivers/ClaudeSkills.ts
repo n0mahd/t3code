@@ -246,7 +246,7 @@ function parseSkillOverride(value: typeof SkillOverrideValue.Type): SkillOverrid
   }
 }
 
-const readSkillOverrides = Effect.fn("readSkillOverrides")(function* (
+export const readSkillOverrides = Effect.fn("readSkillOverrides")(function* (
   configDirPath: string,
   cwd: string | undefined,
   environment: NodeJS.ProcessEnv,

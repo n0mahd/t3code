@@ -51,6 +51,7 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 import {
   parseSkillFrontmatter,
+  readSkillOverrides,
   resolveClaudeConfigDirPath,
 } from "../provider/Drivers/ClaudeSkills.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -107,6 +108,11 @@ interface AgentInstance {
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly reads: readonly ReadRoot[];
+  /**
+   * Skill folder names the agent's own settings switch off: Claude's `skillOverrides`. It lists
+   * such a skill as disabled and loads none of the copies. Empty for an agent without the setting.
+   */
+  readonly switchedOff: ReadonlySet<string>;
 }
 
 /** One folder entry that holds a skill: a real directory, or a link to one. */
@@ -330,6 +336,26 @@ const make = Effect.gen(function* () {
     return fallback;
   });
 
+  /**
+   * The skills Claude's settings switch off, resolved the way the `$` picker resolves them: the
+   * user's, the project's and its local file, then the managed policy, last one naming a skill
+   * wins.
+   */
+  const claudeSwitchedOff = Effect.fnUntraced(function* (
+    instance: ProviderInstanceConfig,
+    configHome: string,
+    cwd: string | undefined,
+  ) {
+    const env = yield* mergeProviderInstanceEnvironment(instance.environment, environment).pipe(
+      Effect.provideService(HostProcess.HomeDirectory, homeDirectory),
+    );
+    const overrides = yield* readSkillOverrides(configHome, cwd, env).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    return new Set([...overrides].flatMap(([name, override]) => (override.enabled ? [] : [name])));
+  });
+
   /** The enabled provider instances whose folders T3 Code knows, in the table's order. */
   const loadInstances = Effect.fnUntraced(function* (cwd: string | undefined) {
     const settings = yield* serverSettings.getSettings.pipe(Effect.option);
@@ -365,6 +391,10 @@ const make = Effect.gen(function* () {
           instanceId: ProviderInstanceId.make(instanceId),
           driver: table.agent,
           reads,
+          switchedOff:
+            table.agent === "claudeAgent"
+              ? yield* claudeSwitchedOff(config, configHome, cwd)
+              : new Set(),
         });
       }
     }
@@ -499,7 +529,9 @@ const make = Effect.gen(function* () {
       // A first-wins agent loads only the first copy in its order; the others load every copy.
       const firstWins = skillCollisionFor(instance.driver) === "first-wins";
       const loaded =
-        firstWins && found[0]?.owner !== group ? [] : found.filter((f) => f.owner === group);
+        instance.switchedOff.has(group.name) || (firstWins && found[0]?.owner !== group)
+          ? []
+          : found.filter((f) => f.owner === group);
       // One copy can be reached through several of the agent's folders; the shared one is shown.
       const via = (loaded.find((f) => f.entry.root.standard) ?? loaded[0])?.entry;
       if (via) {

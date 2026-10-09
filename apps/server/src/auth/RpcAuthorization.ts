@@ -64,7 +64,8 @@ export const RPC_REQUIRED_SCOPES = {
   // reads take, not the orchestration read scope that thread readers hold.
   [WS_METHODS.serverListSkills]: AuthFilesystemReadScope,
   [WS_METHODS.serverGetSkill]: AuthFilesystemReadScope,
-  [WS_METHODS.serverSkillsTracked]: AuthOrchestrationReadScope,
+  // `git ls-files` in the project's folder.
+  [WS_METHODS.serverSkillsTracked]: AuthFilesystemReadScope,
   [WS_METHODS.serverUpdateProvider]: AuthProvidersManageScope,
   [WS_METHODS.providerAuthStart]: AuthProvidersManageScope,
   [WS_METHODS.providerConsumeResetCredit]: AuthProvidersManageScope,

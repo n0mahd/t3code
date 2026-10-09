@@ -2,6 +2,7 @@ import {
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
   AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
   AuthProvidersManageScope,
   AuthSettingsWriteScope,
   DEFAULT_SERVER_SETTINGS,
@@ -60,23 +61,24 @@ describe("RPC authorization scopes", () => {
     }
   });
 
-  it("reads skill folders and SKILL.md text under the filesystem read scope", () => {
-    for (const method of [WS_METHODS.serverListSkills, WS_METHODS.serverGetSkill]) {
+  it("reads skill folders, SKILL.md text and git tracking under the filesystem read scope", () => {
+    for (const method of [
+      WS_METHODS.serverListSkills,
+      WS_METHODS.serverGetSkill,
+      WS_METHODS.serverSkillsTracked,
+    ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthFilesystemReadScope);
     }
-    expect(requiredScopeForRpcMethod(WS_METHODS.serverSkillsTracked)).toBe(
-      AuthOrchestrationReadScope,
-    );
   });
 
-  it("doesn't let a read-only client change which agents use skills", () => {
+  it("changes skills, which writes links, settings files and folders, under filesystem write", () => {
     for (const method of [
       WS_METHODS.serverEnableSkills,
       WS_METHODS.serverDisableSkills,
       WS_METHODS.serverPlaceSkills,
       WS_METHODS.serverDeleteSkills,
     ]) {
-      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthFilesystemWriteScope);
     }
   });
 

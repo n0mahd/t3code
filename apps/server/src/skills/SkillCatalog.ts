@@ -249,12 +249,13 @@ export class SkillCatalog extends Context.Service<
     readonly get: (input: SkillGetInput) => Effect.Effect<SkillGetResult, SkillRequestError>;
     /**
      * Every skill in the agents' folders with this scope and name, as the folders hold it now.
-     * A project skill needs `cwd`. Nothing is written.
+     * A project skill needs `cwd`, which must be a registered project's workspace root like the
+     * one `list` takes. Nothing is written.
      */
     readonly resolve: (input: {
       readonly cwd?: string | undefined;
       readonly skills: ReadonlyArray<{ readonly scope: SkillScope; readonly name: string }>;
-    }) => Effect.Effect<ReadonlyArray<ResolvedSkill>>;
+    }) => Effect.Effect<ReadonlyArray<ResolvedSkill>, SkillRequestError>;
   }
 >()("t3/skills/SkillCatalog") {}
 
@@ -415,10 +416,6 @@ const make = Effect.gen(function* () {
     }
     return cwd;
   });
-
-  /** A project's folder as `resolve` takes it: a relative one names no project. */
-  const absoluteCwd = (cwd: string | undefined) =>
-    cwd !== undefined && path.isAbsolute(cwd) ? cwd : undefined;
 
   /** A global folder as shown to the user: `~/...` under the home directory, else its path. */
   const globalLabel = (directory: string) => {
@@ -900,7 +897,7 @@ const make = Effect.gen(function* () {
 
   const resolve: SkillCatalog["Service"]["resolve"] = Effect.fn("SkillCatalog.resolve")(
     function* (input) {
-      const cwd = absoluteCwd(input.cwd);
+      const cwd = yield* requireProject(input.cwd);
       const wanted = input.skills.filter(
         (skill) => isSkillFolderName(skill.name) && (skill.scope === "global" || cwd !== undefined),
       );

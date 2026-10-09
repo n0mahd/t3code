@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 import { GitPreparePullRequestThreadInput } from "./git.ts";
 import {
+  AuthFilesystemWriteScope,
   AuthOrchestrationOperateScope,
   AuthSettingsWriteScope,
   AuthSourceControlWriteScope,
@@ -36,10 +37,12 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.vcsSwitchRef]: AuthSourceControlWriteScope,
   [WS_METHODS.vcsInit]: AuthSourceControlWriteScope,
 
-  [WS_METHODS.serverEnableSkills]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverDisableSkills]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverPlaceSkills]: AuthOrchestrationOperateScope,
-  [WS_METHODS.serverDeleteSkills]: AuthOrchestrationOperateScope,
+  // Skill changes create and remove links, write the agents' settings files, and move and delete
+  // skill folders, so they take the scope the other file writes take.
+  [WS_METHODS.serverEnableSkills]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverDisableSkills]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverPlaceSkills]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverDeleteSkills]: AuthFilesystemWriteScope,
 
   [WS_METHODS.scheduledTasksUpsert]: AuthOrchestrationOperateScope,
   [WS_METHODS.scheduledTasksSetEnabled]: AuthOrchestrationOperateScope,

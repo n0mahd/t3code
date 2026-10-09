@@ -8,7 +8,7 @@
  *
  * @module SkillTracking
  */
-import type { SkillTrackedInput, SkillTrackedResult } from "@t3tools/contracts";
+import type { SkillRequestError, SkillTrackedInput, SkillTrackedResult } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -27,9 +27,12 @@ export class SkillTracking extends Context.Service<
      * The names of the project skills among `skills` whose SKILL.md git tracks. A skill that
      * isn't where the client said, isn't a project skill, sits outside the repository, or whose
      * folder is only reached through a link counts as not tracked, and so does every skill when
-     * git fails.
+     * git fails. The folder must be a registered project's workspace root, or the request is
+     * refused before git runs.
      */
-    readonly tracked: (input: SkillTrackedInput) => Effect.Effect<SkillTrackedResult>;
+    readonly tracked: (
+      input: SkillTrackedInput,
+    ) => Effect.Effect<SkillTrackedResult, SkillRequestError>;
   }
 >()("t3/skills/SkillTracking") {}
 

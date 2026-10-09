@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   ProjectId,
+  SkillRequestError,
   type Project,
   type SkillRef,
   type SkillScope,
@@ -212,6 +213,30 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillTracking", (it
         );
 
         expect(result.tracked).toEqual(["tdd"]);
+      }),
+    );
+
+    it.effect("refuses a folder that isn't a registered project, without running git", () =>
+      Effect.gen(function* () {
+        const { home, project } = yield* makeMachine;
+        yield* git(project, ["init"]);
+        yield* git(project, ["add", "."]);
+        yield* git(project, ["commit", "-m", "everything"]);
+        const skills = [
+          { scope: "project", name: "verify", home: ".agents/skills/verify" },
+        ] as const;
+        const refused = yield* onMachine(
+          home,
+          ({ tracking }) => tracking.tracked({ cwd: project, skills }).pipe(Effect.flip),
+          [],
+        );
+        expect(refused).toEqual(new SkillRequestError({ reason: "projectNotRegistered" }));
+
+        // The same folder is read once it is a project.
+        const result = yield* onMachine(home, ({ tracking }) =>
+          tracking.tracked({ cwd: project, skills }),
+        );
+        expect(result.tracked).toEqual(["verify"]);
       }),
     );
 

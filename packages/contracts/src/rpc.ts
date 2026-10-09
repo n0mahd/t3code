@@ -658,7 +658,7 @@ const WsServerDeleteSkillsRpc = Rpc.make(WS_METHODS.serverDeleteSkills, {
 const WsServerSkillsTrackedRpc = Rpc.make(WS_METHODS.serverSkillsTracked, {
   payload: SkillTrackedInput,
   success: SkillTrackedResult,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
 });
 
 const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {

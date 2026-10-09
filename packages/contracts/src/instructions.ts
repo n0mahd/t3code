@@ -194,10 +194,15 @@ export const ClaudeInstructionSettingInput = Schema.Struct({
 });
 export type ClaudeInstructionSettingInput = typeof ClaudeInstructionSettingInput.Type;
 
-/** Rename a project's CLAUDE.md to AGENTS.md so every agent reads it. */
+/**
+ * Make a project's CLAUDE.md into AGENTS.md so every agent reads it. Without `merge` the file is
+ * renamed and the project must have no AGENTS.md; with `merge` its text goes at the end of the
+ * project's existing AGENTS.md and CLAUDE.md is deleted.
+ */
 export const InstructionShareInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   id: TrimmedNonEmptyString,
+  merge: Schema.Boolean,
 });
 export type InstructionShareInput = typeof InstructionShareInput.Type;
 
@@ -214,7 +219,7 @@ export const InstructionDeleteInput = Schema.Struct({
 });
 export type InstructionDeleteInput = typeof InstructionDeleteInput.Type;
 
-/** Which of these project instruction files git tracks, so a rename or delete shows in git. */
+/** Which of these project instruction files git tracks, so a move, merge or delete shows in git. */
 export const InstructionTrackedInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   ids: Schema.Array(TrimmedNonEmptyString).check(Schema.isMinLength(1), Schema.isMaxLength(200)),

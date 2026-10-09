@@ -202,7 +202,7 @@ export type SkillChange =
 /** What the confirm dialog says before a change is made, in plain words. */
 export type PlanConfirmation = {
   readonly title: string;
-  /** May be empty when the title says it all. */
+  /** May be empty when the title says it all. A blank line starts a new paragraph. */
   readonly body: string;
   /** Lines under the body, such as what stays on and why. */
   readonly notes: readonly string[];

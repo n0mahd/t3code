@@ -747,7 +747,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
         yield* write("repos/app/CLAUDE.md", "rules");
         yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
           Effect.gen(function* () {
-            yield* manager.share({ cwd: project, id: "project:claude:CLAUDE.md" });
+            yield* manager.share({ cwd: project, id: "project:claude:CLAUDE.md", merge: false });
 
             expect(yield* read("repos/app/AGENTS.md")).toBe("rules");
             expect(yield* fs.exists(path.join(project, "CLAUDE.md"))).toBe(false);
@@ -767,14 +767,14 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
           yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
             Effect.gen(function* () {
               const exists = yield* manager
-                .share({ cwd: project, id: "project:claude:CLAUDE.md" })
+                .share({ cwd: project, id: "project:claude:CLAUDE.md", merge: false })
                 .pipe(Effect.flip);
               expect(exists.reason).toBe("exists");
               expect(yield* read("repos/app/AGENTS.md")).toBe("agents");
               expect(yield* read("repos/app/CLAUDE.md")).toBe("claude");
 
               const nested = yield* manager
-                .share({ cwd: project, id: "project:claude:.claude/CLAUDE.md" })
+                .share({ cwd: project, id: "project:claude:.claude/CLAUDE.md", merge: false })
                 .pipe(Effect.flip);
               expect(nested.reason).toBe("unknownEntry");
             }),
@@ -782,7 +782,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
           yield* onMachine(home, CLAUDE, ({ manager }) =>
             Effect.gen(function* () {
               const unregistered = yield* manager
-                .share({ cwd: project, id: "project:claude:CLAUDE.md" })
+                .share({ cwd: project, id: "project:claude:CLAUDE.md", merge: false })
                 .pipe(Effect.flip);
               expect(unregistered.reason).toBe("unregisteredProject");
             }),
@@ -796,12 +796,146 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
         yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
           Effect.gen(function* () {
             const error = yield* manager
-              .share({ cwd: project, id: "project:claude:CLAUDE.md" })
+              .share({ cwd: project, id: "project:claude:CLAUDE.md", merge: false })
               .pipe(Effect.flip);
             expect(error.reason).toBe("notFound");
           }),
         );
       }),
+    );
+  });
+
+  describe("share with merge", () => {
+    const CLAUDE_ID = "project:claude:CLAUDE.md";
+
+    it.effect("adds CLAUDE.md's text to the end of AGENTS.md, then deletes CLAUDE.md", () =>
+      Effect.gen(function* () {
+        const { home, project, write, read, fs, path } = yield* makeMachine;
+        yield* write("repos/app/AGENTS.md", "# App\n- Use pnpm.");
+        yield* write("repos/app/CLAUDE.md", "\n- Run the tests.\n\n");
+        yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+          Effect.gen(function* () {
+            yield* manager.share({ cwd: project, id: CLAUDE_ID, merge: true });
+
+            expect(yield* read("repos/app/AGENTS.md")).toBe(
+              "# App\n- Use pnpm.\n\n- Run the tests.\n",
+            );
+            expect(yield* fs.exists(path.join(project, "CLAUDE.md"))).toBe(false);
+          }),
+        );
+      }),
+    );
+
+    it.effect("takes the line that imports AGENTS.md out of what it adds", () =>
+      Effect.gen(function* () {
+        const { home, project, write, read } = yield* makeMachine;
+        yield* write("repos/app/AGENTS.md", "rules\n");
+        yield* write("repos/app/CLAUDE.md", "@AGENTS.md\n\nextra rule\n");
+        yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+          Effect.gen(function* () {
+            yield* manager.share({ cwd: project, id: CLAUDE_ID, merge: true });
+            expect(yield* read("repos/app/AGENTS.md")).toBe("rules\n\nextra rule\n");
+          }),
+        );
+      }),
+    );
+
+    it.effect(
+      "only deletes a CLAUDE.md that is just the import, or that AGENTS.md has already",
+      () =>
+        Effect.gen(function* () {
+          const { home, project, write, read, fs, path } = yield* makeMachine;
+          yield* write("repos/app/AGENTS.md", "- Use pnpm.\n- Run the tests.\n");
+          yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+            Effect.gen(function* () {
+              for (const text of ["@./AGENTS.md\n", "- Run the tests.\n", "  \n"]) {
+                yield* write("repos/app/CLAUDE.md", text);
+                yield* manager.share({ cwd: project, id: CLAUDE_ID, merge: true });
+
+                expect(yield* read("repos/app/AGENTS.md")).toBe("- Use pnpm.\n- Run the tests.\n");
+                expect(yield* fs.exists(path.join(project, "CLAUDE.md"))).toBe(false);
+              }
+            }),
+          );
+        }),
+    );
+
+    it.effect("refuses without an AGENTS.md, and leaves CLAUDE.md alone", () =>
+      Effect.gen(function* () {
+        const { home, project, write, read } = yield* makeMachine;
+        yield* write("repos/app/CLAUDE.md", "rules");
+        yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+          Effect.gen(function* () {
+            const error = yield* manager
+              .share({ cwd: project, id: CLAUDE_ID, merge: true })
+              .pipe(Effect.flip);
+            expect(error.reason).toBe("notFound");
+            expect(yield* read("repos/app/CLAUDE.md")).toBe("rules");
+          }),
+        );
+      }),
+    );
+
+    it.effect("refuses when the result would be over 1 MB, and changes nothing", () =>
+      Effect.gen(function* () {
+        const { home, project, write, read } = yield* makeMachine;
+        yield* write("repos/app/AGENTS.md", "a".repeat(700_000));
+        yield* write("repos/app/CLAUDE.md", "b".repeat(700_000));
+        yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+          Effect.gen(function* () {
+            const error = yield* manager
+              .share({ cwd: project, id: CLAUDE_ID, merge: true })
+              .pipe(Effect.flip);
+            expect(error.reason).toBe("tooLarge");
+            expect((yield* read("repos/app/AGENTS.md")).length).toBe(700_000);
+            expect((yield* read("repos/app/CLAUDE.md")).length).toBe(700_000);
+          }),
+        );
+      }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "writes through a linked AGENTS.md, and removes a CLAUDE.md that is a link without its target",
+      () =>
+        Effect.gen(function* () {
+          const { home, project, write, link, read, fs, path } = yield* makeMachine;
+          yield* write("dotfiles/app-agents.md", "rules\n");
+          yield* write("dotfiles/app-claude.md", "more rules\n");
+          yield* link("dotfiles/app-agents.md", "repos/app/AGENTS.md");
+          yield* link("dotfiles/app-claude.md", "repos/app/CLAUDE.md");
+          yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+            Effect.gen(function* () {
+              yield* manager.share({ cwd: project, id: CLAUDE_ID, merge: true });
+
+              // The text lands in the real file, so AGENTS.md is still a link to it.
+              expect(yield* read("dotfiles/app-agents.md")).toBe("rules\n\nmore rules\n");
+              expect(yield* fs.readLink(path.join(project, "AGENTS.md"))).toBe(
+                path.join(home, "dotfiles/app-agents.md"),
+              );
+              expect(yield* fs.exists(path.join(project, "CLAUDE.md"))).toBe(false);
+              expect(yield* read("dotfiles/app-claude.md")).toBe("more rules\n");
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "won't delete a CLAUDE.md that the project's AGENTS.md is a link to",
+      () =>
+        Effect.gen(function* () {
+          const { home, project, write, link, read } = yield* makeMachine;
+          yield* write("repos/app/CLAUDE.md", "rules");
+          yield* link("repos/app/CLAUDE.md", "repos/app/AGENTS.md");
+          yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+            Effect.gen(function* () {
+              const error = yield* manager
+                .share({ cwd: project, id: CLAUDE_ID, merge: true })
+                .pipe(Effect.flip);
+              expect(error.reason).toBe("exists");
+              expect(yield* read("repos/app/CLAUDE.md")).toBe("rules");
+            }),
+          );
+        }),
     );
   });
 

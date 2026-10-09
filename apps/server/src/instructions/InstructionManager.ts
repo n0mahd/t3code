@@ -13,7 +13,8 @@
  *   already has a file of its own is moved over with `adopt`, which keeps that file's text in the
  *   Global file first.
  * - The only writes that take a real file are `adopt` (its text is kept first), `share` (a
- *   rename, refused when AGENTS.md exists) and `delete`.
+ *   rename, refused when AGENTS.md exists; or a merge, where CLAUDE.md's text is written to the end
+ *   of AGENTS.md before CLAUDE.md goes) and `delete`.
  *
  * @module InstructionManager
  */
@@ -112,7 +113,10 @@ export class InstructionManager extends Context.Service<
     readonly setClaudeSetting: (
       input: ClaudeInstructionSettingInput,
     ) => Effect.Effect<void, InstructionError>;
-    /** Rename a project's CLAUDE.md to AGENTS.md, when it has no AGENTS.md. */
+    /**
+     * Rename a project's CLAUDE.md to AGENTS.md, when it has no AGENTS.md; or with `merge`, add its
+     * text to the end of the project's AGENTS.md and delete it.
+     */
     readonly share: (input: InstructionShareInput) => Effect.Effect<void, InstructionError>;
     /** Add an agent's own text to the Global file, then make the agent's file a link to it. */
     readonly adopt: (input: InstructionAdoptInput) => Effect.Effect<void, InstructionError>;
@@ -484,10 +488,52 @@ const make = Effect.gen(function* () {
           const from = yield* inspectAt(entry.path);
           if (!from.isFile) return yield* refuse("notFound", "That file doesn't exist.");
           const agentsMd = path.join(path.dirname(entry.path), "AGENTS.md");
-          if ((yield* inspectAt(agentsMd)).present) {
-            return yield* refuse("exists", "This project already has an AGENTS.md.");
+          const into = yield* inspectAt(agentsMd);
+          if (!input.merge) {
+            if (into.present)
+              return yield* refuse("exists", "This project already has an AGENTS.md.");
+            return yield* guard(fileSystem.rename(entry.path, agentsMd), cannotWrite(agentsMd));
           }
-          yield* guard(fileSystem.rename(entry.path, agentsMd), cannotWrite(agentsMd));
+          if (!into.isFile) {
+            return yield* refuse("notFound", "This project has no AGENTS.md to merge into.");
+          }
+          // AGENTS.md is a link to this very file, so deleting the file would take AGENTS.md too.
+          if (from.linkTarget === undefined && into.real === from.real) {
+            return yield* refuse("exists", "AGENTS.md is a link to CLAUDE.md.");
+          }
+
+          const claudeText = yield* readTextAt(entry.path);
+          if (claudeText._tag === "TooLarge") return yield* refuse("tooLarge", LIMIT_MESSAGE);
+          if (claudeText._tag !== "Read") {
+            return yield* refuse("readOnly", "T3 Code can't read that file as text.");
+          }
+          const agentsTarget = yield* writeTargetAt(agentsMd);
+          const agentsText = yield* readTextAt(agentsTarget);
+          if (agentsText._tag === "TooLarge") return yield* refuse("tooLarge", LIMIT_MESSAGE);
+          if (agentsText._tag !== "Read") {
+            return yield* refuse("readOnly", "T3 Code can't read AGENTS.md as text.");
+          }
+
+          // A line that imports AGENTS.md would only point AGENTS.md at itself, so it doesn't move.
+          const view = yield* catalog.shared;
+          const own = removeAgentsMdImport(claudeText.text, {
+            path,
+            agentsMdPath: agentsMd,
+            claudeMdDirectory: path.dirname(entry.path),
+            homeDirectory: view.homeDirectory,
+          }).trim();
+          if (own !== "" && !agentsText.text.includes(own)) {
+            const joined =
+              agentsText.text.trim() === ""
+                ? `${own}\n`
+                : `${agentsText.text}${agentsText.text.endsWith("\n") ? "" : "\n"}\n${own}\n`;
+            if (encoder.encode(joined).byteLength > INSTRUCTION_MAX_BYTES) {
+              return yield* refuse("tooLarge", LIMIT_MESSAGE);
+            }
+            yield* writeText(agentsTarget, joined);
+          }
+          // The text is in AGENTS.md now, so CLAUDE.md can go. A link goes and what it points at stays.
+          yield* guard(fileSystem.remove(entry.path), cannotWrite(entry.path));
         }),
       );
     },

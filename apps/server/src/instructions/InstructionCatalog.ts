@@ -517,6 +517,11 @@ const make = Effect.gen(function* () {
     readonly sizes: ReadonlyMap<string, number>;
     /** Some Claude file in the top folder imports the project's AGENTS.md. */
     readonly claudeImportsAgentsMd: boolean;
+    /**
+     * The top folder's CLAUDE.md holds nothing but that import, or is the same file as AGENTS.md
+     * through a link, so it has nothing to show.
+     */
+    readonly claudeMdOnlyImports: boolean;
   }
 
   const loadProject = Effect.fnUntraced(function* (
@@ -537,23 +542,40 @@ const make = Effect.gen(function* () {
     for (const [name, size] of found) if (size !== undefined) sizes.set(name, size);
     const agentsMd = path.join(cwd, "AGENTS.md");
     let claudeImportsAgentsMd = false;
-    for (const name of ["CLAUDE.md", ".claude/CLAUDE.md", PERSONAL_FILE]) {
-      if (!sizes.has(name)) continue;
-      const file = path.join(cwd, name);
-      const read = yield* textOf(file);
+    let claudeMdOnlyImports = false;
+    if (sizes.has("CLAUDE.md") && sizes.has("AGENTS.md")) {
+      const [claudeReal, agentsReal] = yield* Effect.all([
+        fileSystem.realPath(path.join(cwd, "CLAUDE.md")).pipe(Effect.option),
+        fileSystem.realPath(agentsMd).pipe(Effect.option),
+      ]);
       if (
-        read._tag === "Read" &&
-        hasAgentsMdImport(read.text, {
-          path,
-          agentsMdPath: agentsMd,
-          claudeMdDirectory: path.dirname(file),
-          homeDirectory,
-        })
+        Option.isSome(claudeReal) &&
+        Option.isSome(agentsReal) &&
+        claudeReal.value === agentsReal.value
       ) {
         claudeImportsAgentsMd = true;
+        claudeMdOnlyImports = true;
       }
     }
-    return { cwd, sizes, claudeImportsAgentsMd } satisfies ProjectFacts;
+    for (const name of ["CLAUDE.md", ".claude/CLAUDE.md", PERSONAL_FILE]) {
+      if (!sizes.has(name)) continue;
+      if (name === "CLAUDE.md" && claudeMdOnlyImports) continue;
+      const file = path.join(cwd, name);
+      const read = yield* textOf(file);
+      if (read._tag !== "Read") continue;
+      const target = {
+        path,
+        agentsMdPath: agentsMd,
+        claudeMdDirectory: path.dirname(file),
+        homeDirectory,
+      } satisfies AgentsMdImportTarget;
+      if (!hasAgentsMdImport(read.text, target)) continue;
+      claudeImportsAgentsMd = true;
+      if (name === "CLAUDE.md" && removeAgentsMdImport(read.text, target).trim() === "") {
+        claudeMdOnlyImports = true;
+      }
+    }
+    return { cwd, sizes, claudeImportsAgentsMd, claudeMdOnlyImports } satisfies ProjectFacts;
   });
 
   const accessOf = (
@@ -796,6 +818,9 @@ const make = Effect.gen(function* () {
           // so they can be created. The local one only when an agent would read it.
           const creatable = root.kind === "shared" || root.kind === "claudeLocal";
           if (size === undefined && !creatable) continue;
+          // Many repos keep a one-line CLAUDE.md that only points Claude at AGENTS.md. It already
+          // does its job, so it gets no entry, as a Global CLAUDE.md that only imports Global.
+          if (root.name === "CLAUDE.md" && project.claudeMdOnlyImports) continue;
           const access = instances.flatMap((instance) => {
             const found = projectAccess(instance, root.name, project, claudeByInstance);
             return found === undefined ? [] : [found];

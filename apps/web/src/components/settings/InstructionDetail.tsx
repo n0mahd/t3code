@@ -72,7 +72,7 @@ export function InstructionDetail({
   /** The session can't change instructions. */
   locked: boolean;
   onBack: () => void;
-  /** Turns agents on or off, shares, moves or deletes; a plan with a confirmation asks first. */
+  /** Turns agents on or off, moves, merges or deletes; a plan with a confirmation asks first. */
   onPlan: (plan: InstructionPlan) => void;
   /** A save went through, so the list can read the files again. */
   onSaved: () => void;
@@ -203,8 +203,8 @@ export function InstructionDetail({
                 </MenuItem>
               )}
               {actions.share && (
-                <MenuItem disabled={disabled} onClick={() => onPlan(actions.share!)}>
-                  Share with all agents…
+                <MenuItem disabled={disabled} onClick={() => onPlan(actions.share!.plan)}>
+                  {actions.share.label}…
                 </MenuItem>
               )}
               {actions.useGlobal && (
@@ -236,7 +236,7 @@ export function InstructionDetail({
         </div>
       </div>
 
-      {entry.exists && chips.length > 0 && (
+      {entry.exists && (chips.length > 0 || actions.share) && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground">Used by</span>
           {chips.map((chip) => (
@@ -249,6 +249,18 @@ export function InstructionDetail({
               onPlan={onPlan}
             />
           ))}
+          {actions.share && (
+            <span className="ml-auto">
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={disabled}
+                onClick={() => onPlan(actions.share!.plan)}
+              >
+                {actions.share.label}
+              </Button>
+            </span>
+          )}
         </div>
       )}
 

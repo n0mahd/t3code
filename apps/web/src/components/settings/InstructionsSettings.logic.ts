@@ -20,7 +20,12 @@ import {
 const CLAUDE_SETTING_VERSION = "2.1.277";
 
 const GIT_UNDO_NOTE = "You can undo this with git.";
+/** Said instead of the above when the same change also sets Claude, which git doesn't track. */
+const GIT_UNDO_FILE_NOTE = "You can undo the file change with git.";
 const CANT_UNDO_NOTE = "This can't be undone.";
+
+/** The project's AGENTS.md, which a merge writes to. */
+const PROJECT_AGENTS_ID = "project:shared:AGENTS.md";
 
 // -- Reading the list ---------------------------------------------------------------------------
 
@@ -117,8 +122,21 @@ export type InstructionChange =
       readonly id: string;
       readonly agents: readonly ProviderInstanceId[];
     }
-  | { readonly kind: "adopt"; readonly id: string; readonly agent: string }
-  | { readonly kind: "share"; readonly id: string; readonly project: boolean }
+  | {
+      readonly kind: "adopt";
+      /** One file per agent that moves over, each adopted by its own request. */
+      readonly ids: readonly string[];
+      readonly names: readonly string[];
+    }
+  | {
+      readonly kind: "share";
+      readonly id: string;
+      readonly project: boolean;
+      /** The project already has an AGENTS.md, so CLAUDE.md's text goes at its end. */
+      readonly merge: boolean;
+      /** Claude instances the same plan sets to read AGENTS.md in every project afterwards. */
+      readonly claude: readonly ProviderInstanceId[];
+    }
   | {
       readonly kind: "delete";
       readonly id: string;
@@ -179,16 +197,24 @@ const enablePlan = (
   change: { kind, id, agents: agents.map((agent) => agent.instanceId) },
 });
 
-/** An agent's own file moves into Global, and the agent uses that file from then on. */
-function planAdopt(entry: InstructionEntry, name: string): InstructionPlan {
-  const same = entry.sameAsShared === true;
+type OwnFile = { readonly entry: InstructionEntry; readonly name: string };
+
+/** Agents' own files move into Global, and each agent uses Global from then on. */
+function planAdopt(files: readonly OwnFile[]): InstructionPlan {
+  const names = joinNames(files.map((file) => file.name));
+  const many = files.length > 1;
+  const same = files.every((file) => file.entry.sameAsShared === true);
   return {
-    change: { kind: "adopt", id: entry.id, agent: name },
+    change: {
+      kind: "adopt",
+      ids: files.map((file) => file.entry.id),
+      names: files.map((file) => file.name),
+    },
     confirmation: {
-      title: `Use your Global instructions for ${name}?`,
+      title: `Use your Global instructions for ${names}?`,
       body: same
-        ? `${name}'s instructions match your Global instructions, so ${name} just starts using them.`
-        : `${name}'s instructions are added to your Global instructions. ${name} then reads them instead.`,
+        ? `${names}'s instructions match your Global instructions, so ${many ? "they just start" : `${names} just starts`} using them.`
+        : `${names}'s instructions are added to your Global instructions. ${many ? "They then read them" : `${names} then reads them`} instead.`,
       notes: [],
       confirm: "Use Global instead",
       destructive: false,
@@ -196,15 +222,119 @@ function planAdopt(entry: InstructionEntry, name: string): InstructionPlan {
   };
 }
 
-/** The project's CLAUDE.md becomes AGENTS.md. */
-function planShare(entry: InstructionEntry): InstructionPlan {
+// -- What Claude does once the project's CLAUDE.md is gone ---------------------------------------
+
+type ClaudeAfter =
+  | { readonly kind: "reads" }
+  /** The setting would keep it from AGENTS.md: a file in the way, or null for "Never". */
+  | { readonly kind: "skips"; readonly blocker: string | null }
+  | { readonly kind: "old" }
+  | { readonly kind: "managed" };
+
+type ClaudeInstance = { readonly agent: SkillAgent; readonly after: ClaudeAfter };
+
+/**
+ * Whether each installed Claude would read the project's AGENTS.md once the top folder's
+ * CLAUDE.md is gone, from its choice and the files that remain. Under the default a
+ * `.claude/CLAUDE.md` or a CLAUDE.local.md still keeps Claude from AGENTS.md. A remaining file that
+ * imports AGENTS.md isn't looked for.
+ */
+function claudeAfterClaudeMd(
+  ctx: SkillsContext,
+  data: Pick<InstructionData, "entries" | "claude">,
+): ClaudeInstance[] {
+  const blocker = [".claude/CLAUDE.md", "CLAUDE.local.md"].find((name) =>
+    data.entries.some(
+      (entry) =>
+        entry.scope === "project" &&
+        entry.exists &&
+        (entry.kind === "claude" || entry.kind === "claudeLocal") &&
+        entryFileName(entry) === name,
+    ),
+  );
+  return data.claude.flatMap((choice): ClaudeInstance[] => {
+    const agent = agentOf(ctx, choice.instanceId);
+    if (!agent) return [];
+    const after = ((): ClaudeAfter => {
+      if (choice.value === "managed-only") return { kind: "managed" };
+      if (!choice.supported) return { kind: "old" };
+      if (choice.value === "claude-md-and-agents-md") return { kind: "reads" };
+      if (choice.value === "claude-md") return { kind: "skips", blocker: null };
+      return blocker === undefined ? { kind: "reads" } : { kind: "skips", blocker };
+    })();
+    return [{ agent, after }];
+  });
+}
+
+/** Claude by that name, or by the instance's own when there are several. */
+const claudeLabel = (instance: ClaudeInstance, all: readonly ClaudeInstance[]) =>
+  all.length > 1 ? instance.agent.displayName : "Claude";
+
+/** The lines on what a move or merge means for Claude, one per kind of answer. */
+function claudeParagraphs(all: readonly ClaudeInstance[]) {
+  const several = all.length > 1;
+  const group = (pick: (instance: ClaudeInstance) => string | undefined) => {
+    const groups = new Map<string, ClaudeInstance[]>();
+    for (const instance of all) {
+      const key = pick(instance);
+      if (key === undefined) continue;
+      groups.set(key, [...(groups.get(key) ?? []), instance]);
+    }
+    return [...groups].map(([key, found]) => ({
+      key,
+      who: joinNames(found.map((instance) => claudeLabel(instance, all))),
+      many: found.length > 1,
+    }));
+  };
+  return [
+    ...group((instance) =>
+      instance.after.kind === "skips" ? (instance.after.blocker ?? "") : undefined,
+    ).map(({ key, who, many }) =>
+      key === ""
+        ? `${who} ${many ? "are" : "is"} set to never read AGENTS.md, so this also turns it on for ${who} in every project.`
+        : `${who} ${many ? "skip" : "skips"} AGENTS.md when there's a ${key}, so this also turns AGENTS.md on for ${who} in every project.`,
+    ),
+    ...group((instance) => (instance.after.kind === "old" ? "" : undefined)).map(({ who, many }) =>
+      several
+        ? `${who} ${many ? "need" : "needs"} Claude Code ${CLAUDE_SETTING_VERSION} or later to read AGENTS.md.`
+        : `Claude Code needs version ${CLAUDE_SETTING_VERSION} or later to read AGENTS.md.`,
+    ),
+    ...group((instance) => (instance.after.kind === "managed" ? "" : undefined)).map(
+      ({ who, many }) =>
+        `Your organization decides whether ${who} ${many ? "read" : "reads"} AGENTS.md.`,
+    ),
+  ];
+}
+
+/** The project's CLAUDE.md becomes AGENTS.md, or joins the AGENTS.md that is already there. */
+function planShare(
+  entry: InstructionEntry,
+  ctx: SkillsContext,
+  data: Pick<InstructionData, "entries" | "claude">,
+): InstructionPlan {
+  const merge = hasProjectAgentsFile(data.entries);
+  const missing = usage(entry, ctx).missing;
+  const claude = claudeAfterClaudeMd(ctx, data);
+  const turnOn = claude.filter((instance) => instance.after.kind === "skips");
+  const extra = claudeParagraphs(claude);
+  const lead = merge
+    ? `Its text goes at the end of AGENTS.md, then CLAUDE.md is deleted.${turnOn.length > 0 ? "" : " Every agent reads AGENTS.md from then on."}`
+    : missing.length === 0
+      ? "Every agent reads AGENTS.md."
+      : `Every agent reads AGENTS.md, so ${joinNames(missing.map((agent) => agent.displayName))} ${missing.length === 1 ? "gets" : "get"} these instructions too.`;
   return {
-    change: { kind: "share", id: entry.id, project: entry.scope === "project" },
+    change: {
+      kind: "share",
+      id: entry.id,
+      project: entry.scope === "project",
+      merge,
+      claude: turnOn.map((instance) => instance.agent.instanceId),
+    },
     confirmation: {
-      title: "Share with all agents?",
-      body: "CLAUDE.md becomes AGENTS.md, so every agent reads it.",
+      title: merge ? "Merge CLAUDE.md into AGENTS.md?" : "Move CLAUDE.md to AGENTS.md?",
+      body: [lead, ...extra].join("\n\n"),
       notes: [],
-      confirm: "Share",
+      confirm: merge ? "Merge" : "Move",
       destructive: false,
     },
   };
@@ -224,7 +354,19 @@ function planRemove(entry: InstructionEntry, agents: readonly SkillAgent[]): Ins
   };
 }
 
-function planDelete(entry: InstructionEntry, name: string): InstructionPlan {
+function planDelete(
+  entry: InstructionEntry,
+  name: string,
+  ctx: SkillsContext,
+  data: Pick<InstructionData, "entries" | "claude">,
+): InstructionPlan {
+  // The project's AGENTS.md takes over for a CLAUDE.md that every Claude then reads it instead of.
+  const claude = claudeAfterClaudeMd(ctx, data);
+  const replaced =
+    isProjectClaudeFile(entry) &&
+    hasProjectAgentsFile(data.entries) &&
+    claude.length > 0 &&
+    claude.every((instance) => instance.after.kind === "reads");
   return {
     change: {
       kind: "delete",
@@ -234,7 +376,9 @@ function planDelete(entry: InstructionEntry, name: string): InstructionPlan {
     },
     confirmation: {
       title: `Delete ${name}?`,
-      body: `This deletes ${name}.`,
+      body: replaced
+        ? `${joinNames(claude.map((instance) => claudeLabel(instance, claude)))} ${claude.length > 1 ? "read" : "reads"} AGENTS.md instead.`
+        : `This deletes ${name}.`,
       notes: [CANT_UNDO_NOTE],
       confirm: "Delete",
       destructive: true,
@@ -246,14 +390,16 @@ function planDelete(entry: InstructionEntry, name: string): InstructionPlan {
 export function instructionsToCheckWithGit(plan: InstructionPlan): readonly string[] | null {
   const { change } = plan;
   if (plan.confirmation === undefined) return null;
-  return (change.kind === "share" || change.kind === "delete") && change.project
-    ? [change.id]
-    : null;
+  if (change.kind === "share" && change.project) {
+    return change.merge ? [change.id, PROJECT_AGENTS_ID] : [change.id];
+  }
+  return change.kind === "delete" && change.project ? [change.id] : null;
 }
 
 /**
  * The plan with a line saying git can undo it, once the server has said which of its files git
- * tracks. A file git doesn't track keeps its plan as it was.
+ * tracks. A file git doesn't track keeps its plan as it was, and a merge needs both of its files
+ * tracked. A change that also sets Claude can only be undone in part.
  */
 export function withInstructionGitNote(
   plan: InstructionPlan,
@@ -261,12 +407,16 @@ export function withInstructionGitNote(
 ): InstructionPlan {
   const { change, confirmation } = plan;
   if (!confirmation || (change.kind !== "share" && change.kind !== "delete")) return plan;
-  if (!tracked.includes(change.id)) return plan;
+  const files =
+    change.kind === "share" && change.merge ? [change.id, PROJECT_AGENTS_ID] : [change.id];
+  if (!files.every((id) => tracked.includes(id))) return plan;
+  const note =
+    change.kind === "share" && change.claude.length > 0 ? GIT_UNDO_FILE_NOTE : GIT_UNDO_NOTE;
   return {
     ...plan,
     confirmation: {
       ...confirmation,
-      notes: [...confirmation.notes.filter((note) => note !== CANT_UNDO_NOTE), GIT_UNDO_NOTE],
+      notes: [...confirmation.notes.filter((item) => item !== CANT_UNDO_NOTE), note],
     },
   };
 }
@@ -281,17 +431,22 @@ export type InstructionAttention = {
   readonly fix: InstructionFix | null;
 };
 
+/** The two headings of the Instructions card. */
+export type InstructionGroup = "project" | "global";
+
+const GROUP_LABEL: Record<InstructionGroup, string> = { project: "Project", global: "Global" };
+
 export type InstructionRow = {
   readonly id: string;
   readonly entry: InstructionEntry;
-  /** The row's title in the list. */
+  /** The row's title in the list: the file's name. */
   readonly title: string;
   /** The title of the open file. */
   readonly heading: string;
-  /** The line under the title; null when there is nothing to say. */
-  readonly subtitle: string | null;
-  /** The line under the title of the open file: its file name, or what the heading leaves out. */
+  /** The line under the title of the open file: its group, or the folder of a subfolder file. */
   readonly headingNote: string;
+  /** The heading the row sits under in the list. */
+  readonly group: InstructionGroup;
   /** The file isn't there yet, and the row offers to create it. */
   readonly missing: boolean;
   /** Clicking the row opens one switch per agent in place; the Global file does once it exists. */
@@ -301,11 +456,7 @@ export type InstructionRow = {
   readonly rank: number;
 };
 
-const SHARED_WITH_TEAM = "Shared with your team";
-const PERSONAL_NOTES = "Your own notes for this project";
-const NO_INSTRUCTIONS = "No instructions yet";
-
-type Labels = { title: string; heading: string; subtitle: string | null; headingNote?: string };
+type Labels = Pick<InstructionRow, "title" | "heading" | "headingNote">;
 
 /** The folder and file name of a file in a subfolder, such as `apps/web` and `AGENTS.md`. */
 function splitNested(entry: InstructionEntry) {
@@ -314,54 +465,55 @@ function splitNested(entry: InstructionEntry) {
   return { folder: cut < 0 ? "" : path.slice(0, cut), file: path.slice(cut + 1) };
 }
 
-/** What a file is called, or null for one the list doesn't show. */
-function labelsFor(entry: InstructionEntry, ctx: SkillsContext): Labels | null {
+/**
+ * What a file is called, or null for one the list doesn't show. A title is the file's name; the
+ * open file's note says whether it is the project's or Global.
+ */
+function labelsFor(
+  entry: InstructionEntry,
+  ctx: SkillsContext,
+  entries: readonly InstructionEntry[],
+): Labels | null {
   const name = entryFileName(entry);
-  const owner = entry.owner === undefined ? undefined : agentOf(ctx, entry.owner);
-  const subtitle = entry.exists ? null : NO_INSTRUCTIONS;
+  const named = (title: string, headingNote: string): Labels => ({
+    title,
+    heading: title,
+    headingNote,
+  });
   switch (entry.scope) {
     case "managed":
-      return {
-        title: "Set by your organization",
-        heading: "Set by your organization",
-        subtitle: "Read-only",
-      };
-    case "project":
-      if (isProjectAgentsFile(entry)) {
-        return { title: "This project", heading: "This project", subtitle };
-      }
-      if (entry.kind === "claudeLocal") {
-        return { title: "Just you", heading: "Just you", subtitle: PERSONAL_NOTES };
-      }
+      return named("Set by your organization", name);
+    case "project": {
+      if (isProjectAgentsFile(entry)) return named("AGENTS.md", GROUP_LABEL.project);
       if (entry.kind === "nested") {
         const { folder, file } = splitNested(entry);
-        return {
-          title: folder || file,
-          heading: folder || file,
-          subtitle: null,
-          headingNote: file,
-        };
+        return named(file, folder ? `In ${folder}` : GROUP_LABEL.project);
       }
-      return { title: name, heading: name, subtitle: SHARED_WITH_TEAM };
-    case "global":
-      if (entry.kind === "shared") return { title: "Global", heading: "Global", subtitle };
+      return named(name, GROUP_LABEL.project);
+    }
+    case "global": {
+      if (entry.kind === "shared") return named("AGENTS.md", GROUP_LABEL.global);
       // An agent's own file belongs to an agent that is installed and enabled.
+      const owner = entry.owner === undefined ? undefined : agentOf(ctx, entry.owner);
       if (owner === undefined) return null;
-      return entry.kind === "claude"
-        ? {
-            title: `${owner.displayName}'s own notes`,
-            heading: `${owner.displayName}'s own notes`,
-            subtitle: null,
-          }
-        : {
-            title: `${owner.displayName}'s own instructions`,
-            heading: `${owner.displayName}'s own instructions`,
-            subtitle: null,
-          };
+      if (entry.kind === "claude") {
+        // Two Claude instances each have a CLAUDE.md, so each says whose it is.
+        const several =
+          entries.filter(
+            (other) =>
+              other.scope === "global" &&
+              other.kind === "claude" &&
+              other.owner !== undefined &&
+              agentOf(ctx, other.owner) !== undefined,
+          ).length > 1;
+        return named(several ? `${owner.displayName}'s ${name}` : name, GROUP_LABEL.global);
+      }
+      return named(`${owner.displayName}'s ${name}`, GROUP_LABEL.global);
+    }
   }
 }
 
-/** Order in the list: the project, then Global, then each agent's own, then the organization. */
+/** Order in the list: the project's files, then Global, then each agent's own, then the organization. */
 function rank(entry: InstructionEntry) {
   if (entry.scope === "project") {
     if (entry.kind === "shared") return 0;
@@ -374,9 +526,6 @@ function rank(entry: InstructionEntry) {
   return 7;
 }
 
-/** The subfolder files sit after the project's own and before Global. */
-const SUBFOLDERS_RANK = 3;
-
 /** Agents that don't read the entry and could be switched on, with the reason that blocks them left out. */
 function switchableAgents(entry: InstructionEntry, ctx: SkillsContext) {
   return listedAgents(entry, ctx).filter((agent) => {
@@ -387,10 +536,23 @@ function switchableAgents(entry: InstructionEntry, ctx: SkillsContext) {
   });
 }
 
+/** An agent's own Global file, when it has one: the one that keeps the agent from reading Global. */
+const ownGlobalFile = (
+  agent: Pick<SkillAgent, "instanceId">,
+  entries: readonly InstructionEntry[],
+) =>
+  entries.find(
+    (other) =>
+      other.scope === "global" &&
+      other.kind === "agentOwn" &&
+      other.exists &&
+      other.owner === agent.instanceId,
+  );
+
 function attentionFor(
   entry: InstructionEntry,
   ctx: SkillsContext,
-  entries: readonly InstructionEntry[],
+  data: Pick<InstructionData, "entries" | "claude">,
 ): InstructionAttention | null {
   if (!entry.exists || entry.readOnly) return null;
   if (isProjectAgentsFile(entry)) {
@@ -415,32 +577,36 @@ function attentionFor(
   }
   if (isGlobalFile(entry)) {
     const missing = switchableAgents(entry, ctx);
-    if (missing.length === 0) return null;
+    if (missing.length > 0) {
+      return {
+        detail: `Not used by ${joinNames(missing.map((agent) => agent.displayName))}`,
+        fix: {
+          label:
+            missing.length === 1
+              ? `Turn on for ${missing[0]!.displayName}`
+              : "Turn on for all agents",
+          plan: enablePlan(entry.id, "enable", missing),
+        },
+      };
+    }
+    // What is left is agents that keep a file of their own, which Global can take over.
+    const own = listedAgents(entry, ctx).flatMap((agent): OwnFile[] => {
+      if (accessFor(entry, agent)?.reason !== "ownFile") return [];
+      const file = ownGlobalFile(agent, data.entries);
+      return file ? [{ entry: file, name: agent.displayName }] : [];
+    });
+    if (own.length === 0) return null;
     return {
-      detail: `Not used by ${joinNames(missing.map((agent) => agent.displayName))}`,
-      fix: {
-        label:
-          missing.length === 1
-            ? `Turn on for ${missing[0]!.displayName}`
-            : "Turn on for all agents",
-        plan: enablePlan(entry.id, "enable", missing),
-      },
+      detail: `${joinNames(own.map((file) => file.name))} ${own.length === 1 ? "uses its" : "use their"} own AGENTS.md instead`,
+      fix: { label: "Use Global instead", plan: planAdopt(own) },
     };
   }
-  if (entry.scope === "global" && entry.kind === "agentOwn" && entry.sameAsShared !== true) {
-    const owner = entry.owner === undefined ? undefined : agentOf(ctx, entry.owner);
-    if (!owner) return null;
-    return {
-      detail: "Not using your Global instructions",
-      fix: { label: "Use Global instead", plan: planAdopt(entry, owner.displayName) },
-    };
-  }
-  if (isProjectClaudeFile(entry) && !hasProjectAgentsFile(entries)) {
+  if (isProjectClaudeFile(entry)) {
     const missing = usage(entry, ctx).missing;
     if (missing.length === 0) return null;
     return {
       detail: `Not used by ${joinNames(missing.map((agent) => agent.displayName))}`,
-      fix: { label: "Share with all agents", plan: planShare(entry) },
+      fix: shareFix(entry, ctx, data),
     };
   }
   return null;
@@ -449,24 +615,31 @@ function attentionFor(
 const hasProjectAgentsFile = (entries: readonly InstructionEntry[]) =>
   entries.some((entry) => isProjectAgentsFile(entry) && entry.exists);
 
+/** Moving the project's CLAUDE.md to AGENTS.md, or merging it into the one that is there. */
+const shareFix = (
+  entry: InstructionEntry,
+  ctx: SkillsContext,
+  data: Pick<InstructionData, "entries" | "claude">,
+): InstructionFix => ({
+  label: hasProjectAgentsFile(data.entries) ? "Merge into AGENTS.md" : "Move to AGENTS.md",
+  plan: planShare(entry, ctx, data),
+});
+
 function buildRow(
   entry: InstructionEntry,
   ctx: SkillsContext,
-  entries: readonly InstructionEntry[],
+  data: Pick<InstructionData, "entries" | "claude">,
 ): InstructionRow | null {
-  const labels = labelsFor(entry, ctx);
+  const labels = labelsFor(entry, ctx, data.entries);
   if (!labels) return null;
-  const { headingNote, ...text } = labels;
-  const fileName = entryFileName(entry);
   return {
     id: entry.id,
     entry,
-    ...text,
-    // A heading that is the file's name has said it; the note says who shares it instead.
-    headingNote: headingNote ?? (text.heading === fileName ? (text.subtitle ?? "") : fileName),
+    ...labels,
+    group: entry.scope === "project" ? "project" : "global",
     missing: !entry.exists,
     expandable: isGlobalFile(entry) && entry.exists,
-    attention: attentionFor(entry, ctx, entries),
+    attention: attentionFor(entry, ctx, data),
     rank: rank(entry),
   };
 }
@@ -474,32 +647,39 @@ function buildRow(
 /**
  * The files the Instructions section lists: the ones that exist, plus a missing project AGENTS.md,
  * CLAUDE.local.md and Global file, so there is something to create. Subfolder files are listed
- * together in `nestedFiles`.
+ * together in `nestedFiles`, and an agent's own Global file shows as a line on the Global file
+ * instead. A top-folder CLAUDE.md row takes the place of a missing project AGENTS.md, since moving
+ * it to AGENTS.md creates that file. Apart from the AGENTS.md files, a file no installed agent reads has no row, such as
+ * CLAUDE.md with Claude off.
  */
 export function instructionRows(
-  data: Pick<InstructionData, "entries">,
+  data: Pick<InstructionData, "entries" | "claude">,
   ctx: SkillsContext,
 ): InstructionRow[] {
-  return data.entries
-    .filter(
-      (entry) =>
-        entry.kind !== "nested" &&
-        (entry.exists || entry.kind === "shared" || entry.kind === "claudeLocal"),
-    )
-    .map((entry, index) => ({ row: buildRow(entry, ctx, data.entries), index }))
+  const listed = data.entries.filter(
+    (entry) =>
+      entry.kind !== "nested" &&
+      entry.kind !== "agentOwn" &&
+      (entry.exists || entry.kind === "shared" || entry.kind === "claudeLocal") &&
+      (entry.kind === "shared" || usage(entry, ctx).agents.length > 0),
+  );
+  const hasProjectClaude = listed.some(isProjectClaudeFile);
+  return listed
+    .filter((entry) => !(hasProjectClaude && isProjectAgentsFile(entry) && !entry.exists))
+    .map((entry, index) => ({ row: buildRow(entry, ctx, data), index }))
     .flatMap((item) => (item.row ? [{ ...item, row: item.row }] : []))
     .sort((a, b) => a.row.rank - b.row.rank || a.index - b.index)
     .map(({ row }) => row);
 }
 
-/** One file by id, to open it. A subfolder file is found here too. */
+/** One file by id, to open it. A subfolder file and an agent's own Global file are found here too. */
 export function findInstructionRow(
-  data: Pick<InstructionData, "entries">,
+  data: Pick<InstructionData, "entries" | "claude">,
   ctx: SkillsContext,
   id: string,
 ): InstructionRow | null {
   const entry = data.entries.find((candidate) => candidate.id === id);
-  return entry ? buildRow(entry, ctx, data.entries) : null;
+  return entry ? buildRow(entry, ctx, data) : null;
 }
 
 // -- Claude's choice ----------------------------------------------------------------------------
@@ -628,7 +808,7 @@ function claudeSettingChip(
       on: true,
       locked: true,
       plan: null,
-      lines: [`${name} reads it through an import in its CLAUDE.md.`],
+      lines: [`${name} reads it through the project's CLAUDE.md.`],
     };
   }
   if (choice?.value === "managed-only") {
@@ -713,18 +893,12 @@ export function instructionChips(
         };
       }
       if (access.reason === "ownFile") {
-        const own = data.entries.find(
-          (other) =>
-            other.scope === "global" &&
-            other.kind === "agentOwn" &&
-            other.exists &&
-            other.owner === agent.instanceId,
-        );
+        const own = ownGlobalFile(agent, data.entries);
         return {
           agent,
           on,
           locked: own === undefined,
-          plan: own ? planAdopt(own, name) : null,
+          plan: own ? planAdopt([{ entry: own, name }]) : null,
           lines: [`${name} has its own instructions.`],
         };
       }
@@ -752,22 +926,21 @@ export function instructionChips(
 export type InstructionActions = {
   readonly turnOnAll: InstructionPlan | null;
   readonly removeFromAgents: InstructionPlan | null;
-  readonly share: InstructionPlan | null;
+  /** Move the project's CLAUDE.md to AGENTS.md, or merge it into the one that is there. */
+  readonly share: InstructionFix | null;
   readonly useGlobal: InstructionPlan | null;
   readonly remove: InstructionPlan | null;
 };
 
-/** What a delete calls the file: its own name, unless the row's title already is one. */
+/** What a delete calls the file: its title, which is its name, or for a subfolder file its path. */
 const deleteName = (row: InstructionRow) =>
-  row.entry.kind === "claudeLocal" || row.entry.kind === "nested"
-    ? entryFileName(row.entry)
-    : row.title;
+  row.entry.kind === "nested" ? entryFileName(row.entry) : row.title;
 
 /** What the ⋯ menu of an open file can do. */
 export function instructionActions(
   row: InstructionRow,
   ctx: SkillsContext,
-  data: Pick<InstructionData, "entries">,
+  data: Pick<InstructionData, "entries" | "claude">,
 ): InstructionActions {
   const { entry } = row;
   const editable = entry.exists && !entry.readOnly;
@@ -784,26 +957,23 @@ export function instructionActions(
   return {
     turnOnAll: turnOn.length > 0 ? enablePlan(entry.id, "enable", turnOn) : null,
     removeFromAgents: linked.length > 0 ? planRemove(entry, linked) : null,
-    share:
-      editable && isProjectClaudeFile(entry) && !hasProjectAgentsFile(data.entries)
-        ? planShare(entry)
-        : null,
+    share: editable && isProjectClaudeFile(entry) ? shareFix(entry, ctx, data) : null,
     useGlobal:
       editable && entry.scope === "global" && entry.kind === "agentOwn" && owner
-        ? planAdopt(entry, owner.displayName)
+        ? planAdopt([{ entry, name: owner.displayName }])
         : null,
     remove:
       editable && entry.kind !== "shared" && entry.kind !== "managed"
-        ? planDelete(entry, deleteName(row))
+        ? planDelete(entry, deleteName(row), ctx, data)
         : null,
   };
 }
 
 // -- Search and the list ------------------------------------------------------------------------
 
-/** A file matches by its title and its file name, such as "agents.md". */
+/** A file matches by its title, its file name such as "agents.md", and its group or folder. */
 export const matchesInstructionQuery = (row: InstructionRow, needle: string) =>
-  `${row.title} ${entryFileName(row.entry)}`.toLowerCase().includes(needle);
+  `${row.title} ${entryFileName(row.entry)} ${row.headingNote}`.toLowerCase().includes(needle);
 
 export const matchesClaudeQuery = (row: ClaudeRow, needle: string) =>
   `${row.title} ${row.agent.displayName} claude agents.md`.toLowerCase().includes(needle);
@@ -813,20 +983,22 @@ const matchesNestedQuery = (file: NestedFile, needle: string) =>
 
 /** Files that need a look, whatever the search and filter show. */
 export const instructionAttentionCount = (
-  data: Pick<InstructionData, "entries">,
+  data: Pick<InstructionData, "entries" | "claude">,
   ctx: SkillsContext,
 ) => instructionRows(data, ctx).filter((row) => row.attention !== null).length;
 
 /** What the Instructions card shows, in order. */
 export type InstructionItem =
+  | { readonly kind: "group"; readonly group: InstructionGroup; readonly label: string }
   | { readonly kind: "file"; readonly row: InstructionRow }
   | { readonly kind: "subfolders"; readonly files: readonly NestedFile[] }
   | { readonly kind: "claude"; readonly row: ClaudeRow };
 
 /**
- * The card's items for a search and the Needs attention filter: the files, with the subfolder
- * files folded into one item after the project's own, then Claude's choice. A search narrows the
- * subfolder files too; the filter leaves out what can't need attention.
+ * The card's items for a search and the Needs attention filter, under a Project and a Global
+ * heading. Project holds its files and the subfolder files folded into one item; Global holds its
+ * files, then Claude's choice. A heading is only there when something is under it. A search
+ * narrows the subfolder files too; the filter leaves out what can't need attention.
  */
 export function instructionItems(
   data: Pick<InstructionData, "entries" | "claude">,
@@ -843,13 +1015,21 @@ export function instructionItems(
   const claude = onlyAttention
     ? []
     : claudeRows(data.claude, ctx).filter((row) => matchesClaudeQuery(row, needle));
-  const before = rows.filter((row) => row.rank < SUBFOLDERS_RANK);
-  const after = rows.filter((row) => row.rank >= SUBFOLDERS_RANK);
+  const files = (group: InstructionGroup) =>
+    rows
+      .filter((row) => row.group === group)
+      .map((row): InstructionItem => ({ kind: "file", row }));
+  const under = (group: InstructionGroup, items: readonly InstructionItem[]): InstructionItem[] =>
+    items.length === 0 ? [] : [{ kind: "group", group, label: GROUP_LABEL[group] }, ...items];
   return [
-    ...before.map((row): InstructionItem => ({ kind: "file", row })),
-    ...(subfolders.length > 0 ? [{ kind: "subfolders" as const, files: subfolders }] : []),
-    ...after.map((row): InstructionItem => ({ kind: "file", row })),
-    ...claude.map((row): InstructionItem => ({ kind: "claude", row })),
+    ...under("project", [
+      ...files("project"),
+      ...(subfolders.length > 0 ? [{ kind: "subfolders" as const, files: subfolders }] : []),
+    ]),
+    ...under("global", [
+      ...files("global"),
+      ...claude.map((row): InstructionItem => ({ kind: "claude", row })),
+    ]),
   ];
 }
 
@@ -920,7 +1100,7 @@ export function describeAgentsResult(
 }
 
 /** One status line for a change that has no per-agent outcome. */
-export function describeChange(change: InstructionChange, ctx: SkillsContext) {
+export function describeChange(change: InstructionChange, ctx: SkillsContext): string {
   switch (change.kind) {
     case "setClaude": {
       const names = claudeNames(change.instances, ctx);
@@ -934,9 +1114,15 @@ export function describeChange(change: InstructionChange, ctx: SkillsContext) {
       return `${names} ${many ? "follow" : "follows"} ${many ? "their" : "its"} default again.`;
     }
     case "adopt":
-      return `${change.agent} now uses your Global instructions.`;
-    case "share":
-      return "CLAUDE.md is now AGENTS.md.";
+      return `${joinNames(change.names)} now ${change.names.length > 1 ? "use" : "uses"} your Global instructions.`;
+    case "share": {
+      const lead = change.merge
+        ? "Merged CLAUDE.md into AGENTS.md."
+        : "CLAUDE.md is now AGENTS.md.";
+      return change.claude.length === 0
+        ? lead
+        : `${lead} ${describeChange({ kind: "setClaude", instances: change.claude, value: "claude-md-and-agents-md" }, ctx)}`;
+    }
     case "delete":
       return `Deleted ${change.name}.`;
     case "enable":

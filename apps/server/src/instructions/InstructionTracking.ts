@@ -1,6 +1,6 @@
 /**
  * InstructionTracking - tells which project instruction files git tracks, so a confirmation for
- * renaming or deleting one can say whether git can undo it.
+ * moving, merging or deleting one can say whether git can undo it.
  *
  * It is separate from `InstructionCatalog` because the catalog's list spawns nothing and loads on
  * every page open; this runs one `git ls-files` for all the files asked about, and only when a

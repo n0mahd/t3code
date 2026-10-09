@@ -147,42 +147,46 @@ describe("ingestInstructions", () => {
 });
 
 describe("the rows", () => {
-  const managed = () =>
-    entry("managed:claude", { scope: "managed", kind: "managed", readOnly: true });
+  const managed = (reach: Reach = { claudeAgent: { state: "direct" } }) =>
+    entry(
+      "managed:claude",
+      { scope: "managed", kind: "managed", readOnly: true, path: "/etc/claude-code/CLAUDE.md" },
+      reach,
+    );
 
-  it("names each kind of file, and says only what the title leaves out", () => {
+  it("titles each file with its name, and says nothing else on the row", () => {
     const rows = rowsFor([
       projectAgents(),
       projectClaude("CLAUDE.md"),
       projectClaude(".claude/CLAUDE.md"),
-      projectClaude("CLAUDE.local.md", { claudeAgent: { state: "direct" } }),
+      projectClaude("CLAUDE.local.md"),
       sharedFile(),
-      ownFile("codex"),
       managed(),
     ]);
-    expect(rows.map((row) => [row.title, row.subtitle])).toEqual([
-      ["This project", null],
-      ["CLAUDE.md", "Shared with your team"],
-      [".claude/CLAUDE.md", "Shared with your team"],
-      ["Just you", "Your own notes for this project"],
-      ["Global", null],
-      ["Codex's own instructions", null],
-      ["Set by your organization", "Read-only"],
+    expect(rows.map((row) => [row.title, row.group, row.attention])).toEqual([
+      ["AGENTS.md", "project", null],
+      ["CLAUDE.md", "project", expect.anything()],
+      [".claude/CLAUDE.md", "project", null],
+      ["CLAUDE.local.md", "project", null],
+      ["AGENTS.md", "global", expect.anything()],
+      ["Set by your organization", "global", null],
     ]);
   });
 
-  it("gives the open file the same heading, and its file name under it", () => {
+  it("gives the open file the same heading, with its group or its file name under it", () => {
     const rows = rowsFor([
       projectAgents(),
       projectClaude("CLAUDE.md"),
       projectClaude("CLAUDE.local.md"),
       sharedFile(),
+      managed(),
     ]);
     expect(rows.map((row) => [row.heading, row.headingNote])).toEqual([
-      ["This project", "AGENTS.md"],
-      ["CLAUDE.md", "Shared with your team"],
-      ["Just you", "CLAUDE.local.md"],
-      ["Global", "AGENTS.md"],
+      ["AGENTS.md", "Project"],
+      ["CLAUDE.md", "Project"],
+      ["CLAUDE.local.md", "Project"],
+      ["AGENTS.md", "Global"],
+      ["Set by your organization", "CLAUDE.md"],
     ]);
   });
 
@@ -193,10 +197,10 @@ describe("the rows", () => {
       local,
       sharedFile({}, { exists: false, size: 0 }),
     ]);
-    expect(rows.map((row) => [row.title, row.subtitle, row.missing])).toEqual([
-      ["This project", "No instructions yet", true],
-      ["Just you", "Your own notes for this project", true],
-      ["Global", "No instructions yet", true],
+    expect(rows.map((row) => [row.title, row.missing, row.attention])).toEqual([
+      ["AGENTS.md", true, null],
+      ["CLAUDE.local.md", true, null],
+      ["AGENTS.md", true, null],
     ]);
   });
 
@@ -214,70 +218,140 @@ describe("the rows", () => {
     ).toEqual(["CLAUDE.md"]);
   });
 
-  it("puts the project first, then Global, then each agent's own, then the organization", () => {
+  it("puts the project's files first, then Global's, then the organization's", () => {
     const rows = rowsFor([
       managed(),
-      ownFile("pi"),
-      entry("global:claude:claudeAgent", {
-        scope: "global",
-        kind: "claude",
-        owner: ProviderInstanceId.make("claudeAgent"),
-      }),
+      entry(
+        "global:claude:claudeAgent",
+        {
+          scope: "global",
+          kind: "claude",
+          path: "/home/user/.claude/CLAUDE.md",
+          owner: ProviderInstanceId.make("claudeAgent"),
+        },
+        { claudeAgent: { state: "direct" } },
+      ),
       sharedFile(),
       projectClaude("CLAUDE.local.md"),
       projectClaude("CLAUDE.md"),
       projectAgents(),
     ]);
-    expect(rows.map((row) => row.title)).toEqual([
-      "This project",
-      "CLAUDE.md",
-      "Just you",
-      "Global",
-      "Claude's own notes",
-      "Pi's own instructions",
-      "Set by your organization",
+    expect(rows.map((row) => [row.group, row.title])).toEqual([
+      ["project", "AGENTS.md"],
+      ["project", "CLAUDE.md"],
+      ["project", "CLAUDE.local.md"],
+      ["global", "AGENTS.md"],
+      ["global", "CLAUDE.md"],
+      ["global", "Set by your organization"],
     ]);
   });
 
-  it("names the instance when an agent has more than one", () => {
+  it("names whose CLAUDE.md it is only when two Claude instances each have one", () => {
     const withTwo = { installed: [claude, claudeWork] };
     const own = (instanceId: string) =>
-      entry(`global:claude:${instanceId}`, {
-        scope: "global",
-        kind: "claude",
-        owner: ProviderInstanceId.make(instanceId),
-      });
+      entry(
+        `global:claude:${instanceId}`,
+        {
+          scope: "global",
+          kind: "claude",
+          path: "/home/user/.claude/CLAUDE.md",
+          owner: ProviderInstanceId.make(instanceId),
+        },
+        { [instanceId]: { state: "direct" } },
+      );
     expect(rowsFor([own("claudeAgent"), own("claude_work")], withTwo).map((r) => r.title)).toEqual([
-      "Claude's own notes",
-      "Claude Work's own notes",
+      "Claude's CLAUDE.md",
+      "Claude Work's CLAUDE.md",
+    ]);
+    expect(rowsFor([own("claudeAgent")], withTwo).map((r) => r.title)).toEqual(["CLAUDE.md"]);
+    // A second instance that isn't installed doesn't count.
+    expect(
+      rowsFor([own("claudeAgent"), own("claude_work")], { installed: [claude] }).map(
+        (r) => r.title,
+      ),
+    ).toEqual(["CLAUDE.md"]);
+  });
+
+  it("lists no file that no installed agent reads, except the AGENTS.md files", () => {
+    const nobody: Reach = {};
+    const withoutClaude = { installed: [codex, pi] };
+    const reading = [
+      projectAgents(),
+      projectClaude("CLAUDE.md"),
+      projectClaude("CLAUDE.local.md"),
+      sharedFile(),
+      managed(),
+    ];
+    // Claude is off: only it read these three, so their rows go.
+    expect(rowsFor(reading, withoutClaude).map((row) => row.title)).toEqual([
+      "AGENTS.md",
+      "AGENTS.md",
+    ]);
+    // Another agent that reads the file keeps its row.
+    expect(
+      rowsFor(
+        [projectClaude("CLAUDE.md", { codex: { state: "direct" } }), managed(nobody)],
+        withoutClaude,
+      ).map((row) => row.title),
+    ).toEqual(["CLAUDE.md"]);
+    expect(rowsFor(reading).map((row) => row.title)).toHaveLength(5);
+  });
+
+  it("leaves out a missing project AGENTS.md next to a CLAUDE.md, since moving makes it", () => {
+    const missing = projectAgents({}, { exists: false, size: 0 });
+    const titles = (entries: InstructionEntry[]) => rowsFor(entries).map((row) => row.title);
+    // Only when neither file exists does the project offer to create AGENTS.md.
+    expect(titles([missing])).toEqual(["AGENTS.md"]);
+    expect(titles([missing, projectClaude("CLAUDE.md")])).toEqual(["CLAUDE.md"]);
+    // Only the top-folder CLAUDE.md offers the move, so .claude/CLAUDE.md keeps the Create row.
+    expect(titles([missing, projectClaude(".claude/CLAUDE.md")])).toEqual([
+      "AGENTS.md",
+      ".claude/CLAUDE.md",
+    ]);
+    // An AGENTS.md that exists stays, and so does one next to CLAUDE.local.md alone.
+    expect(titles([projectAgents(), projectClaude("CLAUDE.md")])).toEqual([
+      "AGENTS.md",
+      "CLAUDE.md",
+    ]);
+    expect(titles([missing, projectClaude("CLAUDE.local.md")])).toEqual([
+      "AGENTS.md",
+      "CLAUDE.local.md",
     ]);
   });
 
-  it("leaves out an agent's own file when that agent isn't installed", () => {
-    expect(rowsFor([ownFile("codex")], { installed: [claude] })).toEqual([]);
+  it("gives an agent's own Global file no row, but opens it by its id", () => {
+    const own = ownFile("codex");
+    const all = data([sharedFile(), own]);
+    expect(instructionRows(all, ctx).map((row) => row.title)).toEqual(["AGENTS.md"]);
+    expect(findInstructionRow(all, ctx, own.id)).toMatchObject({
+      title: "Codex's AGENTS.md",
+      heading: "Codex's AGENTS.md",
+      headingNote: "Global",
+    });
+    // Its agent has to be installed.
+    expect(findInstructionRow(all, { installed: [claude] }, own.id)).toBeNull();
   });
 
-  it("opens a subfolder file by its folder, with the file name under it", () => {
+  it("opens a subfolder file by its file name, with its folder under it", () => {
     const nested = entry("project:nested:apps/web/AGENTS.md", {
       kind: "nested",
       relativePath: "apps/web/AGENTS.md",
     });
     const all = data([projectAgents(), nested]);
     expect(findInstructionRow(all, ctx, nested.id)).toMatchObject({
-      title: "apps/web",
-      heading: "apps/web",
-      headingNote: "AGENTS.md",
-      subtitle: null,
+      title: "AGENTS.md",
+      heading: "AGENTS.md",
+      headingNote: "In apps/web",
     });
     expect(findInstructionRow(all, ctx, "gone")).toBeNull();
   });
 
   it("expands only the Global file, and only once it exists", () => {
     const rows = rowsFor([projectAgents(), projectClaude("CLAUDE.local.md"), sharedFile()]);
-    expect(rows.map((row) => [row.title, row.expandable])).toEqual([
-      ["This project", false],
-      ["Just you", false],
-      ["Global", true],
+    expect(rows.map((row) => [row.group, row.title, row.expandable])).toEqual([
+      ["project", "AGENTS.md", false],
+      ["project", "CLAUDE.local.md", false],
+      ["global", "AGENTS.md", true],
     ]);
     expect(rowsFor([sharedFile({}, { exists: false })])[0]!.expandable).toBe(false);
   });
@@ -294,53 +368,55 @@ describe("the card's items", () => {
     sharedFile(),
     ownFile("codex"),
   ];
-  const labels = (view: { needle: string; onlyAttention: boolean }) =>
-    instructionItems(data(entries), ctx, view).map((item) =>
-      item.kind === "file"
-        ? item.row.title
-        : item.kind === "claude"
-          ? item.row.title
-          : `${item.files.length} in subfolders`,
-    );
+  const labels = (view: { needle: string; onlyAttention: boolean }, list = entries) =>
+    instructionItems(data(list), ctx, view).map((item) => {
+      switch (item.kind) {
+        case "group":
+          return `# ${item.label}`;
+        case "file":
+          return `${item.row.group}:${item.row.title}`;
+        case "claude":
+          return item.row.title;
+        case "subfolders":
+          return `${item.files.length} in subfolders`;
+      }
+    });
 
-  it("folds the subfolder files into one item between the project's files and Global", () => {
+  it("puts the project's files and the subfolder files under Project, and Global's under Global", () => {
     expect(labels({ needle: "", onlyAttention: false })).toEqual([
-      "This project",
-      "Just you",
+      "# Project",
+      "project:AGENTS.md",
+      "project:CLAUDE.local.md",
       "2 in subfolders",
-      "Global",
-      "Codex's own instructions",
+      "# Global",
+      "global:AGENTS.md",
       "Claude reads AGENTS.md",
     ]);
   });
 
-  it("narrows a search to the subfolder files that match", () => {
-    expect(labels({ needle: "apps/web", onlyAttention: false })).toEqual(["1 in subfolders"]);
-    expect(labels({ needle: "agents.md", onlyAttention: false })).toEqual([
-      "This project",
+  it("shows a heading only when something is under it", () => {
+    // The subfolder files and the project's files all miss "global".
+    expect(labels({ needle: "global", onlyAttention: false })).toEqual([
+      "# Global",
+      "global:AGENTS.md",
+    ]);
+    expect(labels({ needle: "apps/web", onlyAttention: false })).toEqual([
+      "# Project",
       "1 in subfolders",
-      "Global",
-      "Codex's own instructions",
-      "Claude reads AGENTS.md",
     ]);
     expect(labels({ needle: "tdd", onlyAttention: false })).toEqual([]);
-  });
-
-  it("keeps only what needs attention under that filter", () => {
-    // Codex's own file isn't using Global, and the Global file isn't used by Claude, Codex or Pi.
-    expect(labels({ needle: "", onlyAttention: true })).toEqual([
-      "Global",
-      "Codex's own instructions",
-    ]);
-    expect(instructionAttentionCount(data(entries), ctx)).toBe(2);
-  });
-
-  it("lists the files alone without a project", () => {
+    // Without a project only Global appears, with its heading.
     expect(
       instructionItems(data([sharedFile()], []), ctx, { needle: "", onlyAttention: false }).map(
         (item) => item.kind,
       ),
-    ).toEqual(["file"]);
+    ).toEqual(["group", "file"]);
+  });
+
+  it("keeps only what needs attention under that filter", () => {
+    // Nobody reads the Global file yet, and the project's files are fine.
+    expect(labels({ needle: "", onlyAttention: true })).toEqual(["# Global", "global:AGENTS.md"]);
+    expect(instructionAttentionCount(data(entries), ctx)).toBe(1);
   });
 });
 
@@ -462,7 +538,7 @@ describe("what needs attention", () => {
     });
   });
 
-  it("doesn't blame an agent that keeps its own file, or one that is too old", () => {
+  it("doesn't blame an agent that is too old, or one that keeps a file we can't find", () => {
     const reach: Reach = {
       claudeAgent: { state: "import" },
       codex: { state: "none", reason: "ownFile" },
@@ -475,65 +551,175 @@ describe("what needs attention", () => {
     expect(rowsFor([sharedFile({}, { exists: false })])[0]!.attention).toBeNull();
   });
 
-  it("offers an agent's own file Global, and says its text is added", () => {
-    const [row] = rowsFor([ownFile("codex")]);
-    expect(row!.attention).toMatchObject({
-      detail: "Not using your Global instructions",
-      fix: { label: "Use Global instead" },
+  describe("an agent that keeps its own Global file", () => {
+    const keeps: Reach = {
+      claudeAgent: { state: "import" },
+      codex: { state: "none", reason: "ownFile" },
+      pi: { state: "none", reason: "ownFile" },
+    };
+    const global = (list: InstructionEntry[], context = ctx) =>
+      rowsFor(list, context).find((row) => row.group === "global")!;
+
+    it("says so on Global, with a fix that takes the agent's file in", () => {
+      const row = global([sharedFile({ ...keeps, pi: { state: "link" } }), ownFile("codex")]);
+      expect(row.attention).toMatchObject({
+        detail: "Codex uses its own AGENTS.md instead",
+        fix: { label: "Use Global instead" },
+      });
+      expect(row.attention!.fix!.plan).toEqual({
+        change: { kind: "adopt", ids: ["global:agentOwn:codex"], names: ["Codex"] },
+        confirmation: {
+          title: "Use your Global instructions for Codex?",
+          body: "Codex's instructions are added to your Global instructions. Codex then reads them instead.",
+          notes: [],
+          confirm: "Use Global instead",
+          destructive: false,
+        },
+      });
     });
-    expect(row!.attention!.fix!.plan).toEqual({
-      change: { kind: "adopt", id: "global:agentOwn:codex", agent: "Codex" },
-      confirmation: {
-        title: "Use your Global instructions for Codex?",
-        body: "Codex's instructions are added to your Global instructions. Codex then reads them instead.",
-        notes: [],
-        confirm: "Use Global instead",
-        destructive: false,
-      },
+
+    it("takes every such agent in one confirmation", () => {
+      const row = global([sharedFile(keeps), ownFile("codex"), ownFile("pi")]);
+      expect(row.attention!.detail).toBe("Codex and Pi use their own AGENTS.md instead");
+      expect(row.attention!.fix!.plan).toEqual({
+        change: {
+          kind: "adopt",
+          ids: ["global:agentOwn:codex", "global:agentOwn:pi"],
+          names: ["Codex", "Pi"],
+        },
+        confirmation: {
+          title: "Use your Global instructions for Codex and Pi?",
+          body: "Codex and Pi's instructions are added to your Global instructions. They then read them instead.",
+          notes: [],
+          confirm: "Use Global instead",
+          destructive: false,
+        },
+      });
+    });
+
+    it("says they just start using Global when every file matches it", () => {
+      const same = { sameAsShared: true };
+      const both = global([sharedFile(keeps), ownFile("codex", same), ownFile("pi", same)]);
+      expect(both.attention!.fix!.plan.confirmation!.body).toBe(
+        "Codex and Pi's instructions match your Global instructions, so they just start using them.",
+      );
+      const one = global([sharedFile(keeps), ownFile("codex", same), ownFile("pi")]);
+      expect(one.attention!.fix!.plan.confirmation!.body).toBe(
+        "Codex and Pi's instructions are added to your Global instructions. They then read them instead.",
+      );
+      const single = global([
+        sharedFile({ ...keeps, pi: { state: "link" } }),
+        ownFile("codex", same),
+      ]);
+      expect(single.attention!.fix!.plan.confirmation!.body).toBe(
+        "Codex's instructions match your Global instructions, so Codex just starts using them.",
+      );
+    });
+
+    it("turns agents on first, when some simply can be", () => {
+      const row = global([sharedFile({ ...keeps, pi: { state: "none" } }), ownFile("codex")]);
+      expect(row.attention).toMatchObject({
+        detail: "Not used by Pi",
+        fix: { label: "Turn on for Pi" },
+      });
+    });
+
+    it("needs the agent installed and a file of its own to take", () => {
+      expect(global([sharedFile(keeps)]).attention).toBeNull();
+      expect(
+        global([sharedFile(keeps), ownFile("codex")], { installed: [claude, pi] }).attention,
+      ).toBeNull();
+      expect(
+        global([sharedFile(keeps), { ...ownFile("codex"), exists: false }]).attention,
+      ).toBeNull();
     });
   });
 
-  it("doesn't flag an agent's own file that has Global's text already", () => {
-    expect(rowsFor([ownFile("codex", { sameAsShared: true })])[0]!.attention).toBeNull();
-  });
+  describe("a project's CLAUDE.md", () => {
+    const noAgents = () => projectAgents({}, { exists: false });
+    const claudeMdRow = (list: InstructionEntry[]) =>
+      rowsFor(list).find((row) => row.title === "CLAUDE.md")!;
 
-  it("offers to share a CLAUDE.md that no AGENTS.md sits beside", () => {
-    const rows = rowsFor([
-      projectAgents({}, { exists: false }),
-      projectClaude("CLAUDE.md"),
-      projectClaude(".claude/CLAUDE.md"),
-    ]);
-    const claudeMd = rows.find((row) => row.title === "CLAUDE.md");
-    expect(claudeMd!.attention).toMatchObject({
-      detail: "Not used by Codex and Pi",
-      fix: { label: "Share with all agents" },
+    it("offers to move it to AGENTS.md when no AGENTS.md sits beside it", () => {
+      const row = claudeMdRow([noAgents(), projectClaude("CLAUDE.md")]);
+      expect(row.attention).toMatchObject({
+        detail: "Not used by Codex and Pi",
+        fix: { label: "Move to AGENTS.md" },
+      });
+      expect(row.attention!.fix!.plan).toEqual({
+        change: {
+          kind: "share",
+          id: "project:claude:CLAUDE.md",
+          project: true,
+          merge: false,
+          claude: [],
+        },
+        confirmation: {
+          title: "Move CLAUDE.md to AGENTS.md?",
+          body: "Every agent reads AGENTS.md, so Codex and Pi get these instructions too.",
+          notes: [],
+          confirm: "Move",
+          destructive: false,
+        },
+      });
+      // Only the one in the top folder can move.
+      expect(rowsFor([noAgents(), projectClaude(".claude/CLAUDE.md")])[0]!.attention).toBeNull();
     });
-    expect(claudeMd!.attention!.fix!.plan).toEqual({
-      change: { kind: "share", id: "project:claude:CLAUDE.md", project: true },
-      confirmation: {
-        title: "Share with all agents?",
-        body: "CLAUDE.md becomes AGENTS.md, so every agent reads it.",
-        notes: [],
-        confirm: "Share",
-        destructive: false,
-      },
-    });
-    // Only the one in the top folder can be renamed.
-    expect(rows.find((row) => row.title === ".claude/CLAUDE.md")!.attention).toBeNull();
-  });
 
-  it("leaves CLAUDE.md alone when AGENTS.md exists, or when every agent reads it already", () => {
-    expect(rowsFor([projectAgents(), projectClaude("CLAUDE.md")])[1]!.attention).toBeNull();
-    const everyone = entry(
-      "project:claude:CLAUDE.md",
-      { kind: "claude", relativePath: "CLAUDE.md" },
-      { claudeAgent: { state: "direct" }, codex: { state: "direct" }, pi: { state: "direct" } },
-    );
-    expect(rowsFor([projectAgents({}, { exists: false }), everyone])[1]!.attention).toBeNull();
+    it("offers to merge it into the AGENTS.md that is there", () => {
+      const row = claudeMdRow([projectAgents(), projectClaude("CLAUDE.md")]);
+      expect(row.attention).toMatchObject({
+        detail: "Not used by Codex and Pi",
+        fix: { label: "Merge into AGENTS.md" },
+      });
+      expect(row.attention!.fix!.plan).toEqual({
+        change: {
+          kind: "share",
+          id: "project:claude:CLAUDE.md",
+          project: true,
+          merge: true,
+          claude: [],
+        },
+        confirmation: {
+          title: "Merge CLAUDE.md into AGENTS.md?",
+          body: "Its text goes at the end of AGENTS.md, then CLAUDE.md is deleted. Every agent reads AGENTS.md from then on.",
+          notes: [],
+          confirm: "Merge",
+          destructive: false,
+        },
+      });
+    });
+
+    it("leaves it alone when every agent reads it already", () => {
+      const everyone = entry(
+        "project:claude:CLAUDE.md",
+        { kind: "claude", relativePath: "CLAUDE.md" },
+        { claudeAgent: { state: "direct" }, codex: { state: "direct" }, pi: { state: "direct" } },
+      );
+      expect(rowsFor([noAgents(), everyone])[0]!.attention).toBeNull();
+      expect(rowsFor([projectAgents(), everyone])[1]!.attention).toBeNull();
+    });
+
+    it("says nobody is missing in the move, when that is so", () => {
+      const only = entry(
+        "project:claude:CLAUDE.md",
+        { kind: "claude", relativePath: "CLAUDE.md" },
+        { claudeAgent: { state: "direct" } },
+        [claude],
+      );
+      const [row] = rowsFor([noAgents(), only]);
+      expect(row!.attention).toBeNull();
+      const actions = instructionActions(row!, ctx, data([noAgents(), only]));
+      expect(actions.share!.plan.confirmation!.body).toBe("Every agent reads AGENTS.md.");
+    });
   });
 
   it("never flags a file the person can't change", () => {
-    const managed = entry("managed:claude", { scope: "managed", kind: "managed", readOnly: true });
+    const managed = entry(
+      "managed:claude",
+      { scope: "managed", kind: "managed", readOnly: true },
+      { claudeAgent: { state: "direct" } },
+    );
     expect(rowsFor([managed])[0]!.attention).toBeNull();
   });
 });
@@ -634,6 +820,13 @@ describe("the agents under Used by", () => {
     choices = [choice("claudeAgent")],
   ) => instructionChips(item, ctx, data([item, ...extra], choices));
 
+  it("says Claude reads the project AGENTS.md through the project's CLAUDE.md", () => {
+    const chip = chipsFor(projectAgents({ claudeAgent: { state: "import" } })).find(
+      (item) => item.agent.instanceId === "claudeAgent",
+    )!;
+    expect(chip.lines).toEqual(["Claude reads it through the project's CLAUDE.md."]);
+  });
+
   it("locks an agent that reads the file where it is", () => {
     const chip = chipsFor(projectAgents()).find((item) => item.agent.instanceId === "codex")!;
     expect(chip).toMatchObject({ on: true, locked: true, plan: null });
@@ -670,7 +863,7 @@ describe("the agents under Used by", () => {
     const chip = chipsFor(shared, [own]).find((item) => item.agent.instanceId === "codex")!;
     expect(chip.locked).toBe(false);
     expect(chip.plan).toMatchObject({
-      change: { kind: "adopt", id: "global:agentOwn:codex", agent: "Codex" },
+      change: { kind: "adopt", ids: ["global:agentOwn:codex"], names: ["Codex"] },
       confirmation: { title: "Use your Global instructions for Codex?" },
     });
     // With no file of its own to find, there is nothing to switch.
@@ -742,9 +935,14 @@ describe("the agents under Used by", () => {
 });
 
 describe("the ⋯ menu", () => {
-  const actionsFor = (entries: InstructionEntry[], index: number, context = ctx) => {
-    const all = data(entries);
-    const row = instructionRows(all, context).find((item) => item.entry === entries[index])!;
+  const actionsFor = (
+    entries: InstructionEntry[],
+    index: number,
+    context = ctx,
+    choices?: ClaudeInstructionChoice[],
+  ) => {
+    const all = data(entries, choices);
+    const row = findInstructionRow(all, context, entries[index]!.id)!;
     return instructionActions(row, context, all);
   };
 
@@ -774,20 +972,42 @@ describe("the ⋯ menu", () => {
     expect(actionsFor([sharedFile()], 0).removeFromAgents).toBeNull();
   });
 
-  it("shares a CLAUDE.md only when there is no AGENTS.md", () => {
+  it("moves or merges a project's CLAUDE.md, labelled for which it is", () => {
     const claudeMd = projectClaude("CLAUDE.md");
-    expect(actionsFor([projectAgents({}, { exists: false }), claudeMd], 1).share).not.toBeNull();
-    expect(actionsFor([projectAgents(), claudeMd], 1).share).toBeNull();
+    const move = actionsFor([projectAgents({}, { exists: false }), claudeMd], 1).share;
+    expect(move).toMatchObject({
+      label: "Move to AGENTS.md",
+      plan: { change: { kind: "share", merge: false } },
+    });
+    const merge = actionsFor([projectAgents(), claudeMd], 1).share;
+    expect(merge).toMatchObject({
+      label: "Merge into AGENTS.md",
+      plan: { change: { kind: "share", merge: true } },
+    });
+    // Only the top folder's CLAUDE.md, and only while it is there.
     expect(
       actionsFor([projectAgents({}, { exists: false }), projectClaude(".claude/CLAUDE.md")], 1)
         .share,
     ).toBeNull();
+    expect(actionsFor([projectAgents(), { ...claudeMd, exists: false }], 1).share).toBeNull();
+  });
+
+  it("offers the merge even when no agent is missing out", () => {
+    const only = entry(
+      "project:claude:CLAUDE.md",
+      { kind: "claude", relativePath: "CLAUDE.md" },
+      { claudeAgent: { state: "direct" } },
+      [claude],
+    );
+    expect(actionsFor([projectAgents(), only], 1).share).toMatchObject({
+      label: "Merge into AGENTS.md",
+    });
   });
 
   it("uses Global for an agent's own, whatever its text", () => {
     const own = ownFile("codex", { sameAsShared: true });
     expect(actionsFor([own], 0).useGlobal).toMatchObject({
-      change: { kind: "adopt", agent: "Codex" },
+      change: { kind: "adopt", names: ["Codex"] },
       confirmation: {
         body: "Codex's instructions match your Global instructions, so Codex just starts using them.",
       },
@@ -806,12 +1026,19 @@ describe("the ⋯ menu", () => {
       },
     });
     expect(actionsFor([ownFile("codex")], 0).remove).toMatchObject({
-      change: { kind: "delete", name: "Codex's own instructions", project: false },
+      change: { kind: "delete", name: "Codex's AGENTS.md", project: false },
     });
-    // The title "Just you" says nothing about which file goes.
     expect(actionsFor([projectClaude("CLAUDE.local.md")], 0).remove).toMatchObject({
       change: { kind: "delete", name: "CLAUDE.local.md", project: true },
       confirmation: { title: "Delete CLAUDE.local.md?" },
+    });
+    // A subfolder file is named by its path, since its title is only AGENTS.md.
+    const nested = entry("project:nested:apps/web/AGENTS.md", {
+      kind: "nested",
+      relativePath: "apps/web/AGENTS.md",
+    });
+    expect(actionsFor([nested], 0).remove).toMatchObject({
+      change: { kind: "delete", name: "apps/web/AGENTS.md" },
     });
     expect(actionsFor([projectAgents()], 0).remove).toBeNull();
     expect(actionsFor([sharedFile()], 0).remove).toBeNull();
@@ -826,52 +1053,212 @@ describe("the ⋯ menu", () => {
   });
 });
 
+describe("what Claude does once CLAUDE.md is gone", () => {
+  const claudeMd = projectClaude("CLAUDE.md");
+  const plans = (
+    others: InstructionEntry[],
+    choices: ClaudeInstructionChoice[],
+    list = [projectAgents(), claudeMd, ...others],
+    context = ctx,
+  ) => {
+    const all = data(list, choices);
+    const row = findInstructionRow(all, context, claudeMd.id)!;
+    const actions = instructionActions(row, context, all);
+    return { share: actions.share!.plan, remove: actions.remove! };
+  };
+
+  it("leaves Claude alone when it would read AGENTS.md anyway", () => {
+    for (const value of ["claude-md-or-agents-md", "claude-md-and-agents-md"] as const) {
+      const { share, remove } = plans([], [choice("claudeAgent", { value })]);
+      expect(share.change).toMatchObject({ claude: [] });
+      expect(share.confirmation!.body).toBe(
+        "Its text goes at the end of AGENTS.md, then CLAUDE.md is deleted. Every agent reads AGENTS.md from then on.",
+      );
+      expect(remove.confirmation!.body).toBe("Claude reads AGENTS.md instead.");
+    }
+  });
+
+  it("turns Claude on for AGENTS.md when a local file keeps it away under the default", () => {
+    const { share, remove } = plans([projectClaude("CLAUDE.local.md")], [choice("claudeAgent")]);
+    expect(share.change).toMatchObject({ kind: "share", claude: ["claudeAgent"] });
+    expect(share.confirmation!.body).toBe(
+      "Its text goes at the end of AGENTS.md, then CLAUDE.md is deleted.\n\nClaude skips AGENTS.md when there's a CLAUDE.local.md, so this also turns AGENTS.md on for Claude in every project.",
+    );
+    // The delete says nothing about reading AGENTS.md instead, since Claude wouldn't.
+    expect(remove.confirmation!.body).toBe("This deletes CLAUDE.md.");
+    expect(
+      plans([projectClaude(".claude/CLAUDE.md")], [choice("claudeAgent")]).share.confirmation!.body,
+    ).toContain("when there's a .claude/CLAUDE.md,");
+  });
+
+  it("turns Claude on when it is set to never read AGENTS.md", () => {
+    const { share, remove } = plans(
+      [],
+      [choice("claudeAgent", { value: "claude-md", explicit: true })],
+    );
+    expect(share.change).toMatchObject({ claude: ["claudeAgent"] });
+    expect(share.confirmation!.body).toBe(
+      "Its text goes at the end of AGENTS.md, then CLAUDE.md is deleted.\n\nClaude is set to never read AGENTS.md, so this also turns it on for Claude in every project.",
+    );
+    expect(remove.confirmation!.body).toBe("This deletes CLAUDE.md.");
+  });
+
+  it("says in the move too, after the line on who gets the instructions", () => {
+    const noAgents = projectAgents({}, { exists: false });
+    const { share } = plans(
+      [projectClaude("CLAUDE.local.md")],
+      [choice("claudeAgent")],
+      [noAgents, claudeMd, projectClaude("CLAUDE.local.md")],
+    );
+    expect(share.confirmation!.body).toBe(
+      "Every agent reads AGENTS.md, so Codex and Pi get these instructions too.\n\nClaude skips AGENTS.md when there's a CLAUDE.local.md, so this also turns AGENTS.md on for Claude in every project.",
+    );
+  });
+
+  it("changes nothing for a Claude that is too old, or that the organization decides", () => {
+    const old = plans([], [choice("claudeAgent", { supported: false, version: "2.0.1" })]);
+    expect(old.share.change).toMatchObject({ claude: [] });
+    expect(old.share.confirmation!.body).toBe(
+      "Its text goes at the end of AGENTS.md, then CLAUDE.md is deleted. Every agent reads AGENTS.md from then on.\n\nClaude Code needs version 2.1.277 or later to read AGENTS.md.",
+    );
+    expect(old.remove.confirmation!.body).toBe("This deletes CLAUDE.md.");
+    const managed = plans([], [choice("claudeAgent", { value: "managed-only" })]);
+    expect(managed.share.change).toMatchObject({ claude: [] });
+    expect(managed.share.confirmation!.body).toContain(
+      "\n\nYour organization decides whether Claude reads AGENTS.md.",
+    );
+    expect(managed.remove.confirmation!.body).toBe("This deletes CLAUDE.md.");
+  });
+
+  it("names each Claude instance when there are several", () => {
+    const context = { installed: [claude, claudeWork, codex, pi] };
+    const local = projectClaude("CLAUDE.local.md");
+    const { share } = plans(
+      [local],
+      [choice("claudeAgent"), choice("claude_work", { supported: false })],
+      [projectAgents(), claudeMd, local],
+      context,
+    );
+    expect(share.change).toMatchObject({ claude: ["claudeAgent"] });
+    expect(share.confirmation!.body).toContain(
+      "Claude skips AGENTS.md when there's a CLAUDE.local.md, so this also turns AGENTS.md on for Claude in every project.",
+    );
+    expect(share.confirmation!.body).toContain(
+      "Claude Work needs Claude Code 2.1.277 or later to read AGENTS.md.",
+    );
+    // Both skip it, and both are set.
+    const both = plans(
+      [local],
+      [choice("claudeAgent"), choice("claude_work")],
+      [projectAgents(), claudeMd, local],
+      context,
+    );
+    expect(both.share.change).toMatchObject({ claude: ["claudeAgent", "claude_work"] });
+    expect(both.share.confirmation!.body).toContain(
+      "Claude and Claude Work skip AGENTS.md when there's a CLAUDE.local.md, so this also turns AGENTS.md on for Claude and Claude Work in every project.",
+    );
+  });
+
+  it("says Claude reads AGENTS.md instead only when there is a Claude and an AGENTS.md", () => {
+    const noClaude = { installed: [codex, pi] };
+    const asked = plans(
+      [],
+      [],
+      [projectAgents(), projectClaude("CLAUDE.md", { codex: { state: "direct" } })],
+      noClaude,
+    );
+    expect(asked.remove.confirmation!.body).toBe("This deletes CLAUDE.md.");
+    const two = plans(
+      [],
+      [choice("claudeAgent"), choice("claude_work")],
+      [projectAgents(), claudeMd],
+      { installed: [claude, claudeWork, codex, pi] },
+    );
+    expect(two.remove.confirmation!.body).toBe("Claude and Claude Work read AGENTS.md instead.");
+    // With no AGENTS.md to take over, the delete is just a delete.
+    const noAgents = plans(
+      [],
+      [choice("claudeAgent")],
+      [projectAgents({}, { exists: false }), claudeMd],
+    );
+    expect(noAgents.remove.confirmation!.body).toBe("This deletes CLAUDE.md.");
+  });
+});
+
 describe("asking git", () => {
   const share = planClaudeAgents([ProviderInstanceId.make("claudeAgent")], ctx);
-  const delPlan = instructionActions(
-    rowsFor([projectClaude("CLAUDE.md")])[0]!,
-    ctx,
-    data([projectClaude("CLAUDE.md")]),
-  ).remove!;
+  const claudeMd = projectClaude("CLAUDE.md");
+  const planFor = (
+    list: InstructionEntry[],
+    pick: "share" | "remove",
+    choices = [choice("claudeAgent")],
+  ) => {
+    const all = data(list, choices);
+    const row = findInstructionRow(all, ctx, claudeMd.id)!;
+    const actions = instructionActions(row, ctx, all);
+    return pick === "share" ? actions.share!.plan : actions.remove!;
+  };
+  const noAgents = projectAgents({}, { exists: false });
+  const move = planFor([noAgents, claudeMd], "share");
+  const merge = planFor([projectAgents(), claudeMd], "share");
+  const del = planFor([claudeMd], "remove");
 
-  it("checks the project file a rename or a delete is about to touch, and nothing else", () => {
-    expect(instructionsToCheckWithGit(delPlan)).toEqual(["project:claude:CLAUDE.md"]);
-    const sharePlan = instructionActions(
-      rowsFor([projectAgents({}, { exists: false }), projectClaude("CLAUDE.md")])[1]!,
-      ctx,
-      data([projectAgents({}, { exists: false }), projectClaude("CLAUDE.md")]),
-    ).share!;
-    expect(instructionsToCheckWithGit(sharePlan)).toEqual(["project:claude:CLAUDE.md"]);
+  it("checks the project files a move, merge or delete is about to touch, and nothing else", () => {
+    expect(instructionsToCheckWithGit(del)).toEqual(["project:claude:CLAUDE.md"]);
+    expect(instructionsToCheckWithGit(move)).toEqual(["project:claude:CLAUDE.md"]);
+    expect(instructionsToCheckWithGit(merge)).toEqual([
+      "project:claude:CLAUDE.md",
+      "project:shared:AGENTS.md",
+    ]);
     expect(instructionsToCheckWithGit(share)).toBeNull();
     const global = instructionActions(
-      rowsFor([ownFile("codex")])[0]!,
+      findInstructionRow(data([ownFile("codex")]), ctx, "global:agentOwn:codex")!,
       ctx,
       data([ownFile("codex")]),
     ).remove!;
     expect(instructionsToCheckWithGit(global)).toBeNull();
   });
 
-  it("says git can undo it only for a file git tracks, replacing the line that says it can't", () => {
-    expect(withInstructionGitNote(delPlan, []).confirmation!.notes).toEqual([
+  it("says git can undo a delete only for a file git tracks, replacing the line that says it can't", () => {
+    expect(withInstructionGitNote(del, []).confirmation!.notes).toEqual(["This can't be undone."]);
+    expect(withInstructionGitNote(del, ["other"]).confirmation!.notes).toEqual([
       "This can't be undone.",
     ]);
-    expect(withInstructionGitNote(delPlan, ["other"]).confirmation!.notes).toEqual([
-      "This can't be undone.",
+    expect(withInstructionGitNote(del, ["project:claude:CLAUDE.md"]).confirmation!.notes).toEqual([
+      "You can undo this with git.",
     ]);
-    expect(
-      withInstructionGitNote(delPlan, ["project:claude:CLAUDE.md"]).confirmation!.notes,
-    ).toEqual(["You can undo this with git."]);
   });
 
-  it("adds the line to a rename too", () => {
-    const sharePlan = instructionActions(
-      rowsFor([projectAgents({}, { exists: false }), projectClaude("CLAUDE.md")])[1]!,
-      ctx,
-      data([projectAgents({}, { exists: false }), projectClaude("CLAUDE.md")]),
-    ).share!;
+  it("adds the line to a move when the file is tracked", () => {
+    expect(withInstructionGitNote(move, ["project:claude:CLAUDE.md"]).confirmation!.notes).toEqual([
+      "You can undo this with git.",
+    ]);
+    expect(withInstructionGitNote(move, []).confirmation!.notes).toEqual([]);
+  });
+
+  it("adds the line to a merge only when both files are tracked", () => {
+    const claudeFile = "project:claude:CLAUDE.md";
+    const agentsFile = "project:shared:AGENTS.md";
+    expect(withInstructionGitNote(merge, [claudeFile, agentsFile]).confirmation!.notes).toEqual([
+      "You can undo this with git.",
+    ]);
+    expect(withInstructionGitNote(merge, [claudeFile]).confirmation!.notes).toEqual([]);
+    expect(withInstructionGitNote(merge, [agentsFile]).confirmation!.notes).toEqual([]);
+    expect(withInstructionGitNote(merge, []).confirmation!.notes).toEqual([]);
+  });
+
+  it("limits the line to the file change when the same plan also sets Claude", () => {
+    const local = projectClaude("CLAUDE.local.md");
+    const alsoSets = planFor([projectAgents(), claudeMd, local], "share");
+    expect(alsoSets.change).toMatchObject({ claude: ["claudeAgent"] });
     expect(
-      withInstructionGitNote(sharePlan, ["project:claude:CLAUDE.md"]).confirmation!.notes,
-    ).toEqual(["You can undo this with git."]);
+      withInstructionGitNote(alsoSets, ["project:claude:CLAUDE.md", "project:shared:AGENTS.md"])
+        .confirmation!.notes,
+    ).toEqual(["You can undo the file change with git."]);
+    const moveAlsoSets = planFor([noAgents, claudeMd, local], "share");
+    expect(
+      withInstructionGitNote(moveAlsoSets, ["project:claude:CLAUDE.md"]).confirmation!.notes,
+    ).toEqual(["You can undo the file change with git."]);
   });
 });
 
@@ -884,13 +1271,13 @@ describe("search", () => {
   ]);
   const [project, claudeMd, local, shared] = rows;
 
-  it("matches a row by its title and by its file name", () => {
-    expect(matchesInstructionQuery(project!, "this project")).toBe(true);
+  it("matches a row by its file name and its group", () => {
     expect(matchesInstructionQuery(project!, "agents.md")).toBe(true);
+    expect(matchesInstructionQuery(project!, "project")).toBe(true);
+    expect(matchesInstructionQuery(project!, "global")).toBe(false);
     expect(matchesInstructionQuery(shared!, "global")).toBe(true);
     expect(matchesInstructionQuery(claudeMd!, "claude.md")).toBe(true);
     expect(matchesInstructionQuery(claudeMd!, "agents.md")).toBe(false);
-    expect(matchesInstructionQuery(local!, "just you")).toBe(true);
     expect(matchesInstructionQuery(local!, "claude.local.md")).toBe(true);
     expect(matchesInstructionQuery(project!, "")).toBe(true);
   });
@@ -968,11 +1355,20 @@ describe("saying what happened", () => {
     expect(describeChange({ kind: "setClaude", instances: [id], value: null }, ctx)).toBe(
       "Claude follows its default again.",
     );
-    expect(describeChange({ kind: "adopt", id: "x", agent: "Codex" }, ctx)).toBe(
+    expect(describeChange({ kind: "adopt", ids: ["x"], names: ["Codex"] }, ctx)).toBe(
       "Codex now uses your Global instructions.",
     );
-    expect(describeChange({ kind: "share", id: "x", project: true }, ctx)).toBe(
-      "CLAUDE.md is now AGENTS.md.",
+    expect(describeChange({ kind: "adopt", ids: ["x", "y"], names: ["Codex", "Pi"] }, ctx)).toBe(
+      "Codex and Pi now use your Global instructions.",
+    );
+    const share = { kind: "share", id: "x", project: true, merge: false, claude: [] } as const;
+    expect(describeChange(share, ctx)).toBe("CLAUDE.md is now AGENTS.md.");
+    expect(describeChange({ ...share, merge: true }, ctx)).toBe("Merged CLAUDE.md into AGENTS.md.");
+    expect(describeChange({ ...share, merge: true, claude: [id] }, ctx)).toBe(
+      "Merged CLAUDE.md into AGENTS.md. Claude now reads AGENTS.md in every project.",
+    );
+    expect(describeChange({ ...share, claude: [id] }, ctx)).toBe(
+      "CLAUDE.md is now AGENTS.md. Claude now reads AGENTS.md in every project.",
     );
     expect(describeChange({ kind: "delete", id: "x", name: "CLAUDE.md", project: true }, ctx)).toBe(
       "Deleted CLAUDE.md.",

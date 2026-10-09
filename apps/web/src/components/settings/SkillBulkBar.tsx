@@ -145,7 +145,12 @@ export function ConfirmPlan({
       <AlertDialogPopup>
         <AlertDialogHeader>
           <AlertDialogTitle>{shown?.title}</AlertDialogTitle>
-          {shown?.body && <AlertDialogDescription>{shown.body}</AlertDialogDescription>}
+          {shown?.body
+            .split("\n\n")
+            .filter((paragraph) => paragraph !== "")
+            .map((paragraph) => (
+              <AlertDialogDescription key={paragraph}>{paragraph}</AlertDialogDescription>
+            ))}
         </AlertDialogHeader>
         {shown && shown.notes.length > 0 && (
           <ul className="space-y-1 px-6 pb-4 text-xs break-words text-muted-foreground">

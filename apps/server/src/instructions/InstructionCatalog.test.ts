@@ -394,6 +394,59 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionCatalog"
       }),
     );
 
+    it.effect(
+      "gives a CLAUDE.md that only imports AGENTS.md no entry, and keeps the import working",
+      () =>
+        Effect.gen(function* () {
+          const { home, project, write } = yield* makeMachine;
+          yield* write("repos/app/AGENTS.md", "rules");
+          for (const only of ["@AGENTS.md\n", "\n@./AGENTS.md\n\n"]) {
+            yield* write("repos/app/CLAUDE.md", only);
+            yield* onMachine(home, CLAUDE, (catalog) =>
+              Effect.gen(function* () {
+                const { entries } = yield* listed(catalog, { cwd: project });
+                expect(entries.map((entry) => entry.id)).not.toContain("project:claude:CLAUDE.md");
+                expect(claudeAccess(entries)).toMatchObject({ state: "import" });
+              }),
+            );
+          }
+          // Anything else in the file keeps its entry, and so does an empty one.
+          for (const text of ["@AGENTS.md\n- Run the tests.\n", ""]) {
+            yield* write("repos/app/CLAUDE.md", text);
+            yield* onMachine(home, CLAUDE, (catalog) =>
+              Effect.gen(function* () {
+                const { entries } = yield* listed(catalog, { cwd: project });
+                expect(entries.map((entry) => entry.id)).toContain("project:claude:CLAUDE.md");
+              }),
+            );
+          }
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "gives a CLAUDE.md that is the same file as AGENTS.md no entry, whichever links to the other",
+      () =>
+        Effect.gen(function* () {
+          const { home, fs, path, project, write, link } = yield* makeMachine;
+          for (const [real, linked] of [
+            ["AGENTS.md", "CLAUDE.md"],
+            ["CLAUDE.md", "AGENTS.md"],
+          ] as const) {
+            yield* fs.remove(path.join(project, "AGENTS.md"), { force: true });
+            yield* fs.remove(path.join(project, "CLAUDE.md"), { force: true });
+            yield* write(`repos/app/${real}`, "rules");
+            yield* link(`repos/app/${real}`, `repos/app/${linked}`);
+            yield* onMachine(home, CLAUDE, (catalog) =>
+              Effect.gen(function* () {
+                const { entries } = yield* listed(catalog, { cwd: project });
+                expect(entries.map((entry) => entry.id)).not.toContain("project:claude:CLAUDE.md");
+                expect(claudeAccess(entries)).toMatchObject({ state: "import" });
+              }),
+            );
+          }
+        }),
+    );
+
     it.effect("reports a settings.json that isn't JSON and falls back to Claude's default", () =>
       Effect.gen(function* () {
         const { home, project, write } = yield* makeMachine;

@@ -109,15 +109,13 @@ export function InstructionAgentChip({
 
 /**
  * One file. Clicking it opens the file, except the Global file, which opens in place into one
- * switch per agent, so it needs no fix of its own until the Needs attention list. A problem takes
- * the subtitle, with its fix beside the icons; below `sm` the icons and the fix drop under the
- * text, so a long problem doesn't squeeze the title.
+ * switch per agent. Its second line is only a problem, with its fix beside the icons; below `sm`
+ * the icons and the fix drop under the text, so a long problem doesn't squeeze the title.
  */
 const InstructionRowView = memo(function InstructionRowView({
   row,
   ctx,
   data,
-  showFix,
   busy,
   locked,
   onOpen,
@@ -126,8 +124,6 @@ const InstructionRowView = memo(function InstructionRowView({
   row: InstructionRow;
   ctx: SkillsContext;
   data: InstructionData;
-  /** Offer the one-click fix on a row that opens in place; the Needs attention list does. */
-  showFix: boolean;
   /** A change is being made, so nothing else can start. */
   busy: boolean;
   /** The session can't change instructions. */
@@ -146,10 +142,9 @@ const InstructionRowView = memo(function InstructionRowView({
   );
   const fix = row.missing
     ? { label: "Create", run: () => onOpen(row.id) }
-    : attention?.fix && (showFix || !row.expandable)
+    : attention?.fix
       ? { label: attention.fix.label, run: () => attention.fix && onPlan(attention.fix.plan) }
       : null;
-  const subtitle = attention?.detail ?? row.subtitle;
   return (
     <li className={cn("min-w-0", open && "bg-muted/30")}>
       <div
@@ -165,15 +160,8 @@ const InstructionRowView = memo(function InstructionRowView({
           <span className="block truncate text-sm font-medium">
             <PathTooltip path={entry.path}>{row.title}</PathTooltip>
           </span>
-          {subtitle !== null && (
-            <span
-              className={cn(
-                "block text-xs",
-                attention ? "text-warning-foreground" : "truncate text-muted-foreground",
-              )}
-            >
-              {subtitle}
-            </span>
+          {attention && (
+            <span className="block text-xs text-warning-foreground">{attention.detail}</span>
           )}
         </button>
         <span
@@ -222,6 +210,11 @@ const InstructionRowView = memo(function InstructionRowView({
     </li>
   );
 });
+
+/** A heading in the card, such as Project or Global. It isn't a control. */
+function GroupHeading({ label }: { label: string }) {
+  return <li className="bg-muted/40 px-3 pt-2.5 pb-1.5 text-xs font-semibold sm:px-4">{label}</li>;
+}
 
 /**
  * The AGENTS.md and CLAUDE.md files below the project's top folder, in one quiet row that opens
@@ -335,13 +328,12 @@ function ClaudeChoiceRow({
 
 /**
  * The Instructions card at the top of the Skills page: the files agents read, with who uses each,
- * and Claude's choice on when it reads AGENTS.md.
+ * under a Project and a Global heading, and Claude's choice on when it reads AGENTS.md.
  */
 export function InstructionSection({
   items,
   data,
   ctx,
-  showFix,
   busy,
   locked,
   onOpen,
@@ -351,8 +343,6 @@ export function InstructionSection({
   items: readonly InstructionItem[];
   data: InstructionData;
   ctx: SkillsContext;
-  /** The Needs attention list is showing, so every row offers its fix. */
-  showFix: boolean;
   /** A change is being made, so nothing else can start. */
   busy: boolean;
   /** The session can't change instructions. */
@@ -370,6 +360,8 @@ export function InstructionSection({
         <ul className="divide-y divide-border/50">
           {items.map((item) => {
             switch (item.kind) {
+              case "group":
+                return <GroupHeading key={`group:${item.group}`} label={item.label} />;
               case "file":
                 return (
                   <InstructionRowView
@@ -377,7 +369,6 @@ export function InstructionSection({
                     row={item.row}
                     ctx={ctx}
                     data={data}
-                    showFix={showFix}
                     busy={busy}
                     locked={locked}
                     onOpen={onOpen}

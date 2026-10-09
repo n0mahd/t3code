@@ -19,6 +19,7 @@ import {
   findInstructionRow,
   instructionItems,
   instructionUnreadableNote,
+  type InstructionPlan,
 } from "./InstructionsSettings.logic";
 import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
 import { SkillDetail } from "./SkillDetail";
@@ -327,6 +328,19 @@ function EnvironmentSkills({
   const toList = () => show({ kind: "list" });
 
   /**
+   * Makes an instruction change. A file that is moved, merged or deleted from its own page is gone
+   * or empty afterwards, so the page goes back to the list once the change went through.
+   */
+  const applyInstruction = async (plan: InstructionPlan) => {
+    const { change } = plan;
+    const leaves =
+      view.kind === "instruction" &&
+      (change.kind === "share" || change.kind === "delete") &&
+      change.id === view.id;
+    if ((await instructions.apply(plan)) && leaves) toList();
+  };
+
+  /**
    * Asks the server to make the change, then reads the folders again: the page shows what is on
    * disk, never what the change was expected to do.
    */
@@ -570,7 +584,6 @@ function EnvironmentSkills({
               items={instructionItemsShown}
               data={instructionData}
               ctx={instructions.ctx}
-              showFix={onlyAttention}
               busy={anyBusy}
               locked={!instructions.canChange}
               onOpen={openInstruction}
@@ -641,9 +654,7 @@ function EnvironmentSkills({
       <ConfirmPlan
         plan={instructions.confirming}
         onCancel={instructions.cancelConfirm}
-        onConfirm={() =>
-          instructions.confirming && void instructions.apply(instructions.confirming)
-        }
+        onConfirm={() => instructions.confirming && void applyInstruction(instructions.confirming)}
       />
     </div>
   );

@@ -100,3 +100,18 @@ export const SkillGetResult = Schema.Struct({
   filesTruncated: Schema.Boolean,
 });
 export type SkillGetResult = typeof SkillGetResult.Type;
+
+/**
+ * A skill read that couldn't be carried out, as opposed to a folder with no skills: a project's
+ * folders are only read when the environment knows the folder as a project.
+ */
+export class SkillRequestError extends Schema.TaggedError<SkillRequestError>()(
+  "SkillRequestError",
+  {
+    reason: Schema.Literals(["projectNotRegistered"]),
+  },
+) {
+  override get message(): string {
+    return "That folder isn't a project in this environment.";
+  }
+}

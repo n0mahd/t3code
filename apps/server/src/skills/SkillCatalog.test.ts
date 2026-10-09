@@ -1,10 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, describe, expect } from "@effect/vitest";
 import {
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   SkillGetResult,
   SkillListResult,
+  SkillRequestError,
+  type Project,
   type SkillAgentAccess,
   type SkillSummary,
 } from "@t3tools/contracts";
@@ -13,9 +16,11 @@ import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import * as ProjectService from "../project/ProjectService.ts";
 import * as Settings from "../serverSettings.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
 
@@ -84,28 +89,63 @@ const ALL_AGENTS_ENABLED = Object.fromEntries(
   ]),
 );
 
-/** The catalog as it sees a machine whose home is `home`, with these server settings. */
+const makeProject = (workspaceRoot: string): Project => ({
+  id: ProjectId.make("project-skill-catalog"),
+  title: "App",
+  workspaceRoot,
+  repositoryIdentity: null,
+  faviconPath: null,
+  projectIcon: null,
+  defaultModelSelection: null,
+  defaultThreadEnvMode: null,
+  autoPull: false,
+  scripts: [],
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+  deletedAt: null,
+});
+
+/**
+ * The catalog as it sees a machine whose home is `home`, with these server settings. Only the
+ * `registered` folders are projects; by default that is the machine's `repos/app`.
+ */
 const withCatalog = <A, E, R>(
   home: string,
   use: (catalog: SkillCatalog.SkillCatalog["Service"]) => Effect.Effect<A, E, R>,
   options: {
     readonly settings?: Parameters<typeof Settings.layerTest>[0];
     readonly env?: NodeJS.ProcessEnv;
+    readonly registered?: readonly string[];
   } = {},
 ) =>
   Effect.gen(function* () {
-    return yield* use(yield* SkillCatalog.SkillCatalog);
-  }).pipe(
-    Effect.provide(
-      SkillCatalog.layer.pipe(
-        Layer.provide(
-          Settings.layerTest({
-            ...options.settings,
-            providerInstances: { ...ALL_AGENTS_ENABLED, ...options.settings?.providerInstances },
-          }),
+    const path = yield* Path.Path;
+    const registered = options.registered ?? [path.join(home, "repos/app")];
+    const projects = Layer.mock(ProjectService.ProjectService)({
+      getByWorkspaceRoot: (root) =>
+        Effect.succeed(registered.includes(root) ? Option.some(makeProject(root)) : Option.none()),
+    });
+    return yield* Effect.gen(function* () {
+      return yield* use(yield* SkillCatalog.SkillCatalog);
+    }).pipe(
+      Effect.provide(
+        SkillCatalog.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              projects,
+              Settings.layerTest({
+                ...options.settings,
+                providerInstances: {
+                  ...ALL_AGENTS_ENABLED,
+                  ...options.settings?.providerInstances,
+                },
+              }),
+            ),
+          ),
         ),
       ),
-    ),
+    );
+  }).pipe(
     Effect.provideService(HostProcess.Environment, { HOME: home, ...options.env }),
     Effect.provideService(HostProcess.HomeDirectory, home),
   );
@@ -632,6 +672,52 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillCatalog", (it)
           );
           expect((yield* encodeGet(detail)).files).toHaveLength(3);
           expect(yield* fs.readDirectory(home, { recursive: true })).toEqual(before);
+        }),
+    );
+  });
+
+  describe("project folders", () => {
+    it.effect.skipIf(!symlinksSupported)(
+      "reads a project's skill folders only when the folder is a registered project",
+      () =>
+        Effect.gen(function* () {
+          const { home, project } = yield* makeMachine;
+          const refused = new SkillRequestError({ reason: "projectNotRegistered" });
+          const get = (cwd: string) => ({
+            cwd,
+            scope: "project" as const,
+            name: "verify",
+            home: ".agents/skills/verify",
+          });
+
+          // A folder that holds skills but isn't a project (the home, a project's subfolder, a
+          // relative path, a path that isn't there) is refused for the list and for one skill.
+          for (const cwd of [home, `${project}/.agents`, "repos/app", `${home}/missing`]) {
+            const registered = [project];
+            expect(
+              yield* withCatalog(home, (catalog) => catalog.list({ cwd }).pipe(Effect.flip), {
+                registered,
+              }),
+            ).toEqual(refused);
+            expect(
+              yield* withCatalog(home, (catalog) => catalog.get(get(cwd)).pipe(Effect.flip), {
+                registered,
+              }),
+            ).toEqual(refused);
+          }
+
+          // The registered project, and the Global folders without any `cwd`, are read as before.
+          const listed = yield* withCatalog(home, (catalog) => catalog.list({ cwd: project }));
+          expect(listed.skills.some((skill) => skill.scope === "project")).toBe(true);
+          const global = yield* withCatalog(home, (catalog) => catalog.list({}), {
+            registered: [],
+          });
+          expect(global.skills.map((skill) => skill.scope)).toEqual(
+            global.skills.map(() => "global"),
+          );
+          expect(global.skills.length).toBeGreaterThan(0);
+          const detail = yield* withCatalog(home, (catalog) => catalog.get(get(project)));
+          expect(detail.home).toBe(`${project}/.agents/skills/verify`);
         }),
     );
   });

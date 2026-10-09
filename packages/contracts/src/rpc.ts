@@ -323,7 +323,13 @@ import {
   ServerSettingsError,
   ServerSettingsPatch,
 } from "./settings.ts";
-import { SkillGetInput, SkillGetResult, SkillListInput, SkillListResult } from "./skills.ts";
+import {
+  SkillGetInput,
+  SkillGetResult,
+  SkillListInput,
+  SkillListResult,
+  SkillRequestError,
+} from "./skills.ts";
 import {
   ScheduledTaskDeleteInput,
   ScheduledTaskDeleteResult,
@@ -604,13 +610,13 @@ const WsServerGetConfigRpc = Rpc.make(WS_METHODS.serverGetConfig, {
 const WsServerListSkillsRpc = Rpc.make(WS_METHODS.serverListSkills, {
   payload: SkillListInput,
   success: SkillListResult,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
 });
 
 const WsServerGetSkillRpc = Rpc.make(WS_METHODS.serverGetSkill, {
   payload: SkillGetInput,
   success: SkillGetResult,
-  error: EnvironmentAuthorizationError,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
 });
 
 const WsServerRefreshProvidersRpc = Rpc.make(WS_METHODS.serverRefreshProviders, {

@@ -27,6 +27,7 @@ import {
   type SkillListResult,
   type SkillScope,
   type SkillSummary,
+  SkillRequestError,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
@@ -52,6 +53,7 @@ import {
   parseSkillFrontmatter,
   resolveClaudeConfigDirPath,
 } from "../provider/Drivers/ClaudeSkills.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as Settings from "../serverSettings.ts";
 
@@ -144,11 +146,11 @@ export class SkillCatalog extends Context.Service<
   {
     /**
      * One compact record per skill home, in the project (when `cwd` is given) and in the user's
-     * home folder.
+     * home folder. A `cwd` that isn't a registered project's workspace root is refused.
      */
-    readonly list: (input: SkillListInput) => Effect.Effect<SkillListResult>;
+    readonly list: (input: SkillListInput) => Effect.Effect<SkillListResult, SkillRequestError>;
     /** The full SKILL.md text and the file list of one skill from `list`. */
-    readonly get: (input: SkillGetInput) => Effect.Effect<SkillGetResult>;
+    readonly get: (input: SkillGetInput) => Effect.Effect<SkillGetResult, SkillRequestError>;
   }
 >()("t3/skills/SkillCatalog") {}
 
@@ -158,6 +160,7 @@ const make = Effect.gen(function* () {
   const environment = yield* HostProcess.Environment;
   const homeDirectory = yield* HostProcess.HomeDirectory;
   const serverSettings = yield* Settings.ServerSettingsService;
+  const projects = yield* ProjectService.ProjectService;
 
   /** The text at the start of a regular file, at most `maxBytes` of it. */
   const readPrefix = Effect.fnUntraced(function* (file: string, maxBytes: number) {
@@ -263,8 +266,30 @@ const make = Effect.gen(function* () {
     return absolute;
   };
 
-  const absoluteCwd = (cwd: string | undefined) =>
-    cwd !== undefined && path.isAbsolute(cwd) ? cwd : undefined;
+  /**
+   * A project's folders are read only when `cwd` is the workspace root of a project the
+   * environment knows, so a request can't have the server walk skill folders under any path on
+   * the machine. Without a `cwd` only the Global folders are read.
+   */
+  const requireProject = Effect.fnUntraced(function* (cwd: string | undefined) {
+    if (cwd === undefined) return undefined;
+    // The lookup resolves a relative path against the server's own folder, so it never sees one.
+    const project = path.isAbsolute(cwd)
+      ? yield* projects.getByWorkspaceRoot(cwd).pipe(
+          Effect.catchTags({
+            // A folder that is gone or isn't a folder can't be a project's root.
+            ProjectOperationError: (error) =>
+              error.operation === "normalize-workspace"
+                ? Effect.succeed(Option.none<never>())
+                : Effect.die(error),
+          }),
+        )
+      : Option.none();
+    if (Option.isNone(project)) {
+      return yield* new SkillRequestError({ reason: "projectNotRegistered" });
+    }
+    return cwd;
+  });
 
   /** A global folder as shown to the user: `~/...` under the home directory, else its path. */
   const globalLabel = (directory: string) => {
@@ -419,7 +444,7 @@ const make = Effect.gen(function* () {
   });
 
   const list: SkillCatalog["Service"]["list"] = Effect.fn("SkillCatalog.list")(function* (input) {
-    const cwd = absoluteCwd(input.cwd);
+    const cwd = yield* requireProject(input.cwd);
     const displayRoots = yield* displayRootsOf(cwd);
     const instances = yield* loadInstances(cwd);
     const roots = rootsFor(cwd, instances);
@@ -590,7 +615,7 @@ const make = Effect.gen(function* () {
   });
 
   const get: SkillCatalog["Service"]["get"] = Effect.fn("SkillCatalog.get")(function* (input) {
-    const cwd = absoluteCwd(input.cwd);
+    const cwd = yield* requireProject(input.cwd);
     const base = input.scope === "project" ? cwd : homeDirectory;
     if (!base || !isSkillFolderName(input.name)) return NOT_FOUND;
     // Only the folders agents read are looked in, so the request can't name an arbitrary path.

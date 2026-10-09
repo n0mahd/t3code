@@ -2,8 +2,8 @@
  * InstructionManager - changes instruction files and who reads them.
  *
  * Every write starts from the id the client sent, which `InstructionCatalog.resolve` looks up in
- * the table again, so a client can only reach files the table names. Writes run one request at a
- * time, and a project file is only written when its folder is a registered project.
+ * the table again, so a client can only reach files the table names, and only the files of a
+ * registered project's folder, which the catalog checks. Writes run one request at a time.
  *
  * - A file's text is replaced at its real path behind any links, by temp file and rename, and only
  *   if its revision is still the one the client read.
@@ -42,7 +42,6 @@ import type * as PlatformError from "effect/PlatformError";
 import * as Semaphore from "effect/Semaphore";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 
-import * as ProjectService from "../project/ProjectService.ts";
 import { editJsoncFile, readSettingsText } from "../skills/JsoncSettings.ts";
 import { excludeNewFile } from "../skills/SkillGitExclude.ts";
 import { removeLink } from "../skills/SkillLinks.ts";
@@ -129,7 +128,6 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const catalog = yield* InstructionCatalog.InstructionCatalog;
-  const projects = yield* ProjectService.ProjectService;
   const writeLock = yield* Semaphore.make(1);
   const fileSystemContext = yield* Effect.context<
     FileSystem.FileSystem | Path.Path | VcsProcess.VcsProcess
@@ -185,25 +183,6 @@ const make = Effect.gen(function* () {
       cannotWrite(file),
     );
 
-  /** Project files are only written under a folder the environment knows as a project. */
-  const requireProject = (cwd: string | undefined) =>
-    cwd === undefined
-      ? Effect.fail(refuse("unknownEntry", "That isn't an instruction file T3 Code manages."))
-      : projects.getByWorkspaceRoot(cwd).pipe(
-          Effect.orDie,
-          Effect.filterOrFail(Option.isSome, () =>
-            refuse("unregisteredProject", "That folder isn't a project in this environment."),
-          ),
-        );
-
-  const resolveEntry = Effect.fnUntraced(function* (input: {
-    readonly cwd?: string | undefined;
-    readonly id: string;
-  }) {
-    if (input.id.startsWith("project:")) yield* requireProject(input.cwd);
-    return yield* catalog.resolve(input);
-  });
-
   const importTargetOf = (
     claudeMd: string,
     view: InstructionCatalog.SharedView,
@@ -220,7 +199,7 @@ const make = Effect.gen(function* () {
     function* (input) {
       return yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entry = yield* resolveEntry(input);
+          const entry = yield* catalog.resolve(input);
           if (entry.readOnly) {
             return yield* refuse("readOnly", "That file is set by your organization.");
           }
@@ -425,7 +404,7 @@ const make = Effect.gen(function* () {
   ) =>
     writeLock.withPermits(1)(
       Effect.gen(function* () {
-        const entry = yield* resolveEntry(input);
+        const entry = yield* catalog.resolve(input);
         if (entry.scope !== "global" || entry.kind !== "shared") {
           return yield* refuse(
             "unknownEntry",
@@ -481,7 +460,7 @@ const make = Effect.gen(function* () {
     function* (input) {
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entry = yield* resolveEntry(input);
+          const entry = yield* catalog.resolve(input);
           if (entry.kind !== "claude" || entry.relativePath !== "CLAUDE.md") {
             return yield* refuse("unknownEntry", "Only a project's CLAUDE.md can be shared.");
           }
@@ -543,7 +522,7 @@ const make = Effect.gen(function* () {
     function* (input) {
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entry = yield* resolveEntry(input);
+          const entry = yield* catalog.resolve(input);
           if (entry.kind !== "agentOwn" || entry.owner === undefined) {
             return yield* refuse("unknownEntry", "Only an agent's own instructions can be moved.");
           }
@@ -610,7 +589,7 @@ const make = Effect.gen(function* () {
     function* (input) {
       yield* writeLock.withPermits(1)(
         Effect.gen(function* () {
-          const entry = yield* resolveEntry(input);
+          const entry = yield* catalog.resolve(input);
           if (entry.readOnly) {
             return yield* refuse("readOnly", "That file is set by your organization.");
           }

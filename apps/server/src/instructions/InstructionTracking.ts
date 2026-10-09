@@ -8,11 +8,16 @@
  *
  * @module InstructionTracking
  */
-import type { InstructionTrackedInput, InstructionTrackedResult } from "@t3tools/contracts";
+import type {
+  InstructionError,
+  InstructionTrackedInput,
+  InstructionTrackedResult,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import { trackedFiles } from "../vcs/GitTrackedFiles.ts";
@@ -26,9 +31,11 @@ export class InstructionTracking extends Context.Service<
      * The ids among `ids` of project files that git tracks. An id that doesn't name a project
      * file, a file that sits outside the repository, and every file when git fails count as not
      * tracked. A file is tracked by its own path, so a link git tracks counts, whatever it
-     * points at.
+     * points at. A folder that isn't a registered project's workspace root is refused.
      */
-    readonly tracked: (input: InstructionTrackedInput) => Effect.Effect<InstructionTrackedResult>;
+    readonly tracked: (
+      input: InstructionTrackedInput,
+    ) => Effect.Effect<InstructionTrackedResult, InstructionError>;
   }
 >()("t3/instructions/InstructionTracking") {}
 
@@ -48,8 +55,17 @@ const make = Effect.gen(function* () {
     // The path git knows each file by, from the project's real folder.
     const files = new Map<string, string>();
     for (const id of input.ids) {
-      const entry = yield* catalog.resolve({ cwd: input.cwd, id }).pipe(Effect.option);
-      if (entry._tag === "None" || entry.value.scope !== "project") continue;
+      const entry = yield* catalog.resolve({ cwd: input.cwd, id }).pipe(
+        Effect.map(Option.some),
+        Effect.catchTags({
+          // An id that names nothing here is just not tracked; the folder is refused outright.
+          InstructionError: (error) =>
+            error.reason === "unregisteredProject"
+              ? Effect.fail(error)
+              : Effect.succeed(Option.none()),
+        }),
+      );
+      if (Option.isNone(entry) || entry.value.scope !== "project") continue;
       const folder = yield* fileSystem
         .realPath(path.dirname(entry.value.path))
         .pipe(Effect.orElseSucceed(() => path.dirname(entry.value.path)));

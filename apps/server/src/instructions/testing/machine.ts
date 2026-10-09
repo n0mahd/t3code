@@ -56,6 +56,9 @@ export const makeProject = (workspaceRoot: string): Project => ({
   deletedAt: null,
 });
 
+/** The machine's own project, in its home folder. */
+const PROJECT_FOLDER = "repos/app";
+
 /** A temp home folder, with helpers to put files and links in it, and a project folder. */
 export const makeMachine = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -63,7 +66,7 @@ export const makeMachine = Effect.gen(function* () {
   const home = yield* fs.realPath(
     yield* fs.makeTempDirectoryScoped({ prefix: "t3code-instructions-" }),
   );
-  const project = path.join(home, "repos/app");
+  const project = path.join(home, PROJECT_FOLDER);
   yield* fs.makeDirectory(project, { recursive: true });
   const write = (relative: string, contents: string) =>
     Effect.gen(function* () {
@@ -81,7 +84,7 @@ export const makeMachine = Effect.gen(function* () {
 });
 
 export interface MachineOptions {
-  /** Folders that are projects. */
+  /** Folders that are projects; the machine's own project when absent. */
   readonly registered?: readonly string[];
   /** Claude Code's version, by instance id; absent means the status has no version. */
   readonly versions?: Readonly<Record<string, string>>;
@@ -118,7 +121,11 @@ const snapshotOf = (
  * project folder that matches names exactly, skipping `.git` and `node_modules`.
  */
 export const layerFor = (home: string, options: MachineOptions = {}) => {
-  const registered = options.registered ?? [];
+  const sameFolder = (a: string, b: string) => a.replaceAll("\\", "/") === b.replaceAll("\\", "/");
+  const isProject = (root: string) =>
+    options.registered === undefined
+      ? sameFolder(root, `${home}/${PROJECT_FOLDER}`)
+      : options.registered.some((folder) => sameFolder(folder, root));
   const versions = options.versions ?? {};
   const enabled = Object.fromEntries(
     (options.providers ?? ["cursor", "grok", "opencode", "antigravity", "pi"]).map((id) => [
@@ -139,7 +146,7 @@ export const layerFor = (home: string, options: MachineOptions = {}) => {
   });
   const projects = Layer.mock(ProjectService.ProjectService)({
     getByWorkspaceRoot: (root) =>
-      Effect.succeed(registered.includes(root) ? Option.some(makeProject(root)) : Option.none()),
+      Effect.succeed(isProject(root) ? Option.some(makeProject(root)) : Option.none()),
   });
   const index = Layer.effect(
     WorkspaceEntries.WorkspaceEntries,

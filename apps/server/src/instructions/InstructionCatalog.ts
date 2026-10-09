@@ -48,6 +48,7 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { AGENT_SKILL_FOLDERS } from "@t3tools/provider-core/server/AgentSkillFolders";
 
+import * as ProjectService from "../project/ProjectService.ts";
 import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
@@ -181,8 +182,12 @@ export class InstructionCatalog extends Context.Service<
     /**
      * The instruction files in the project's top folder (when `cwd` is given) and the user's home
      * folder, with the agents that read each. Subfolder files come from the project's file index.
+     * A `cwd` that isn't a registered project's workspace root is refused, here and in `read` and
+     * `resolve`, before anything under it is read.
      */
-    readonly list: (input: InstructionListInput) => Effect.Effect<InstructionListResult>;
+    readonly list: (
+      input: InstructionListInput,
+    ) => Effect.Effect<InstructionListResult, InstructionError>;
     /** The text of one file from `list`, or nothing when it is missing or too large. */
     readonly read: (
       input: InstructionReadInput,
@@ -205,6 +210,7 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* Settings.ServerSettingsService;
   const providers = yield* ProviderRegistry.ProviderRegistry;
   const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
+  const projects = yield* ProjectService.ProjectService;
   const fileSystemContext = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
   const homeDirectory = yield* HostProcess.HomeDirectory;
 
@@ -225,8 +231,33 @@ const make = Effect.gen(function* () {
   };
   type TextReader = ReturnType<typeof makeTextReader>;
 
-  const absoluteCwd = (cwd: string | undefined) =>
-    cwd !== undefined && path.isAbsolute(cwd) ? cwd : undefined;
+  /**
+   * A project's folder is only read when it is the workspace root of a project the environment
+   * knows, so an id can't name a file under any path on the machine. Without a `cwd` only the
+   * agents' home files are reachable.
+   */
+  const requireProject = Effect.fnUntraced(function* (cwd: string | undefined) {
+    if (cwd === undefined) return undefined;
+    // The lookup resolves a relative path against the server's own folder, so it never sees one.
+    const project = path.isAbsolute(cwd)
+      ? yield* projects.getByWorkspaceRoot(cwd).pipe(
+          Effect.catchTags({
+            // A folder that is gone or isn't a folder can't be a project's root.
+            ProjectOperationError: (error) =>
+              error.operation === "normalize-workspace"
+                ? Effect.succeed(Option.none<never>())
+                : Effect.die(error),
+          }),
+        )
+      : Option.none();
+    if (Option.isNone(project)) {
+      return yield* new InstructionError({
+        reason: "unregisteredProject",
+        message: "That folder isn't a project in this environment.",
+      });
+    }
+    return cwd;
+  });
 
   const sizeOf = Effect.fnUntraced(function* (file: string) {
     const info = yield* fileSystem.stat(file).pipe(Effect.option);
@@ -688,7 +719,7 @@ const make = Effect.gen(function* () {
     function* (input) {
       const [scope = "", kind = "", ...tail] = input.id.split(":");
       const rest = tail.join(":");
-      const cwd = absoluteCwd(input.cwd);
+      const cwd = yield* requireProject(input.cwd);
 
       if (scope === "project") {
         if (cwd === undefined) return yield* unknownEntry();
@@ -786,7 +817,7 @@ const make = Effect.gen(function* () {
 
   const list: InstructionCatalog["Service"]["list"] = Effect.fn("InstructionCatalog.list")(
     function* (input) {
-      const cwd = absoluteCwd(input.cwd);
+      const cwd = yield* requireProject(input.cwd);
       const textOf = makeTextReader();
       const instances = yield* loadInstances(cwd);
       const claudeInstances = instances.filter((instance) => instance.driver === CLAUDE_DRIVER);

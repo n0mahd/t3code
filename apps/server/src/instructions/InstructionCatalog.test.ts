@@ -869,6 +869,61 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionCatalog"
       }),
     );
 
+    it.effect("reads under a folder only when it is a registered project's workspace root", () =>
+      Effect.gen(function* () {
+        const { home, project, write } = yield* makeMachine;
+        yield* write(".agents/AGENTS.md", "shared text");
+        yield* write("repos/app/AGENTS.md", "project text");
+        yield* write("elsewhere/AGENTS.md", "not a project's");
+        yield* onMachine(home, CLAUDE, (catalog) =>
+          Effect.gen(function* () {
+            const refusal = (cwd: string, id: string) =>
+              catalog.read({ cwd, id }).pipe(
+                Effect.flip,
+                Effect.map((error) => [error._tag, error.reason]),
+              );
+            const unregistered = ["unregisteredProject"];
+
+            // A folder above the project, one beside it, and a relative one reach no file under
+            // them, even by an id the table builds.
+            expect(yield* refusal(home, "project:nested:elsewhere/AGENTS.md")).toEqual([
+              "InstructionError",
+              ...unregistered,
+            ]);
+            expect(yield* refusal(`${home}/elsewhere`, "project:shared:AGENTS.md")).toEqual([
+              "InstructionError",
+              ...unregistered,
+            ]);
+            expect(yield* refusal("repos/app", "project:shared:AGENTS.md")).toEqual([
+              "InstructionError",
+              ...unregistered,
+            ]);
+            expect(
+              yield* catalog.list({ cwd: home }).pipe(
+                Effect.flip,
+                Effect.map((error) => error.reason),
+              ),
+            ).toBe("unregisteredProject");
+            expect(
+              yield* catalog.resolve({ cwd: home, id: "project:shared:AGENTS.md" }).pipe(
+                Effect.flip,
+                Effect.map((error) => error.reason),
+              ),
+            ).toBe("unregisteredProject");
+
+            // The registered folder, and the home files without any folder, read as before.
+            expect(
+              (yield* catalog.read({ cwd: project, id: "project:shared:AGENTS.md" })).contents,
+            ).toBe("project text");
+            expect((yield* catalog.read({ id: "global:shared" })).contents).toBe("shared text");
+            expect(
+              (yield* catalog.list({})).entries.some((entry) => entry.scope === "global"),
+            ).toBe(true);
+          }),
+        );
+      }),
+    );
+
     it.effect("refuses ids the table doesn't have", () =>
       Effect.gen(function* () {
         const { home, project } = yield* makeMachine;

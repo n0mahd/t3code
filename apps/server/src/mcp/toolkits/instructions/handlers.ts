@@ -43,7 +43,7 @@ export const layer = McpToolAccess.toLayer(InstructionsToolkit, {
       const context = yield* readCaller();
       const cwd = yield* projectFolder(context, input.projectId);
       const catalog = yield* InstructionCatalog.InstructionCatalog;
-      return yield* catalog.list({ cwd });
+      return yield* catalog.list({ cwd }).pipe(Effect.mapError(instructionFailure));
     }),
   ),
   t3_instructions_get: McpToolAccess.reads(({ projectId, id }) =>

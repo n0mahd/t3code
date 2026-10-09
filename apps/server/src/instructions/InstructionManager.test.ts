@@ -779,7 +779,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
               expect(nested.reason).toBe("unknownEntry");
             }),
           );
-          yield* onMachine(home, CLAUDE, ({ manager }) =>
+          yield* onMachine(home, { ...CLAUDE, registered: [] }, ({ manager }) =>
             Effect.gen(function* () {
               const unregistered = yield* manager
                 .share({ cwd: project, id: "project:claude:CLAUDE.md", merge: false })
@@ -1111,7 +1111,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
               expect(yield* read(".agents/AGENTS.md")).toBe("global shared");
             }),
           );
-          yield* onMachine(home, CLAUDE, ({ manager }) =>
+          yield* onMachine(home, { ...CLAUDE, registered: [] }, ({ manager }) =>
             Effect.gen(function* () {
               const error = yield* manager
                 .delete({ cwd: project, id: "project:claude:CLAUDE.md" })
@@ -1184,6 +1184,21 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
           }),
         );
       }).pipe(Effect.provide(ProcessRunner.layer)),
+    );
+
+    it.effect("refuses a folder that isn't a registered project, without running git", () =>
+      Effect.gen(function* () {
+        const { home, project, write } = yield* makeMachine;
+        yield* write("repos/app/AGENTS.md", "x");
+        yield* onMachine(home, { ...CLAUDE, registered: [] }, ({ tracking }) =>
+          Effect.gen(function* () {
+            const error = yield* tracking
+              .tracked({ cwd: project, ids: ["project:shared:AGENTS.md"] })
+              .pipe(Effect.flip);
+            expect(error.reason).toBe("unregisteredProject");
+          }),
+        );
+      }),
     );
 
     it.effect("counts nothing as tracked outside a repository", () =>

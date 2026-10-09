@@ -3,6 +3,8 @@ import { describe, expect, it } from "@effect/vitest";
 import { InstructionAgentsResult, InstructionWriteResult } from "@t3tools/contracts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
 import { parseSettingsJson } from "./ClaudeInstructionSetting.ts";
@@ -791,6 +793,46 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
   });
 
   describe("share", () => {
+    it.effect(
+      "words a refused rename as readOnly and any other failure as writeFailed, with its cause",
+      () =>
+        Effect.gen(function* () {
+          const { home, project, fs, write } = yield* makeMachine;
+          yield* write("repos/app/CLAUDE.md", "rules");
+          const failingRename = (reason: "PermissionDenied" | "Unknown") =>
+            FileSystem.FileSystem.of({
+              ...fs,
+              rename: (from) =>
+                Effect.fail(
+                  PlatformError.systemError({
+                    _tag: reason,
+                    module: "FileSystem",
+                    method: "rename",
+                    pathOrDescriptor: from,
+                    cause: new Error(reason),
+                  }),
+                ),
+            });
+          const shareWith = (reason: "PermissionDenied" | "Unknown") =>
+            onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+              manager
+                .share({ cwd: project, id: "project:claude:CLAUDE.md", merge: false })
+                .pipe(Effect.flip),
+            ).pipe(Effect.provideService(FileSystem.FileSystem, failingRename(reason)));
+
+          const denied = yield* shareWith("PermissionDenied");
+          expect(denied.reason).toBe("readOnly");
+          expect(denied.message).toBe("T3 Code isn't allowed to change AGENTS.md.");
+          expect(denied.cause).toBeInstanceOf(PlatformError.PlatformError);
+
+          const failed = yield* shareWith("Unknown");
+          expect(failed.reason).toBe("writeFailed");
+          expect(failed.message).toBe("T3 Code couldn't change AGENTS.md.");
+          expect(failed.cause).toBeInstanceOf(PlatformError.PlatformError);
+          expect(yield* fs.exists(`${project}/CLAUDE.md`)).toBe(true);
+        }),
+    );
+
     it.effect("renames CLAUDE.md to AGENTS.md", () =>
       Effect.gen(function* () {
         const { home, project, write, read, fs, path } = yield* makeMachine;

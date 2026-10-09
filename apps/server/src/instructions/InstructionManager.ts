@@ -67,9 +67,6 @@ type AgentResult = InstructionAgentsResult["results"][number];
 
 const encoder = new TextEncoder();
 
-const refuse = (reason: InstructionError["reason"], message: string) =>
-  new InstructionError({ reason, message });
-
 const LIMIT_MESSAGE = "Instruction files can be at most 1 MB.";
 
 /**
@@ -140,31 +137,57 @@ const make = Effect.gen(function* () {
     writeTargetOf(file).pipe(Effect.provideContext(fileSystemContext));
 
   /**
-   * Turns a failed file operation into an error a client can word. A refused permission is the
-   * file being off limits; anything else is a defect.
+   * Turns a failed file operation into an error a client can word, with the platform error kept
+   * as its cause. A refused permission is `denied`, the file being off limits; any other failure
+   * is `failed`, which is still a reason the client can show rather than a defect.
    */
   const guard = <A, R>(
     effect: Effect.Effect<A, PlatformError.PlatformError, R>,
-    denied: InstructionError,
+    errors: {
+      readonly denied: (cause: PlatformError.PlatformError) => InstructionError;
+      readonly failed: (cause: PlatformError.PlatformError) => InstructionError;
+    },
   ) =>
     effect.pipe(
       Effect.catchTags({
-        PlatformError: (error) =>
-          error.reason._tag === "PermissionDenied" ? Effect.fail(denied) : Effect.die(error),
+        PlatformError: (cause) =>
+          Effect.fail(
+            cause.reason._tag === "PermissionDenied" ? errors.denied(cause) : errors.failed(cause),
+          ),
       }),
     );
 
-  const cannotWrite = (file: string) =>
-    refuse("readOnly", `T3 Code isn't allowed to change ${path.basename(file)}.`);
-  const invalidSettings = refuse(
-    "invalidSettings",
-    "Claude's settings.json isn't valid JSON, so T3 Code left it alone.",
-  );
-  const cannotLink = (file: string) =>
-    refuse(
-      "linkFailed",
-      `T3 Code couldn't link ${path.basename(file)}. Links need permission on this system.`,
-    );
+  /** Writing, renaming or removing `file`: off limits when the system refuses, else `writeFailed`. */
+  const whenWriting = (file: string) => ({
+    denied: (cause: PlatformError.PlatformError) =>
+      new InstructionError({
+        reason: "readOnly",
+        message: `T3 Code isn't allowed to change ${path.basename(file)}.`,
+        cause,
+      }),
+    failed: (cause: PlatformError.PlatformError) =>
+      new InstructionError({
+        reason: "writeFailed",
+        message: `T3 Code couldn't change ${path.basename(file)}.`,
+        cause,
+      }),
+  });
+
+  /** Linking `file`: every failure of it is `linkFailed`, which the client explains. */
+  const whenLinking = (file: string) => {
+    const linkFailed = (cause: PlatformError.PlatformError) =>
+      new InstructionError({
+        reason: "linkFailed",
+        message: `T3 Code couldn't link ${path.basename(file)}. Links need permission on this system.`,
+        cause,
+      });
+    return { denied: linkFailed, failed: linkFailed };
+  };
+
+  const invalidSettings = new InstructionError({
+    reason: "invalidSettings",
+    message: "Claude's settings.json isn't valid JSON, so T3 Code left it alone.",
+  });
 
   /** A file keeps its permissions through a write; a new one gets the default. */
   const writeText = (file: string, contents: string) =>
@@ -180,7 +203,7 @@ const make = Effect.gen(function* () {
           ...(mode === undefined ? {} : { mode }),
         });
       }).pipe(Effect.provideContext(fileSystemContext)),
-      cannotWrite(file),
+      whenWriting(file),
     );
 
   const importTargetOf = (
@@ -201,27 +224,43 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const entry = yield* catalog.resolve(input);
           if (entry.readOnly) {
-            return yield* refuse("readOnly", "That file is set by your organization.");
+            return yield* new InstructionError({
+              reason: "readOnly",
+              message: "That file is set by your organization.",
+            });
           }
           const bytes = encoder.encode(input.contents);
           if (bytes.byteLength > INSTRUCTION_MAX_BYTES) {
-            return yield* refuse("tooLarge", LIMIT_MESSAGE);
+            return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
           }
           const target = yield* writeTargetAt(entry.path);
           const current = yield* readTextAt(target);
-          if (current._tag === "TooLarge") return yield* refuse("tooLarge", LIMIT_MESSAGE);
+          if (current._tag === "TooLarge")
+            return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
           if (current._tag === "Unreadable") {
-            return yield* refuse("readOnly", "T3 Code can't read that file as text.");
+            return yield* new InstructionError({
+              reason: "readOnly",
+              message: "T3 Code can't read that file as text.",
+            });
           }
           if (current._tag === "Missing" && input.expectedRevision !== null) {
-            return yield* refuse("changedOnDisk", "That file changed on disk. Reload it first.");
+            return yield* new InstructionError({
+              reason: "changedOnDisk",
+              message: "That file changed on disk. Reload it first.",
+            });
           }
           if (current._tag === "Read") {
             if (input.expectedRevision === null) {
-              return yield* refuse("exists", "That file already exists.");
+              return yield* new InstructionError({
+                reason: "exists",
+                message: "That file already exists.",
+              });
             }
             if (input.expectedRevision !== current.revision) {
-              return yield* refuse("changedOnDisk", "That file changed on disk. Reload it first.");
+              return yield* new InstructionError({
+                reason: "changedOnDisk",
+                message: "That file changed on disk. Reload it first.",
+              });
             }
           }
           yield* writeText(target, input.contents);
@@ -343,7 +382,7 @@ const make = Effect.gen(function* () {
       const facts = yield* inspectAt(reach.joinPath);
       // The line was all the file held and the file is not a link: nothing is left worth keeping.
       if (updated.trim() === "" && facts.linkTarget === undefined) {
-        yield* guard(fileSystem.remove(reach.joinPath), cannotWrite(reach.joinPath));
+        yield* guard(fileSystem.remove(reach.joinPath), whenWriting(reach.joinPath));
       } else {
         yield* writeText(target, updated);
       }
@@ -406,10 +445,10 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const entry = yield* catalog.resolve(input);
         if (entry.scope !== "global" || entry.kind !== "shared") {
-          return yield* refuse(
-            "unknownEntry",
-            "Only the Global instructions can be turned on or off.",
-          );
+          return yield* new InstructionError({
+            reason: "unknownEntry",
+            message: "Only the Global instructions can be turned on or off.",
+          });
         }
         const view = yield* catalog.shared;
         const { picked, unknown } = pickAgents(view, input.agents);
@@ -435,7 +474,10 @@ const make = Effect.gen(function* () {
           (reach) => reach.instanceId === input.instanceId && reach.driver === "claudeAgent",
         );
         if (claude === undefined) {
-          return yield* refuse("unknownEntry", "That isn't a Claude agent in this environment.");
+          return yield* new InstructionError({
+            reason: "unknownEntry",
+            message: "That isn't a Claude agent in this environment.",
+          });
         }
         const file = path.join(claude.directory, "settings.json");
         const text = yield* readSettingsText(file).pipe(Effect.provideContext(fileSystemContext));
@@ -449,7 +491,12 @@ const make = Effect.gen(function* () {
           changes: claudeInstructionChanges(settings, input.value),
         }).pipe(Effect.provideContext(fileSystemContext));
         if (result === "invalid") return yield* invalidSettings;
-        if (result === "failed") return yield* cannotWrite(file);
+        if (result === "failed") {
+          return yield* new InstructionError({
+            reason: "readOnly",
+            message: `T3 Code isn't allowed to change ${path.basename(file)}.`,
+          });
+        }
       }),
     );
   });
@@ -462,35 +509,59 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const entry = yield* catalog.resolve(input);
           if (entry.kind !== "claude" || entry.relativePath !== "CLAUDE.md") {
-            return yield* refuse("unknownEntry", "Only a project's CLAUDE.md can be shared.");
+            return yield* new InstructionError({
+              reason: "unknownEntry",
+              message: "Only a project's CLAUDE.md can be shared.",
+            });
           }
           const from = yield* inspectAt(entry.path);
-          if (!from.isFile) return yield* refuse("notFound", "That file doesn't exist.");
+          if (!from.isFile)
+            return yield* new InstructionError({
+              reason: "notFound",
+              message: "That file doesn't exist.",
+            });
           const agentsMd = path.join(path.dirname(entry.path), "AGENTS.md");
           const into = yield* inspectAt(agentsMd);
           if (!input.merge) {
             if (into.present)
-              return yield* refuse("exists", "This project already has an AGENTS.md.");
-            return yield* guard(fileSystem.rename(entry.path, agentsMd), cannotWrite(agentsMd));
+              return yield* new InstructionError({
+                reason: "exists",
+                message: "This project already has an AGENTS.md.",
+              });
+            return yield* guard(fileSystem.rename(entry.path, agentsMd), whenWriting(agentsMd));
           }
           if (!into.isFile) {
-            return yield* refuse("notFound", "This project has no AGENTS.md to merge into.");
+            return yield* new InstructionError({
+              reason: "notFound",
+              message: "This project has no AGENTS.md to merge into.",
+            });
           }
           // AGENTS.md is a link to this very file, so deleting the file would take AGENTS.md too.
           if (from.linkTarget === undefined && into.real === from.real) {
-            return yield* refuse("exists", "AGENTS.md is a link to CLAUDE.md.");
+            return yield* new InstructionError({
+              reason: "exists",
+              message: "AGENTS.md is a link to CLAUDE.md.",
+            });
           }
 
           const claudeText = yield* readTextAt(entry.path);
-          if (claudeText._tag === "TooLarge") return yield* refuse("tooLarge", LIMIT_MESSAGE);
+          if (claudeText._tag === "TooLarge")
+            return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
           if (claudeText._tag !== "Read") {
-            return yield* refuse("readOnly", "T3 Code can't read that file as text.");
+            return yield* new InstructionError({
+              reason: "readOnly",
+              message: "T3 Code can't read that file as text.",
+            });
           }
           const agentsTarget = yield* writeTargetAt(agentsMd);
           const agentsText = yield* readTextAt(agentsTarget);
-          if (agentsText._tag === "TooLarge") return yield* refuse("tooLarge", LIMIT_MESSAGE);
+          if (agentsText._tag === "TooLarge")
+            return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
           if (agentsText._tag !== "Read") {
-            return yield* refuse("readOnly", "T3 Code can't read AGENTS.md as text.");
+            return yield* new InstructionError({
+              reason: "readOnly",
+              message: "T3 Code can't read AGENTS.md as text.",
+            });
           }
 
           // A line that imports AGENTS.md would only point AGENTS.md at itself, so it doesn't move.
@@ -507,12 +578,12 @@ const make = Effect.gen(function* () {
                 ? `${own}\n`
                 : `${agentsText.text}${agentsText.text.endsWith("\n") ? "" : "\n"}\n${own}\n`;
             if (encoder.encode(joined).byteLength > INSTRUCTION_MAX_BYTES) {
-              return yield* refuse("tooLarge", LIMIT_MESSAGE);
+              return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
             }
             yield* writeText(agentsTarget, joined);
           }
           // The text is in AGENTS.md now, so CLAUDE.md can go. A link goes and what it points at stays.
-          yield* guard(fileSystem.remove(entry.path), cannotWrite(entry.path));
+          yield* guard(fileSystem.remove(entry.path), whenWriting(entry.path));
         }),
       );
     },
@@ -524,37 +595,54 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const entry = yield* catalog.resolve(input);
           if (entry.kind !== "agentOwn" || entry.owner === undefined) {
-            return yield* refuse("unknownEntry", "Only an agent's own instructions can be moved.");
+            return yield* new InstructionError({
+              reason: "unknownEntry",
+              message: "Only an agent's own instructions can be moved.",
+            });
           }
           const view = yield* catalog.shared;
           const reach = view.agents.find((candidate) => candidate.instanceId === entry.owner);
           if (reach === undefined) {
-            return yield* refuse("unknownEntry", "That agent isn't enabled in this environment.");
+            return yield* new InstructionError({
+              reason: "unknownEntry",
+              message: "That agent isn't enabled in this environment.",
+            });
           }
           // Nothing of its own to keep: it already reads the shared file, or has no file.
           if (reach.ownFile === undefined) {
             if (reach.state !== "none") return;
-            return yield* refuse("notFound", "That agent has no instructions of its own.");
+            return yield* new InstructionError({
+              reason: "notFound",
+              message: "That agent has no instructions of its own.",
+            });
           }
           const ownFile = reach.ownFile;
           const own = yield* readTextAt(ownFile);
-          if (own._tag === "TooLarge") return yield* refuse("tooLarge", LIMIT_MESSAGE);
+          if (own._tag === "TooLarge")
+            return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
           if (own._tag !== "Read") {
-            return yield* refuse("notFound", "T3 Code can't read that agent's instructions.");
+            return yield* new InstructionError({
+              reason: "notFound",
+              message: "T3 Code can't read that agent's instructions.",
+            });
           }
           const before = yield* inspectAt(ownFile);
 
           const sharedTarget = yield* writeTargetAt(view.file.path);
           const shared = yield* readTextAt(sharedTarget);
-          if (shared._tag === "TooLarge") return yield* refuse("tooLarge", LIMIT_MESSAGE);
+          if (shared._tag === "TooLarge")
+            return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
           if (shared._tag === "Unreadable") {
-            return yield* refuse("readOnly", "T3 Code can't read the Global instructions as text.");
+            return yield* new InstructionError({
+              reason: "readOnly",
+              message: "T3 Code can't read the Global instructions as text.",
+            });
           }
           const sharedText = shared._tag === "Read" ? shared.text : "";
           const merged = adoptedText(sharedText, reach.displayName, own.text);
           const mergedBytes = encoder.encode(merged);
           if (mergedBytes.byteLength > INSTRUCTION_MAX_BYTES) {
-            return yield* refuse("tooLarge", LIMIT_MESSAGE);
+            return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
           }
           if (shared._tag === "Missing" || merged !== sharedText) {
             yield* writeText(sharedTarget, merged);
@@ -575,10 +663,13 @@ const make = Effect.gen(function* () {
                 );
               }),
             }).pipe(Effect.provideContext(fileSystemContext)),
-            cannotLink(ownFile),
+            whenLinking(ownFile),
           );
           if (!replaced) {
-            return yield* refuse("changedOnDisk", "That file changed on disk. Nothing was linked.");
+            return yield* new InstructionError({
+              reason: "changedOnDisk",
+              message: "That file changed on disk. Nothing was linked.",
+            });
           }
         }),
       );
@@ -591,18 +682,31 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const entry = yield* catalog.resolve(input);
           if (entry.readOnly) {
-            return yield* refuse("readOnly", "That file is set by your organization.");
+            return yield* new InstructionError({
+              reason: "readOnly",
+              message: "That file is set by your organization.",
+            });
           }
           if (entry.kind === "shared") {
-            return yield* refuse("readOnly", "AGENTS.md files can't be deleted here.");
+            return yield* new InstructionError({
+              reason: "readOnly",
+              message: "AGENTS.md files can't be deleted here.",
+            });
           }
           const facts = yield* inspectAt(entry.path);
-          if (!facts.present) return yield* refuse("notFound", "That file doesn't exist.");
+          if (!facts.present)
+            return yield* new InstructionError({
+              reason: "notFound",
+              message: "That file doesn't exist.",
+            });
           if (!facts.isFile && facts.linkTarget === undefined) {
-            return yield* refuse("unknownEntry", "That isn't a file.");
+            return yield* new InstructionError({
+              reason: "unknownEntry",
+              message: "That isn't a file.",
+            });
           }
           // A non-recursive remove: a link goes and its target stays, a file goes, a folder fails.
-          yield* guard(fileSystem.remove(entry.path), cannotWrite(entry.path));
+          yield* guard(fileSystem.remove(entry.path), whenWriting(entry.path));
         }),
       );
     },

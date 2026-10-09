@@ -100,11 +100,11 @@ const nestedId = (relativePath: string) => `project:nested:${relativePath}`;
 const claudeHomeId = (instanceId: string) => `global:claude:${instanceId}`;
 const agentOwnId = (instanceId: string) => `global:agentOwn:${instanceId}`;
 
-const refuse = (reason: InstructionError["reason"], message: string) =>
-  new InstructionError({ reason, message });
-
 const unknownEntry = () =>
-  refuse("unknownEntry", "That isn't an instruction file T3 Code manages.");
+  new InstructionError({
+    reason: "unknownEntry",
+    message: "That isn't an instruction file T3 Code manages.",
+  });
 
 /** A flag-style environment variable counts as set unless it is empty, `0` or `false`. */
 const isFlagSet = (value: string | undefined) =>
@@ -731,7 +731,10 @@ const make = Effect.gen(function* () {
             fileSystem.realPath(cwd).pipe(Effect.option),
           ]);
           if (Option.isNone(realFolder) || Option.isNone(realRoot)) {
-            return yield* refuse("notFound", "That folder doesn't exist.");
+            return yield* new InstructionError({
+              reason: "notFound",
+              message: "That folder doesn't exist.",
+            });
           }
           const inside = path.relative(realRoot.value, realFolder.value);
           if (inside === ".." || inside.startsWith(`..${path.sep}`) || path.isAbsolute(inside)) {

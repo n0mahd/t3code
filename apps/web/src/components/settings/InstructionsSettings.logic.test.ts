@@ -1316,6 +1316,7 @@ describe("saying what happened", () => {
     expect(failureText("linkFailed")).toBe(
       "Couldn't make the link. On Windows, turn on Developer Mode.",
     );
+    expect(failureText("writeFailed")).toBe("Couldn't change that file.");
   });
 
   it("says who was turned on or off, and who couldn't be", () => {

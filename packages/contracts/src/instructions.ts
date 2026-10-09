@@ -244,6 +244,8 @@ export class InstructionError extends Schema.TaggedError<InstructionError>()("In
     "unregisteredProject",
     "invalidSettings",
     "linkFailed",
+    "writeFailed",
   ]),
   message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
 }) {}

@@ -91,6 +91,11 @@ const withManager = <A, E, R>(
   options: {
     readonly codex?: CodexDouble;
     readonly env?: NodeJS.ProcessEnv;
+    /** Provider instances over the defaults, such as a Codex instance with a shadow home. */
+    readonly instances?: Record<
+      string,
+      { driver: ProviderDriverKind; enabled: boolean; config?: unknown }
+    >;
   },
   use: (services: {
     readonly manager: SkillManager.SkillManager["Service"];
@@ -124,12 +129,15 @@ const withManager = <A, E, R>(
     const catalog = SkillCatalog.layer.pipe(
       Layer.provide(
         Settings.layerTest({
-          providerInstances: Object.fromEntries(
-            ["cursor", "grok", "opencode", "antigravity", "pi"].map((driver) => [
-              ProviderInstanceId.make(driver),
-              { driver: ProviderDriverKind.make(driver), enabled: true },
-            ]),
-          ),
+          providerInstances: {
+            ...Object.fromEntries(
+              ["cursor", "grok", "opencode", "antigravity", "pi"].map((driver) => [
+                ProviderInstanceId.make(driver),
+                { driver: ProviderDriverKind.make(driver), enabled: true },
+              ]),
+            ),
+            ...options.instances,
+          },
         }),
       ),
     );
@@ -231,6 +239,55 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("agent skill switche
                 (parseToml(yield* fs.readFileString(codex.file)) as { skills?: unknown }).skills,
               ).toBeUndefined();
             }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "reads the setting back from the shadow home Codex runs in, not the shared home",
+      () =>
+        Effect.gen(function* () {
+          const { fs, home } = yield* makeMachine;
+          // The shared home has no config.toml, so the shadow home keeps a file of its own, and
+          // that is where Codex's app-server writes.
+          const shared = `${home}/shared-codex`;
+          const shadow = `${home}/shadow-codex`;
+          const codex = yield* makeCodexDouble(shadow);
+          yield* withManager(
+            home,
+            [],
+            {
+              codex,
+              instances: {
+                codex: {
+                  driver: ProviderDriverKind.make("codex"),
+                  enabled: true,
+                  config: { homePath: shared, shadowHomePath: shadow },
+                },
+              },
+            },
+            ({ manager, catalog }) =>
+              Effect.gen(function* () {
+                const { skills } = yield* catalog.list({});
+                const alpha = refOf(skills, "global", "alpha");
+
+                const off = yield* manager.disable({ skills: [alpha], agents: [agent("codex")] });
+
+                expect(off.outcomes).toEqual([
+                  { skill: alpha, status: "changed", blocked: [], affected: [] },
+                ]);
+                expect(yield* fs.readFileString(codex.file)).toContain("enabled = false");
+                expect(yield* fs.exists(`${shared}/config.toml`)).toBe(false);
+                expect(stateOf((yield* catalog.list({})).skills, "global", "alpha").codex).toBe(
+                  "off",
+                );
+
+                const on = yield* manager.enable({ skills: [alpha], agents: [agent("codex")] });
+                expect(on.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+                expect(stateOf((yield* catalog.list({})).skills, "global", "alpha").codex).toBe(
+                  "direct",
+                );
+              }),
           );
         }),
     );

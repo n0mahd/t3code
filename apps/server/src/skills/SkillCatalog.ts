@@ -71,6 +71,7 @@ import {
   type SkillSwitchView,
   type SwitchedSkill,
 } from "./AgentSkillSettings.ts";
+import { codexSettingsHome } from "./CodexSkillSettings.ts";
 import {
   LIBRARY_FOLDER,
   RegisteredProjects,
@@ -493,7 +494,12 @@ const make = Effect.gen(function* () {
           reads,
           switches: {
             driver: table.agent,
-            configHome,
+            // The skill folders follow the instance's home; its settings file is the one its
+            // Codex runs with, which is the shadow home's when it has one.
+            configHome:
+              table.agent === "codex"
+                ? codexSettingsHome(path, config.config, configHome, homeDirectory)
+                : configHome,
             homeDirectory,
             environment: yield* mergeProviderInstanceEnvironment(
               config.environment,

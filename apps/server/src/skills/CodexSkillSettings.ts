@@ -20,13 +20,21 @@
  * - A project's `.codex/config.toml` is not read: its skill rules did not apply in an untrusted
  *   project, and the page keeps to the user's own file.
  *
+ * An instance with a shadow home (`shadowHomePath`) runs Codex there, so the app-server writes
+ * the shadow home's `config.toml` and that is the file to read back (`codexSettingsHome`). The
+ * shadow home links the shared home's `config.toml` only when it existed as the instance started;
+ * without one the write lands in a file of the shadow home's own.
+ *
  * @module CodexSkillSettings
  */
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { parse as parseToml } from "smol-toml";
 import type { SkillSettingsChange } from "@t3tools/provider-core/server/driver";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 
 import type { SkillSwitchContext, SkillSwitchView, SwitchedSkill } from "./AgentSkillSettings.ts";
 
@@ -38,6 +46,27 @@ export interface CodexSkillRule {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
+
+const decodeShadowHome = Schema.decodeUnknownOption(
+  Schema.Struct({ shadowHomePath: Schema.optional(Schema.String) }),
+);
+
+/**
+ * The home an instance's Codex runs with, whose `config.toml` its app-server writes: the shadow
+ * home when the instance has one, else its home (`sharedHome`). The driver's own layout makes
+ * the same choice (`resolveCodexHomeLayout`); the skill folders stay where `sharedHome` says,
+ * since the shadow home links the shared `skills` folder.
+ */
+export const codexSettingsHome = (
+  path: Path.Path,
+  instanceConfig: unknown,
+  sharedHome: string,
+  homeDirectory: string,
+) => {
+  const shadow =
+    Option.getOrUndefined(decodeShadowHome(instanceConfig))?.shadowHomePath?.trim() ?? "";
+  return shadow === "" ? sharedHome : path.resolve(expandHomePath(shadow, homeDirectory));
+};
 
 /** The rules in the user's config, in file order; none when it is missing or can't be parsed. */
 export const readCodexSkillRules = (context: SkillSwitchContext) =>

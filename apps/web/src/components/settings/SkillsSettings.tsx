@@ -115,6 +115,13 @@ function EnvironmentSkills({
   const [onlyAttention, setOnlyAttention] = useState(false);
   const [detailReload, setDetailReload] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   // A new view starts at the top of the page.
   const show = (next: View) => {
     setView(next);
@@ -152,6 +159,7 @@ function EnvironmentSkills({
     setLoadError(null);
     void load()
       .then((loaded) => {
+        if (!mounted.current) return;
         if (!loaded) {
           setLoadError(LOAD_ERROR);
           return;
@@ -159,8 +167,12 @@ function EnvironmentSkills({
         setData(loaded);
         show({ kind: "list" });
       })
-      .catch(() => setLoadError(LOAD_ERROR))
-      .finally(() => setRefreshing(false));
+      .catch(() => {
+        if (mounted.current) setLoadError(LOAD_ERROR);
+      })
+      .finally(() => {
+        if (mounted.current) setRefreshing(false);
+      });
   };
 
   const skills = data?.skills ?? null;

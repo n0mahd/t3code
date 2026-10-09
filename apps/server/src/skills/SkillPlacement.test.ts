@@ -1730,14 +1730,19 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
   });
 
   describe("the git worktrees of a project that uses a library skill", () => {
-    /** A worktree of `project` with the links the worktree hook makes in it. */
-    const addWorktree = (project: string, name: string) =>
+    /**
+     * A worktree of the repository `project` is in, with the links the worktree hook makes in it.
+     * `prefix` is the project's folder in the repository, as git says it.
+     */
+    const addWorktree = (project: string, name: string, prefix = "") =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const worktree = path.join(path.dirname(project), `${path.basename(project)}-${name}`);
+        const up = prefix.split("/").filter((segment) => segment !== "");
+        const root = path.resolve(project, ...up.map(() => ".."));
+        const worktree = path.join(path.dirname(root), `${path.basename(root)}-${name}`);
         yield* git(project, ["worktree", "add", "-q", "-b", name, worktree]);
-        yield* restoreLibraryLinks({ project, worktree }).pipe(
+        yield* restoreLibraryLinks({ project, worktree, prefix }).pipe(
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
         );
@@ -1845,6 +1850,60 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
                 );
               }
               expect(blockLines(yield* exclude(web))).toEqual([]);
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "keeps its links at the same folder of each worktree, and removes them from there",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, api, write, library } = yield* makeMachine;
+          // `repos/mono` is the repository; the project is its `apps/site` folder.
+          const mono = path.join(home, "repos/mono");
+          const site = path.join(mono, "apps/site");
+          yield* write("repos/mono/apps/site/README.md", "# site\n");
+          yield* git(mono, ["init", "-q", "-b", "main"]);
+          yield* git(mono, ["config", "core.excludesFile", path.join(home, "global-ignore")]);
+          yield* git(mono, ["add", "-A"]);
+          yield* git(mono, ["commit", "-q", "-m", "init"]);
+          // Untracked, like the skill of the other projects, so a worktree starts without it.
+          yield* write(
+            "repos/mono/apps/site/.agents/skills/db-migrations/SKILL.md",
+            skillFile("db-migrations"),
+          );
+          yield* withManager(home, [site, api], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const verify = refOf(
+                (yield* catalog.list({ cwd: site })).skills,
+                "project",
+                "db-migrations",
+              );
+              yield* manager.place({
+                cwd: site,
+                skills: [verify],
+                to: { kind: "projects", cwds: [site, api] },
+              });
+              const entry = path.join(library, "db-migrations");
+              const worktree = yield* addWorktree(site, "feature", "apps/site/");
+              // The link is in the project's folder of the worktree, not at its root.
+              expect(
+                yield* fs.readLink(path.join(worktree, "apps/site/.agents/skills/db-migrations")),
+              ).toBe(entry);
+              expect(yield* fs.exists(path.join(worktree, ".agents"))).toBe(false);
+
+              // The project stops using the skill: the worktree's link goes too.
+              const skill = refOf((yield* catalog.list({})).skills, "global", "db-migrations");
+              const moved = yield* manager.place({
+                skills: [skill],
+                to: { kind: "projects", cwds: [api] },
+              });
+              expect(moved.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+              expect(yield* fs.exists(path.join(site, ".agents/skills/db-migrations"))).toBe(false);
+              expect(
+                yield* fs.exists(path.join(worktree, "apps/site/.agents/skills/db-migrations")),
+              ).toBe(false);
             }),
           );
         }),

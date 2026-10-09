@@ -266,7 +266,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillLibrary", (it)
           yield* fs.makeDirectory(path.join(worktree, ".agents/skills/alpha"), { recursive: true });
           yield* fs.writeFileString(path.join(worktree, ".agents/skills/alpha/SKILL.md"), "kept");
 
-          yield* restoreLibraryLinks({ project: web, worktree }).pipe(
+          yield* restoreLibraryLinks({ project: web, worktree, prefix: "" }).pipe(
             Effect.provideService(HostProcess.HomeDirectory, home),
           );
 
@@ -281,17 +281,38 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillLibrary", (it)
         }),
     );
 
+    it.effect.skipIf(!symlinksSupported)(
+      "makes the links in the project's own folder of a worktree of the whole repository",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, library, web } = yield* makeMachine;
+          const worktree = path.join(home, "worktrees/monorepo-feature");
+
+          // The project is `apps/web` of its repository, and the worktree is the repository.
+          yield* restoreLibraryLinks({ project: web, worktree, prefix: "apps/web/" }).pipe(
+            Effect.provideService(HostProcess.HomeDirectory, home),
+          );
+
+          expect(
+            yield* fs.readLink(path.join(worktree, "apps/web/.agents/skills/db-migrations")),
+          ).toBe(path.join(library, "db-migrations"));
+          expect(yield* fs.exists(path.join(worktree, ".agents"))).toBe(false);
+        }),
+    );
+
     it.effect("does nothing for a project without links, or one that has gone", () =>
       Effect.gen(function* () {
         const { fs, path, home, marketing } = yield* makeMachine;
         const worktree = path.join(home, "worktrees/marketing-feature");
 
-        yield* restoreLibraryLinks({ project: marketing, worktree }).pipe(
+        yield* restoreLibraryLinks({ project: marketing, worktree, prefix: "" }).pipe(
           Effect.provideService(HostProcess.HomeDirectory, home),
         );
-        yield* restoreLibraryLinks({ project: path.join(home, "repos/gone"), worktree }).pipe(
-          Effect.provideService(HostProcess.HomeDirectory, home),
-        );
+        yield* restoreLibraryLinks({
+          project: path.join(home, "repos/gone"),
+          worktree,
+          prefix: "",
+        }).pipe(Effect.provideService(HostProcess.HomeDirectory, home));
 
         expect(yield* fs.exists(worktree)).toBe(false);
       }),

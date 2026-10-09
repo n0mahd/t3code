@@ -752,10 +752,22 @@ export const make = Effect.gen(function* () {
    * they are made. A failure is logged and goes no further: the checkout is made either way.
    */
   const linkLibrarySkills = (project: string, worktree: string) =>
-    restoreLibraryLinks({ project, worktree }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
+    gitCore
+      .execute({
+        operation: "GitManager.linkLibrarySkills",
+        cwd: project,
+        args: ["rev-parse", "--show-prefix"],
+        allowNonZeroExit: true,
+      })
+      .pipe(
+        // The project is a folder inside the repository when this isn't empty, and the worktree
+        // has it at the same path under its own root.
+        Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim() : "")),
+        Effect.orElseSucceed(() => ""),
+        Effect.flatMap((prefix) => restoreLibraryLinks({ project, worktree, prefix })),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, path),
+      );
   const createWorktree: GitManager["Service"]["createWorktree"] = Effect.fn(
     "GitManager.createWorktree",
   )(function* (input, options) {

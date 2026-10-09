@@ -294,14 +294,17 @@ function createBareRemote(): Effect.Effect<
 /**
  * A repository whose project uses `db-migrations` from the skill library under `home` and `solo`
  * from a folder of its own, linked into `.agents/skills` and, for the library skill, also into
- * `.claude/skills`. It is committed, so a worktree has the same files but none of the links.
+ * `.claude/skills`. The project is the repository's `subfolder` when given, else the repository
+ * itself. The links are untracked, so a worktree has the same files but none of them.
  */
-function repoWithLibrarySkill() {
+function repoWithLibrarySkill(subfolder = "") {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const home = yield* makeTempDir("t3code-skill-home-");
-    const cwd = yield* makeTempDir("t3code-git-manager-");
-    yield* initRepo(cwd);
+    const root = yield* makeTempDir("t3code-git-manager-");
+    yield* initRepo(root);
+    const cwd = NodePath.join(root, subfolder);
+    yield* fileSystem.makeDirectory(cwd, { recursive: true });
     const entry = NodePath.join(home, ".agents/skill-library/db-migrations");
     yield* fileSystem.makeDirectory(entry, { recursive: true });
     yield* fileSystem.writeFileString(
@@ -317,7 +320,7 @@ function repoWithLibrarySkill() {
       NodePath.join(cwd, "elsewhere/solo"),
       NodePath.join(cwd, ".agents/skills/solo"),
     );
-    return { home, cwd, entry };
+    return { home, root, cwd, entry };
   });
 }
 
@@ -4955,6 +4958,34 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         expect(yield* fileSystem.exists(NodePath.join(worktree, ".agents/skills/solo"))).toBe(
           false,
         );
+      }),
+  );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "links a project's library skills at its own folder of the worktree when it is a folder in its repository",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const { home, cwd, entry } = yield* repoWithLibrarySkill("apps/site");
+        const { manager } = yield* makeManager();
+        const worktree = NodePath.join(yield* makeTempDir("t3code-git-worktrees-"), "feature");
+
+        yield* manager
+          .createWorktree({
+            cwd,
+            path: worktree,
+            refName: "main",
+            newRefName: "feature/site-links",
+          })
+          .pipe(Effect.provideService(HostProcess.HomeDirectory, home));
+
+        expect(
+          yield* fileSystem.readLink(
+            NodePath.join(worktree, "apps/site/.agents/skills/db-migrations"),
+          ),
+        ).toBe(entry);
+        // The worktree's root is not the project, so nothing lands there.
+        expect(yield* fileSystem.exists(NodePath.join(worktree, ".agents"))).toBe(false);
       }),
   );
 

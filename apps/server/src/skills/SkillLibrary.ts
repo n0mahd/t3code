@@ -136,9 +136,17 @@ export const libraryLinksOf = Effect.fn("SkillLibrary.libraryLinksOf")(function*
  * Links to a project's library skills into a worktree that was just made from it. The links sit
  * outside git, so a worktree has none until they are made. Nothing in the way is replaced, and a
  * failure is logged and goes no further: a worktree without the links is still a worktree.
+ *
+ * A worktree is a checkout of the whole repository, so a project that is a folder inside its
+ * repository is at `prefix` under the worktree's root.
  */
 export const restoreLibraryLinks = Effect.fn("SkillLibrary.restoreLibraryLinks")(
-  function* (input: { readonly project: string; readonly worktree: string }) {
+  function* (input: {
+    readonly project: string;
+    readonly worktree: string;
+    /** The project's folder relative to its repository's root, empty when it is the root. */
+    readonly prefix: string;
+  }) {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const home = yield* HostProcess.HomeDirectory;
@@ -155,7 +163,7 @@ export const restoreLibraryLinks = Effect.fn("SkillLibrary.restoreLibraryLinks")
         );
         if (target === undefined) continue;
         if (path.dirname(path.resolve(path.dirname(linkPath), target)) !== library) continue;
-        const created = path.join(input.worktree, folder, name);
+        const created = path.join(input.worktree, input.prefix, folder, name);
         yield* fileSystem.makeDirectory(path.dirname(created), { recursive: true });
         // A bare create: something already there, such as a skill the project commits, stays.
         yield* fileSystem.symlink(target, created).pipe(

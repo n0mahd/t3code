@@ -142,6 +142,29 @@ export const worktreesOf = Effect.fn("SkillGitExclude.worktreesOf")(function* (
 });
 
 /**
+ * The project's folder relative to its repository's root, as `git rev-parse --show-prefix` says:
+ * empty when the project is the root, and outside a git repository. A checkout of the repository
+ * has the project at that path under its own root.
+ */
+export const projectPrefixOf = Effect.fn("SkillGitExclude.projectPrefixOf")(function* (
+  projectRoot: string,
+) {
+  const vcs = yield* VcsProcess.VcsProcess;
+  const result = yield* vcs
+    .run({
+      operation: "SkillGitExclude.projectPrefixOf",
+      command: "git",
+      args: ["rev-parse", "--show-prefix"],
+      cwd: projectRoot,
+      allowNonZeroExit: true,
+      timeoutMs: 5_000,
+      maxOutputBytes: 16 * 1024,
+    })
+    .pipe(Effect.orElseSucceed(() => undefined));
+  return result === undefined || result.exitCode !== 0 ? "" : result.stdout.trim();
+});
+
+/**
  * Keeps a file T3 Code has just created in a project out of git: Claude Code's own
  * `.claude/settings.local.json`, which is the user's and not the repository's. Claude Code does
  * this itself when it creates the file: "Claude Code keeps it out of git when it creates the file"

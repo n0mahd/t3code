@@ -48,7 +48,7 @@ import {
 
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import type * as SkillCatalog from "./SkillCatalog.ts";
-import { updateExclude, worktreesOf } from "./SkillGitExclude.ts";
+import { projectPrefixOf, updateExclude, worktreesOf } from "./SkillGitExclude.ts";
 import { LIBRARY_FOLDER, libraryLinksOf, linkLeadsTo, type LibraryLink } from "./SkillLibrary.ts";
 import { createLink, removeLink, type RemoveLinkResult } from "./SkillLinks.ts";
 import { moveRecord, type LockScope, type MoveRecordResult } from "./SkillLockFiles.ts";
@@ -293,13 +293,15 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
     for (const project of new Set(links.map((link) => link.project))) {
       const own = yield* realPath(project);
       const worktrees = yield* inContext(worktreesOf(project));
+      // Each worktree holds the whole repository, so the project's folder is under its root.
+      const prefix = yield* inContext(projectPrefixOf(project));
       for (const worktree of worktrees) {
         // The checkout the project is in (or is inside) keeps what it has.
         const real = yield* realPath(worktree);
         if (own === real || own.startsWith(`${real}${path.sep}`)) continue;
         const found: Array<{ path: string; target: string }> = [];
         for (const link of links.filter((item) => item.project === project)) {
-          const created = path.join(worktree, link.folder, path.basename(link.path));
+          const created = path.join(worktree, prefix, link.folder, path.basename(link.path));
           const target = yield* fileSystem.readLink(created).pipe(
             Effect.map((value): string | undefined => value),
             Effect.orElseSucceed(() => undefined),

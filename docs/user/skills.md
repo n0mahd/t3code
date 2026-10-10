@@ -4,7 +4,8 @@ Open **Settings → Skills** on web and desktop to see which skills your agents 
 reads the environment and project chosen at the top of Settings, so with a remote environment you
 see that machine's skills. You can turn each skill on or off for every agent, or for one agent at a
 time, and choose which projects use it. To change what a skill says, edit its `SKILL.md` in your
-editor or ask an agent.
+editor or ask an agent. In the desktop app, you can show a skill or instruction file from this
+computer in your file manager.
 
 The agents are your enabled provider instances. Two Claude instances show as two agents, each
 with its own config folder.
@@ -77,6 +78,14 @@ a synced folder, stays where it is.
 
 Agents running in T3 Code can list skills and turn them on or off for agents too; they can't
 move or delete them.
+
+## Built in and plugins
+
+Skills that come with an agent are listed apart, under **Built in and plugins**: Codex's system
+skills and the skills of your installed Claude Code plugins. They belong to that agent, so T3 Code
+never moves or deletes them, and no other agent can have them. Codex's can be turned on or off like
+any other skill. A Claude plugin's skills come and go with the plugin, so turn the plugin on or off
+in Claude Code with `/plugin`.
 
 ## Instructions
 

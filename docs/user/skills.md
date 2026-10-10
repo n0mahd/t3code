@@ -96,9 +96,9 @@ agents already link to. Turn agents on or off for its `AGENTS.md`, or edit it. A
 the agent to it. T3 Code never replaces a file any other way. Global also lists Claude's
 `CLAUDE.md` and the file your organization sets, which is read-only.
 
-Claude skips a project's `AGENTS.md` when the project has a `CLAUDE.local.md` or a `CLAUDE.md`. Set
-**Claude reads AGENTS.md** to **Alongside any CLAUDE.md** to read both. It applies in every
-project and needs Claude Code 2.1.277 or later.
+Claude skips a project's `AGENTS.md` when the project has a `CLAUDE.md`, a `.claude/CLAUDE.md` or a
+`CLAUDE.local.md`. Set **Claude reads AGENTS.md** to **Alongside any CLAUDE.md** to read both. It
+applies in every project and needs Claude Code 2.1.277 or later.
 
 To make a project's `CLAUDE.md` the file every agent reads, **Move to AGENTS.md** renames it, or
 **Merge into AGENTS.md**, when the project already has an `AGENTS.md`, adds its text to the end and

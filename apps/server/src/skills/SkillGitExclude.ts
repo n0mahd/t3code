@@ -42,7 +42,9 @@ const excludeLine = (relative: string) =>
 
 /**
  * `text` with the lines in `add` in T3 Code's block and those in `remove` out of it. A block left
- * empty is removed whole. An unfinished block (a start without its end) is left as it is.
+ * empty is removed whole. An unfinished block (a start without its end) is left as it is, and so
+ * is the text around it: a second block would pair the dangling start with the new end, and T3
+ * Code could no longer tell which lines are its own.
  */
 export const editExcludeBlock = (
   text: string,
@@ -53,14 +55,15 @@ export const editExcludeBlock = (
   if (lines.at(-1) === "") lines.pop();
   const start = lines.indexOf(block.start);
   const end = start < 0 ? -1 : lines.indexOf(block.end, start + 1);
-  const kept = start >= 0 && end > start ? lines.slice(start + 1, end) : [];
+  if (start >= 0 && end < 0) return text;
+  const kept = start >= 0 ? lines.slice(start + 1, end) : [];
   const removed = new Set(change.remove);
   const inBlock = [...kept.filter((line) => !removed.has(line)), ...change.add].filter(
     (line, index, all) => all.indexOf(line) === index,
   );
   const marked = inBlock.length === 0 ? [] : [block.start, ...inBlock, block.end];
   const next =
-    start >= 0 && end > start
+    start >= 0
       ? [...lines.slice(0, start), ...marked, ...lines.slice(end + 1)]
       : [...lines, ...marked];
   return next.length === 0 ? "" : `${next.join("\n")}\n`;

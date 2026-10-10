@@ -78,11 +78,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillGitExclude", (
     });
 
     it("leaves an unfinished block as it found it", () => {
-      const broken = `${EXCLUDE_BLOCK_START}\n/kept\n`;
+      const broken = `*.log\n${EXCLUDE_BLOCK_START}\n/kept\n`;
 
-      expect(editExcludeBlock(broken, { add: ["/a"], remove: [] })).toBe(
-        `${broken}${block("/a")}\n`,
-      );
+      expect(editExcludeBlock(broken, { add: ["/a"], remove: [] })).toBe(broken);
+      expect(editExcludeBlock(broken, { add: [], remove: ["/kept"] })).toBe(broken);
     });
   });
 
@@ -174,6 +173,25 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillGitExclude", (
 
         expect(yield* fs.exists(path.join(loose, ".git"))).toBe(false);
         expect(yield* fs.readDirectory(path.join(loose, ".agents"))).toEqual(["skills"]);
+      }),
+    );
+
+    it.effect("leaves an unfinished block alone, and goes on without failing", () =>
+      Effect.gen(function* () {
+        const { fs, path, repo } = yield* makeRepo;
+        const link = path.join(repo, ".agents/skills/db-migrations");
+        yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+        yield* fs.symlink(path.join(repo, "README.md"), link);
+        const exclude = path.join(repo, ".git/info/exclude");
+        const broken = `*.log\n${EXCLUDE_BLOCK_START}\n/kept\n`;
+        yield* fs.writeFileString(exclude, broken);
+
+        yield* run(updateExclude({ projectRoot: repo, links: [link], action: "add" }));
+        yield* run(updateExclude({ projectRoot: repo, links: [link], action: "remove" }));
+
+        // No second block is added, so a later edit never pairs the dangling start with a new end.
+        expect(yield* fs.readFileString(exclude)).toBe(broken);
+        expect((yield* git(repo, ["status", "--porcelain"])).stdout).toContain("?? .agents/");
       }),
     );
 

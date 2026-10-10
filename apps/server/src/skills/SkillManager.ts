@@ -776,9 +776,10 @@ const make = Effect.gen(function* () {
           ? Effect.succeed(true)
           : fileSystem.readLink(entry).pipe(
               Effect.as(true),
-              Effect.catchTag("PlatformError", (error) =>
-                error.reason._tag === "NotFound" ? Effect.succeed(false) : Effect.fail(error),
-              ),
+              Effect.catchTags({
+                PlatformError: (error) =>
+                  error.reason._tag === "NotFound" ? Effect.succeed(false) : Effect.fail(error),
+              }),
             ),
       ),
     );

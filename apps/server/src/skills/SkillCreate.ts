@@ -53,13 +53,15 @@ export const writeNewSkill = Effect.fn("SkillCreate.writeNewSkill")(function* (i
     );
     return yield* fs.rename(made, destination).pipe(
       Effect.as("created" as const),
-      Effect.catchTag("PlatformError", (error) => {
-        const cause: unknown = error.reason.cause;
-        const code =
-          typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
-        return error.reason._tag === "AlreadyExists" || code === "ENOTEMPTY" || code === "ENOTDIR"
-          ? Effect.succeed("taken" as const)
-          : Effect.fail(error);
+      Effect.catchTags({
+        PlatformError: (error) => {
+          const cause: unknown = error.reason.cause;
+          const code =
+            typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
+          return error.reason._tag === "AlreadyExists" || code === "ENOTEMPTY" || code === "ENOTDIR"
+            ? Effect.succeed("taken" as const)
+            : Effect.fail(error);
+        },
       }),
     );
   }).pipe(

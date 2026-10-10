@@ -18,6 +18,7 @@ import ProjectScriptsControl, {
 import type { ComponentProps } from "react";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
+import { SecretsControl } from "./SecretsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
@@ -141,6 +142,9 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   onDeleteScript={props.onDeleteProjectScript}
                 />
               ) : null}
+
+              {/* PROTOTYPE(agent-secrets): design review only, mock data, not wired to the server. */}
+              <SecretsControl />
             </div>
           </ThreadDetailsSection>
 

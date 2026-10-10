@@ -23,6 +23,8 @@ const GIT_UNDO_NOTE = "You can undo this with git.";
 /** Said instead of the above when the same change also sets Claude, which git doesn't track. */
 const GIT_UNDO_FILE_NOTE = "You can undo the file change with git.";
 const CANT_UNDO_NOTE = "This can't be undone.";
+/** Said with the git note when a file git tracks moves out of the project. */
+const LEAVES_PROJECT_NOTE = "It leaves the project for everyone who clones it.";
 
 /** The project's AGENTS.md, which a merge writes to. */
 const PROJECT_AGENTS_ID = "project:shared:AGENTS.md";
@@ -142,6 +144,17 @@ export type InstructionChange =
       readonly id: string;
       readonly name: string;
       readonly project: boolean;
+    }
+  | {
+      /** A project file's text goes to the end of the Global file, then the file is deleted. */
+      readonly kind: "moveToGlobal";
+      readonly id: string;
+      readonly name: string;
+    }
+  | {
+      /** The Global file's text goes to the end of the project's AGENTS.md. Global stays. */
+      readonly kind: "copyToProject";
+      readonly id: string;
     };
 
 export type InstructionPlan = {
@@ -386,6 +399,34 @@ function planDelete(
   };
 }
 
+function planMoveToGlobal(entry: InstructionEntry, name: string): InstructionPlan {
+  return {
+    change: { kind: "moveToGlobal", id: entry.id, name },
+    confirmation: {
+      title: `Move ${name} to Global?`,
+      body: `Its text goes at the end of your Global instructions, then ${name} is deleted from this project.`,
+      notes: [],
+      confirm: "Move",
+      destructive: false,
+    },
+  };
+}
+
+function planCopyToProject(entry: InstructionEntry, create: boolean): InstructionPlan {
+  return {
+    change: { kind: "copyToProject", id: entry.id },
+    confirmation: {
+      title: "Copy to this project?",
+      body: create
+        ? "This project gets an AGENTS.md with your Global instructions."
+        : "Your Global instructions go at the end of this project's AGENTS.md.",
+      notes: [],
+      confirm: "Copy",
+      destructive: false,
+    },
+  };
+}
+
 /** The project file ids a confirmation should ask git about, or null when it has nothing to ask. */
 export function instructionsToCheckWithGit(plan: InstructionPlan): readonly string[] | null {
   const { change } = plan;
@@ -393,6 +434,7 @@ export function instructionsToCheckWithGit(plan: InstructionPlan): readonly stri
   if (change.kind === "share" && change.project) {
     return change.merge ? [change.id, PROJECT_AGENTS_ID] : [change.id];
   }
+  if (change.kind === "moveToGlobal") return [change.id];
   return change.kind === "delete" && change.project ? [change.id] : null;
 }
 
@@ -406,7 +448,15 @@ export function withInstructionGitNote(
   tracked: readonly string[],
 ): InstructionPlan {
   const { change, confirmation } = plan;
-  if (!confirmation || (change.kind !== "share" && change.kind !== "delete")) return plan;
+  if (!confirmation) return plan;
+  if (change.kind === "moveToGlobal") {
+    if (!tracked.includes(change.id)) return plan;
+    return {
+      ...plan,
+      confirmation: { ...confirmation, notes: [LEAVES_PROJECT_NOTE, GIT_UNDO_NOTE] },
+    };
+  }
+  if (change.kind !== "share" && change.kind !== "delete") return plan;
   const files =
     change.kind === "share" && change.merge ? [change.id, PROJECT_AGENTS_ID] : [change.id];
   if (!files.every((id) => tracked.includes(id))) return plan;
@@ -929,6 +979,10 @@ export type InstructionActions = {
   /** Move the project's CLAUDE.md to AGENTS.md, or merge it into the one that is there. */
   readonly share: InstructionFix | null;
   readonly useGlobal: InstructionPlan | null;
+  /** Move a file in the project's top folder to Global. */
+  readonly moveToGlobal: InstructionPlan | null;
+  /** Copy the Global file to the project picked above the page. */
+  readonly copyToProject: InstructionPlan | null;
   readonly remove: InstructionPlan | null;
 };
 
@@ -954,6 +1008,8 @@ export function instructionActions(
         })
       : [];
   const owner = entry.owner === undefined ? undefined : agentOf(ctx, entry.owner);
+  // The project's AGENTS.md is listed, even while missing, whenever a project is picked.
+  const projectAgents = data.entries.find(isProjectAgentsFile);
   return {
     turnOnAll: turnOn.length > 0 ? enablePlan(entry.id, "enable", turnOn) : null,
     removeFromAgents: linked.length > 0 ? planRemove(entry, linked) : null,
@@ -961,6 +1017,14 @@ export function instructionActions(
     useGlobal:
       editable && entry.scope === "global" && entry.kind === "agentOwn" && owner
         ? planAdopt([{ entry, name: owner.displayName }])
+        : null,
+    moveToGlobal:
+      editable && entry.scope === "project" && entry.kind !== "nested"
+        ? planMoveToGlobal(entry, row.title)
+        : null,
+    copyToProject:
+      isGlobal && entry.exists && projectAgents
+        ? planCopyToProject(entry, !projectAgents.exists)
         : null,
     remove:
       editable && entry.kind !== "shared" && entry.kind !== "managed"
@@ -1067,6 +1131,7 @@ const REASON_TEXT: Record<Reason, string> = {
   unknownEntry: "That file isn't in the list any more.",
   unregisteredProject: "This project isn't set up in T3 Code.",
   invalidSettings: "Claude's settings file isn't valid JSON, so T3 Code left it alone.",
+  sameFile: "One file is a link to the other.",
   linkFailed: "Couldn't make the link. On Windows, turn on Developer Mode.",
   writeFailed: "Couldn't change that file.",
 };
@@ -1126,6 +1191,10 @@ export function describeChange(change: InstructionChange, ctx: SkillsContext): s
     }
     case "delete":
       return `Deleted ${change.name}.`;
+    case "moveToGlobal":
+      return `Moved ${change.name} to Global.`;
+    case "copyToProject":
+      return "Copied your Global instructions to this project.";
     case "enable":
     case "disable":
       return "";

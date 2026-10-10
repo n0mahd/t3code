@@ -1,7 +1,8 @@
-import type { EditorId, ServerProvider } from "@t3tools/contracts";
+import type { EditorId, ServerProvider, SkillUpdateEntry } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { BookOpenIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 
 import { useAfterDelay } from "../../hooks/useAfterDelay";
 import { cn } from "../../lib/utils";
@@ -25,6 +26,17 @@ import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
 import { SkillDetail } from "./SkillDetail";
 import { SkillSection, StandardInfo } from "./SkillList";
 import type { PlaceOptions } from "./SkillUseIn";
+import {
+  checkSummary,
+  describeUpdates,
+  ingestUpdates,
+  planUpdateAll,
+  skillsWithUpdates,
+  updateErrorReason,
+  withEntry,
+  type SkillUpdates,
+  type UpdateOutcome,
+} from "./SkillUpdates.logic";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -42,6 +54,7 @@ import {
   withGitNote,
   type ProjectOption,
   type Skill,
+  type SkillChange,
   type SkillPlan,
   type SkillsContext,
 } from "./SkillsSettings.logic";
@@ -52,6 +65,7 @@ const NO_EDITORS: readonly EditorId[] = [];
 const SKELETON_DELAY_MS = 150;
 const LOAD_ERROR = "Couldn't read this environment's skill folders.";
 const CHANGE_ERROR = "Couldn't change the skills here.";
+const CHECK_ERROR = "Couldn't check for updates.";
 
 type PickedProject = { id: string; label: string; cwd: string };
 type Loaded = ReturnType<typeof ingestSkills>;
@@ -85,7 +99,11 @@ export function SkillsSettings() {
   const [subpage, setSubpage] = useState(false);
   /** Rows have checkboxes, and a bar at the bottom acts on the ticked ones. */
   const [selecting, setSelecting] = useState(false);
+  /** Each press of Check for updates, which the environment's skills below act on. */
+  const [checkRequest, setCheckRequest] = useState(0);
+  const [checking, setChecking] = useState(false);
   const canSelect = environment !== undefined && !missingProject && !subpage;
+  const connected = environment?.connection.phase === "connected";
   return (
     <SettingsPageContainer width="expanded" hideScopeOnPhone={subpage}>
       <div className={cn("space-y-1", subpage && "hidden sm:block")}>
@@ -94,6 +112,18 @@ export function SkillsSettings() {
           <h1 className="text-lg font-semibold">Skills</h1>
           <StandardInfo />
           <span className="flex-1" />
+          {canSelect && (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label="Check for updates"
+              disabled={checking || !connected}
+              onClick={() => setCheckRequest((count) => count + 1)}
+            >
+              <RefreshIcon refreshing={checking} />
+              <span className="hidden sm:inline">Check for updates</span>
+            </Button>
+          )}
           {canSelect && (
             <Button
               size="xs"
@@ -119,6 +149,8 @@ export function SkillsSettings() {
           environment={environment}
           project={picked}
           selecting={selecting}
+          checkRequest={checkRequest}
+          onCheckingChange={setChecking}
           onSubpageChange={setSubpage}
         />
       )}
@@ -130,6 +162,8 @@ function EnvironmentSkills({
   environment,
   project,
   selecting,
+  checkRequest,
+  onCheckingChange,
   onSubpageChange,
 }: {
   environment: ReturnType<typeof useEnvironments>["environments"][number];
@@ -137,6 +171,9 @@ function EnvironmentSkills({
   project: PickedProject | null;
   /** Rows have checkboxes, and a bar at the bottom acts on the ticked ones. */
   selecting: boolean;
+  /** Goes up each time the person asks to check for updates; 0 until they do. */
+  checkRequest: number;
+  onCheckingChange: (checking: boolean) => void;
   /** True while a skill or an instruction file is open instead of the list. */
   onSubpageChange: (open: boolean) => void;
 }) {
@@ -146,6 +183,13 @@ function EnvironmentSkills({
   const placeSkills = useAtomCommand(serverEnvironment.placeSkills, { reportFailure: false });
   const deleteSkills = useAtomCommand(serverEnvironment.deleteSkills, { reportFailure: false });
   const skillsTracked = useAtomCommand(serverEnvironment.skillsTracked, { reportFailure: false });
+  const checkSkillUpdates = useAtomCommand(serverEnvironment.checkSkillUpdates, {
+    reportFailure: false,
+  });
+  const getSkillChanges = useAtomCommand(serverEnvironment.getSkillChanges, {
+    reportFailure: false,
+  });
+  const updateSkill = useAtomCommand(serverEnvironment.updateSkill, { reportFailure: false });
   // Reading the list needs no grant; each change needs its command's.
   const canEnable = useAtomValue(
     serverEnvironment.enableSkills.permissionAtom(environment.environmentId),
@@ -159,6 +203,9 @@ function EnvironmentSkills({
   const canDelete = useAtomValue(
     serverEnvironment.deleteSkills.permissionAtom(environment.environmentId),
   );
+  const canUpdate = useAtomValue(
+    serverEnvironment.updateSkill.permissionAtom(environment.environmentId),
+  );
   const allProjects = useProjects();
   const connected = environment.connection.phase === "connected";
   const providers = environment.serverConfig?.providers ?? NO_PROVIDERS;
@@ -171,6 +218,9 @@ function EnvironmentSkills({
   const [view, setView] = useState<View>({ kind: "list" });
   const [query, setQuery] = useState("");
   const [onlyAttention, setOnlyAttention] = useState(false);
+  /** The last check for updates, or null before one. */
+  const [updates, setUpdates] = useState<SkillUpdates | null>(null);
+  const [onlyUpdates, setOnlyUpdates] = useState(false);
   const [detailReload, setDetailReload] = useState(0);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   /** A change that is waiting for the person to confirm it. */
@@ -231,6 +281,46 @@ function EnvironmentSkills({
     };
   }, [connected, load]);
 
+  /** Compares the recorded skills with their sources; `refresh` asks GitHub again. */
+  const check = useCallback(
+    async (refresh: boolean) => {
+      const result = await checkSkillUpdates({
+        environmentId: environment.environmentId,
+        input: { ...(cwd ? { cwd } : {}), refresh },
+      });
+      if (result._tag !== "Success") return null;
+      return result.value;
+    },
+    [checkSkillUpdates, environment.environmentId, cwd],
+  );
+
+  const reportChecking = useEffectEvent(onCheckingChange);
+  useEffect(() => {
+    if (checkRequest === 0) return;
+    let cancelled = false;
+    reportChecking(true);
+    void check(true)
+      .then((result) => {
+        if (cancelled) return;
+        setNotice(result ? checkSummary(result) : CHECK_ERROR);
+        if (result) setUpdates(ingestUpdates(result));
+      })
+      .catch(() => {
+        if (!cancelled) setNotice(CHECK_ERROR);
+      })
+      .finally(() => {
+        if (!cancelled) reportChecking(false);
+      });
+    return () => {
+      cancelled = true;
+      reportChecking(false);
+    };
+  }, [checkRequest, check]);
+
+  const onUpdateEntry = useCallback((entry: SkillUpdateEntry) => {
+    setUpdates((current) => (current ? withEntry(current, entry) : current));
+  }, []);
+
   const refresh = () => {
     setRefreshing(true);
     setLoadError(null);
@@ -289,14 +379,20 @@ function EnvironmentSkills({
       new Set((skills ?? []).filter((skill) => attention(skill, ctx) !== null).map((s) => s.id)),
     [skills, ctx],
   );
+  const withUpdates = useMemo(() => skillsWithUpdates(skills ?? [], updates), [skills, updates]);
+  const updateIds = useMemo(() => new Set(withUpdates.map((skill) => skill.id)), [withUpdates]);
+  const updateAll = useMemo(() => planUpdateAll(withUpdates, updates), [withUpdates, updates]);
   const needle = query.trim().toLowerCase();
   // Memoized, so a row or group is only drawn again when what it shows changed.
   const narrow = useCallback(
     (list: readonly Skill[]) =>
       list.filter(
-        (skill) => (!onlyAttention || attentionIds.has(skill.id)) && matchesQuery(skill, needle),
+        (skill) =>
+          (!onlyAttention || attentionIds.has(skill.id)) &&
+          (!onlyUpdates || updateIds.has(skill.id)) &&
+          matchesQuery(skill, needle),
       ),
-    [onlyAttention, attentionIds, needle],
+    [onlyAttention, attentionIds, onlyUpdates, updateIds, needle],
   );
   const visibleProject = useMemo(() => narrow(projectSkills), [narrow, projectSkills]);
   const visibleGlobal = useMemo(() => narrow(globalSkills), [narrow, globalSkills]);
@@ -344,12 +440,67 @@ function EnvironmentSkills({
    * Asks the server to make the change, then reads the folders again: the page shows what is on
    * disk, never what the change was expected to do.
    */
+  /**
+   * Updates each skill in turn. One opened in its page is updated as the person chose there, at
+   * the versions they were shown; any other is merged at the versions read now, and left alone
+   * when its edits clash with the update.
+   */
+  const runUpdates = async (change: Extract<SkillChange, { kind: "update" }>) => {
+    const outcomes: UpdateOutcome[] = [];
+    for (const skill of change.skills) {
+      const input = { ...skill, ...(cwd ? { cwd } : {}) };
+      try {
+        let shown = change.shown;
+        if (shown === undefined) {
+          const read = await getSkillChanges({ environmentId: environment.environmentId, input });
+          const changes = read._tag === "Success" ? read.value : null;
+          if (!changes?.upstreamSha || !changes.localSha || changes.entry?.state !== "update") {
+            outcomes.push({ name: skill.name, error: "failed" });
+            continue;
+          }
+          shown = {
+            upstreamSha: changes.upstreamSha,
+            localSha: changes.localSha,
+            choice: "merge",
+            resolutions: {},
+          };
+        }
+        const result = await updateSkill({
+          environmentId: environment.environmentId,
+          input: { ...input, ...shown },
+        });
+        outcomes.push(
+          result._tag === "Success"
+            ? { name: skill.name, result: result.value }
+            : {
+                name: skill.name,
+                error: updateErrorReason(squashAtomCommandFailure(result)),
+              },
+        );
+      } catch {
+        outcomes.push({ name: skill.name, error: "failed" });
+      }
+    }
+    setNotice(describeUpdates(outcomes));
+    // The open skill's files changed, so its page reads them again.
+    setDetailReload((count) => count + 1);
+    // The sources were read just now, so this check costs GitHub nothing.
+    const result = await check(false).catch(() => null);
+    if (result && mounted.current) setUpdates(ingestUpdates(result));
+  };
+
   const apply = async (plan: SkillPlan) => {
     setConfirming(null);
     setBusy(true);
     const { change } = plan;
     const base = { environmentId: environment.environmentId } as const;
     const scoped = cwd ? { cwd } : {};
+    if (change.kind === "update") {
+      await runUpdates(change);
+      await reloadAfterChange();
+      setBusy(false);
+      return;
+    }
     try {
       // The server takes a few hundred skills at a time, so a big change goes in batches.
       const { outcomes, failed } = await sendInBatches(change.skills, async (skills) => {
@@ -380,6 +531,11 @@ function EnvironmentSkills({
     } catch {
       setNotice(CHANGE_ERROR);
     }
+    await reloadAfterChange();
+    setBusy(false);
+  };
+  /** Reads the folders again after a change, and leaves nothing ticked. */
+  const reloadAfterChange = async () => {
     try {
       const loaded = await load();
       if (loaded) {
@@ -392,7 +548,6 @@ function EnvironmentSkills({
       setLoadError(LOAD_ERROR);
     }
     setSelected(new Set());
-    setBusy(false);
   };
   /**
    * A plan that needs confirming waits for the dialog; any other goes ahead. For a placement or
@@ -452,9 +607,11 @@ function EnvironmentSkills({
   const emptyText = (total: number, none: string) =>
     total === 0
       ? none
-      : onlyAttention && !needle
-        ? "Nothing needs attention here."
-        : "No matching skills.";
+      : onlyUpdates && !onlyAttention && !needle
+        ? "No updates here."
+        : onlyAttention && !needle
+          ? "Nothing needs attention here."
+          : "No matching skills.";
 
   return (
     <div ref={rootRef} className="min-w-0 space-y-4">
@@ -501,6 +658,9 @@ function EnvironmentSkills({
           projectRoot={cwd}
           places={places}
           busy={locked}
+          update={updates?.get(skillView.skill.id)}
+          canUpdate={canUpdate}
+          onUpdateEntry={onUpdateEntry}
           onBack={toList}
           onPlan={runPlan}
           onReload={() => setDetailReload((count) => count + 1)}
@@ -542,6 +702,26 @@ function EnvironmentSkills({
                 onClick={() => setOnlyAttention((value) => !value)}
               >
                 Needs attention ({attentionTotal})
+              </Button>
+            )}
+            {skills !== null && updates !== null && (
+              <Button
+                size="sm"
+                variant={onlyUpdates ? "secondary" : "outline"}
+                aria-pressed={onlyUpdates}
+                onClick={() => setOnlyUpdates((value) => !value)}
+              >
+                Updates ({withUpdates.length})
+              </Button>
+            )}
+            {onlyUpdates && updateAll && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy || !canUpdate}
+                onClick={() => runPlan(updateAll)}
+              >
+                Update all
               </Button>
             )}
             <Button
@@ -605,6 +785,7 @@ function EnvironmentSkills({
                   visible={visibleProject}
                   ctx={ctx}
                   places={places}
+                  updates={updates}
                   emptyText={emptyText(projectSkills.length, "No skills in this project.")}
                   flat={needle !== ""}
                   selecting={selecting}
@@ -621,6 +802,7 @@ function EnvironmentSkills({
                 visible={visibleGlobal}
                 ctx={ctx}
                 places={places}
+                updates={updates}
                 emptyText={emptyText(globalSkills.length, "No Global skills yet.")}
                 flat={needle !== ""}
                 selecting={selecting}

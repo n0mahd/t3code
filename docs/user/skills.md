@@ -105,6 +105,10 @@ To make a project's `CLAUDE.md` the file every agent reads, **Move to AGENTS.md*
 deletes `CLAUDE.md`. If Claude would still skip `AGENTS.md` afterwards, the confirmation says it
 also turns **Claude reads AGENTS.md** on, for every project.
 
+**Move to Global** adds a project file's text to the end of your Global `AGENTS.md` and deletes the
+file from the project, so it also leaves the repo for everyone who clones it. **Copy to this
+project** adds your Global text to the end of the project's `AGENTS.md` and keeps Global as it is.
+
 Agents running in T3 Code can list these files and turn Global on or off for agents. They edit the
 files themselves, and the Claude choice stays yours.
 

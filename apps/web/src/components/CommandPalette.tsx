@@ -114,6 +114,7 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useScratchProject } from "../hooks/useScratchProject";
 import { useNewProject } from "../hooks/useNewProject";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import { isBackgroundRunThread } from "@t3tools/client-runtime/state/models";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
 import { useThreadSearch } from "../state/queries";
@@ -1269,6 +1270,7 @@ function OpenCommandPaletteDialog(props: {
             threads.filter(
               (thread) =>
                 thread.archivedAt === null &&
+                !isBackgroundRunThread(thread) &&
                 groupedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`),
             ),
             clientSettings.sidebarThreadSortOrder,

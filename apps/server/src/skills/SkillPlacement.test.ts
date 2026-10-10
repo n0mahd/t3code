@@ -1960,4 +1960,125 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillPlacement", (i
         }),
     );
   });
+
+  describe("into the shared folder", () => {
+    it.effect.skipIf(!symlinksSupported)(
+      "moves a folder out of Claude's own folder and leaves Claude a link, so every agent has it",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, write } = yield* makeMachine;
+          yield* write("repos/acme-web/.claude/skills/review/SKILL.md", skillFile("review"));
+          yield* write("repos/acme-web/.claude/skills/review/notes.md", "keep me");
+          yield* withManager(home, [web], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const before = (yield* catalog.list({ cwd: web })).skills;
+              const review = refOf(before, "project", "review");
+              expect(stateOf(before, "project", "review")).toMatchObject({
+                claudeAgent: "direct",
+                codex: "none",
+              });
+
+              const result = yield* manager.share({ cwd: web, skills: [review] });
+
+              yield* encodeResult(result);
+              expect(result.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+              expect(
+                yield* fs.readFileString(path.join(web, ".agents/skills/review/notes.md")),
+              ).toBe("keep me");
+              expect(yield* fs.readLink(path.join(web, ".claude/skills/review"))).toBe(
+                "../../.agents/skills/review",
+              );
+              const after = (yield* catalog.list({ cwd: web })).skills;
+              expect(summaryOf(after, "project", "review")?.home).toBe(".agents/skills/review");
+              expect(stateOf(after, "project", "review")).toMatchObject({
+                claudeAgent: "link",
+                codex: "direct",
+                pi: "direct",
+              });
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "puts the folder where a link to it was in the shared folder",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, write } = yield* makeMachine;
+          yield* write("repos/acme-web/.claude/skills/review/SKILL.md", skillFile("review"));
+          yield* fs.symlink("../../.claude/skills/review", path.join(web, ".agents/skills/review"));
+          yield* withManager(home, [web], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const review = refOf((yield* catalog.list({ cwd: web })).skills, "project", "review");
+
+              const result = yield* manager.share({ cwd: web, skills: [review] });
+
+              expect(result.outcomes[0]).toMatchObject({ status: "changed", blocked: [] });
+              expect(
+                yield* fs.readFileString(path.join(web, ".agents/skills/review/SKILL.md")),
+              ).toBe(skillFile("review"));
+              expect(yield* fs.readLink(path.join(web, ".claude/skills/review"))).toBe(
+                "../../.agents/skills/review",
+              );
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "never replaces a different skill with the name in the shared folder",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, web, write } = yield* makeMachine;
+          yield* write("repos/acme-web/.claude/skills/review/SKILL.md", skillFile("review"));
+          yield* write("repos/acme-web/.agents/skills/review/SKILL.md", skillFile("theirs"));
+          yield* withManager(home, [web], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const skills = (yield* catalog.list({ cwd: web })).skills;
+              const ours = skills.find(
+                (item) => item.name === "review" && item.home === ".claude/skills/review",
+              );
+              expect(ours).toBeDefined();
+
+              const result = yield* manager.share({
+                cwd: web,
+                skills: [{ scope: "project", name: "review", home: ours!.home }],
+              });
+
+              expect(result.outcomes[0]).toMatchObject({
+                status: "skipped",
+                reason: "destinationTaken",
+              });
+              expect(
+                yield* fs.readFileString(path.join(web, ".claude/skills/review/SKILL.md")),
+              ).toBe(skillFile("review"));
+              expect(
+                yield* fs.readFileString(path.join(web, ".agents/skills/review/SKILL.md")),
+              ).toBe(skillFile("theirs"));
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "leaves a skill that is in the shared folder already as it is",
+      () =>
+        Effect.gen(function* () {
+          const { home, web } = yield* makeMachine;
+          yield* withManager(home, [web], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const verify = refOf(
+                (yield* catalog.list({ cwd: web })).skills,
+                "project",
+                "db-migrations",
+              );
+
+              const result = yield* manager.share({ cwd: web, skills: [verify] });
+
+              expect(result.outcomes[0]).toMatchObject({ status: "unchanged" });
+            }),
+          );
+        }),
+    );
+  });
 });

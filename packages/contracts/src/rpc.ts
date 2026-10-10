@@ -351,6 +351,7 @@ import {
   SkillListResult,
   SkillPlaceInput,
   SkillRequestError,
+  SkillShareInput,
   SkillTrackedInput,
   SkillTrackedResult,
 } from "./skills.ts";
@@ -505,6 +506,7 @@ export const WS_METHODS = {
   serverPlaceSkills: "server.placeSkills",
   serverDeleteSkills: "server.deleteSkills",
   serverSkillsTracked: "server.skillsTracked",
+  serverShareSkills: "server.shareSkills",
   serverListInstructions: "server.listInstructions",
   serverReadInstruction: "server.readInstruction",
   serverWriteInstruction: "server.writeInstruction",
@@ -685,6 +687,12 @@ const WsServerDeleteSkillsRpc = Rpc.make(WS_METHODS.serverDeleteSkills, {
 const WsServerSkillsTrackedRpc = Rpc.make(WS_METHODS.serverSkillsTracked, {
   payload: SkillTrackedInput,
   success: SkillTrackedResult,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerShareSkillsRpc = Rpc.make(WS_METHODS.serverShareSkills, {
+  payload: SkillShareInput,
+  success: SkillBatchResult,
   error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
 });
 
@@ -2191,4 +2199,8 @@ export const WsInstructionRpcGroup = RpcGroup.make(
   WsServerInstructionsTrackedRpc,
 ).middleware(RpcScopeAuthorization);
 
-export const WsRpcGroup = WsBaseRpcGroup.merge(WsInstructionRpcGroup);
+/** The skill RPCs the Tidy up view adds, registered apart for the same reason. */
+export const WsSkillTidyRpcGroup =
+  RpcGroup.make(WsServerShareSkillsRpc).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = WsBaseRpcGroup.merge(WsInstructionRpcGroup, WsSkillTidyRpcGroup);

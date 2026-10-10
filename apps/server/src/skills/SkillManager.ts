@@ -33,6 +33,7 @@ import {
   type SkillPlaceInput,
   type SkillRef,
   type SkillScope,
+  type SkillShareInput,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
@@ -267,6 +268,11 @@ export class SkillManager extends Context.Service<
     ) => Effect.Effect<SkillBatchResult, SkillRequestError>;
     /** Put each skill where `to` says, moving its folder; the agents that used it keep using it. */
     readonly place: (input: SkillPlaceInput) => Effect.Effect<SkillBatchResult, SkillRequestError>;
+    /**
+     * Move each skill's real folder from an agent's own folder into its scope's shared folder;
+     * the agents that used it keep using it.
+     */
+    readonly share: (input: SkillShareInput) => Effect.Effect<SkillBatchResult, SkillRequestError>;
     /** Delete each skill's own folder and every link to it. */
     readonly delete: (
       input: SkillDeleteInput,
@@ -790,6 +796,25 @@ const make = Effect.gen(function* () {
         ]),
         change: (skill, _agents, _projectRoot, all) =>
           placement.place(skill, to, {
+            cwd: input.cwd,
+            all,
+            followMove: (home) => followCodexMove(skill, home, writers),
+          }),
+      });
+    }, Effect.scoped),
+    share: Effect.fn("SkillManager.share")(function* (input) {
+      const writers = makeWriters(yield* Scope.Scope);
+      return yield* run({
+        cwd: input.cwd,
+        skills: input.skills,
+        agents: new Set(),
+        // Links from the other scope lead to the folder too, and would be left dangling.
+        alsoLookUp: input.skills.map((ref) => ({
+          scope: ref.scope === "project" ? ("global" as const) : ("project" as const),
+          name: ref.name,
+        })),
+        change: (skill, _agents, _projectRoot, all) =>
+          placement.share(skill, {
             cwd: input.cwd,
             all,
             followMove: (home) => followCodexMove(skill, home, writers),

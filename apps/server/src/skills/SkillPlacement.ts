@@ -8,6 +8,10 @@
  * | Global           | move the folder      | -                   | into the library, link   |
  * | in the library   | move it, drop links  | move it, drop links | add and remove links     |
  *
+ * Within one scope, `share` moves a real folder out of an agent's own folder (Claude's
+ * `.claude/skills`) into the shared one, and leaves a link where it was for the agents that don't
+ * read the shared folder.
+ *
  * A skill used in only some projects is one folder in the library (`SkillLibrary`) with a link to
  * it in each of those projects, so there is one copy to edit. A skill whose real folder is outside
  * every agent folder, such as a synced library's, is never moved: its library entry is a link to it.
@@ -768,38 +772,87 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
   });
 
   /**
-   * Puts one skill where `to` says. The skill is the one the folders hold now; `view.all` is every
-   * same-named skill looked up with it.
+   * A real folder in an agent's own skill folder (Claude's `.claude/skills`) into the shared
+   * folder of its scope, so every agent that reads that one gets it. An agent that used the skill
+   * and doesn't read the shared folder gets a link where the folder was, by the rules of turning
+   * it on. The skill stays in its scope, so its source record stays where it is.
    */
-  const place = (
+  const intoShared = Effect.fnUntraced(function* (
+    journal: Journal,
     skill: SkillCatalog.ResolvedSkill,
-    to: SkillPlacement,
     view: PlacementView,
+  ) {
+    if (!skill.own || skill.library !== undefined) return skipped("linked");
+    const folder = skill.standardFolders[skill.scope];
+    if (folder === undefined) return skipped("failed");
+    const real = skill.entries.find((entry) => entry.target === undefined);
+    if (real === undefined) return skipped("linked");
+    if (real.directory === folder) return { wrote: false, blocked: [] } satisfies PlacementChange;
+    const destination = path.join(folder, skill.name);
+    const audience = reaching(skill, view.all);
+    const had = agentsWith(audience);
+    const stale = linksTo(audience);
+    // A link to this skill in the shared folder goes with the other links; anything else there,
+    // such as a different skill with this name, is never replaced.
+    if (!stale.some((link) => link.path === destination) && (yield* occupied(destination))) {
+      return skipped("destinationTaken");
+    }
+
+    // The links go first: one of them may be where the folder goes.
+    const unlinked = yield* unlink(journal, stale);
+    if ([...unlinked.values()].some((result) => result === "changed" || result === "failed")) {
+      return yield* new SkillPlacementRefused({ reason: "changed" });
+    }
+    const moved = yield* inContext(
+      moveFolder({ from: skill.home, to: destination, platform: deps.platform }),
+    );
+    if (moved === "taken") return yield* new SkillPlacementRefused({ reason: "destinationTaken" });
+    if (moved === "inUse") return yield* new SkillPlacementRefused({ reason: "inUse" });
+    journal.add(
+      inContext(moveFolder({ from: destination, to: skill.home, platform: deps.platform })),
+    );
+    const reason = moved === "movedWithLeftover" ? ("failed" as const) : undefined;
+
+    const home = yield* realPath(destination);
+    const followed = view.followMove === undefined ? [] : yield* view.followMove(home);
+    const landed = (yield* deps.catalog.resolve({
+      cwd: view.cwd,
+      skills: [{ scope: skill.scope, name: skill.name }],
+    })).find((item) => item.scope === skill.scope && item.home === home);
+    const lacking = new Set(
+      (landed?.agents ?? [])
+        .filter((agent) => had.has(agent.instanceId) && agent.state === "none")
+        .map((agent) => agent.instanceId),
+    );
+    const relinked =
+      landed === undefined || lacking.size === 0
+        ? { wrote: false, blocked: [] as readonly Blocked[] }
+        : yield* deps.enable(
+            landed,
+            lacking,
+            skill.scope === "project" && view.cwd !== undefined
+              ? yield* realPath(view.cwd)
+              : undefined,
+          );
+    return yield* settle({
+      view,
+      skill,
+      had,
+      home,
+      blocked: [...relinked.blocked, ...followed],
+      reason,
+    });
+  });
+
+  /**
+   * Runs one skill's change, undoing its steps when one fails; a failure is told as the skill's
+   * outcome, never as an error.
+   */
+  const journaled = <E>(
+    attempt: (journal: Journal) => Effect.Effect<PlacementChange, E>,
   ): Effect.Effect<PlacementChange> => {
     const journal = makeJournal();
-    const library: LibrarySkill | undefined =
-      skill.library === undefined ? undefined : { ...skill, library: skill.library };
-    const attempt = Effect.gen(function* () {
-      if (to.kind === "projects") {
-        const projects = [...new Set(to.cwds)];
-        return library === undefined
-          ? yield* intoLibrary(journal, skill, projects, view)
-          : yield* retarget(journal, library, projects, view);
-      }
-      const dest =
-        to.kind === "global"
-          ? ({ scope: "global" } as const)
-          : ({ scope: "project", cwd: to.cwd } as const);
-      if (library !== undefined) return yield* outOfLibrary(journal, library, dest, view);
-      if (skill.scope === dest.scope) {
-        const same =
-          dest.scope === "global" ||
-          (view.cwd !== undefined && (yield* realPath(view.cwd)) === (yield* realPath(dest.cwd)));
-        if (same) return { wrote: false, blocked: [] };
-      }
-      return yield* moveBetween(skill, dest, view);
-    });
-    return attempt.pipe(
+    return attempt(journal).pipe(
       Effect.onExit((exit) => (Exit.isFailure(exit) ? journal.rollback : Effect.void)),
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
@@ -808,6 +861,45 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       }),
     );
   };
+
+  /**
+   * Puts one skill where `to` says. The skill is the one the folders hold now; `view.all` is every
+   * same-named skill looked up with it.
+   */
+  const place = (
+    skill: SkillCatalog.ResolvedSkill,
+    to: SkillPlacement,
+    view: PlacementView,
+  ): Effect.Effect<PlacementChange> => {
+    const library: LibrarySkill | undefined =
+      skill.library === undefined ? undefined : { ...skill, library: skill.library };
+    return journaled((journal) =>
+      Effect.gen(function* () {
+        if (to.kind === "projects") {
+          const projects = [...new Set(to.cwds)];
+          return library === undefined
+            ? yield* intoLibrary(journal, skill, projects, view)
+            : yield* retarget(journal, library, projects, view);
+        }
+        const dest =
+          to.kind === "global"
+            ? ({ scope: "global" } as const)
+            : ({ scope: "project", cwd: to.cwd } as const);
+        if (library !== undefined) return yield* outOfLibrary(journal, library, dest, view);
+        if (skill.scope === dest.scope) {
+          const same =
+            dest.scope === "global" ||
+            (view.cwd !== undefined && (yield* realPath(view.cwd)) === (yield* realPath(dest.cwd)));
+          if (same) return { wrote: false, blocked: [] };
+        }
+        return yield* moveBetween(skill, dest, view);
+      }),
+    );
+  };
+
+  /** Moves one skill's real folder into its scope's shared folder (see `intoShared`). */
+  const share = (skill: SkillCatalog.ResolvedSkill, view: PlacementView) =>
+    journaled((journal) => intoShared(journal, skill, view));
 
   /**
    * Removes a deleted library skill's links from the registered projects, and their lines from
@@ -922,5 +1014,5 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       return { wrote, blocked } satisfies { wrote: boolean; blocked: readonly Blocked[] };
     });
 
-  return { place, unlinkLibrarySkill, addLibraryLinks, removeLibraryLinks };
+  return { place, share, unlinkLibrarySkill, addLibraryLinks, removeLibraryLinks };
 });

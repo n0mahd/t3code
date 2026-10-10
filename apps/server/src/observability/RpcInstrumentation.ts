@@ -40,6 +40,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverPlaceSkills]: "server",
   [WS_METHODS.serverDeleteSkills]: "server",
   [WS_METHODS.serverSkillsTracked]: "server",
+  [WS_METHODS.serverShareSkills]: "server",
   [WS_METHODS.serverListInstructions]: "server",
   [WS_METHODS.serverReadInstruction]: "server",
   [WS_METHODS.serverWriteInstruction]: "server",

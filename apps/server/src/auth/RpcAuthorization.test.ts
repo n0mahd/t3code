@@ -77,6 +77,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.serverDisableSkills,
       WS_METHODS.serverPlaceSkills,
       WS_METHODS.serverDeleteSkills,
+      WS_METHODS.serverShareSkills,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthFilesystemWriteScope);
     }

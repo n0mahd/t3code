@@ -78,6 +78,24 @@ a synced folder, stays where it is.
 Agents running in T3 Code can list skills and turn them on or off for agents too; they can't
 move or delete them.
 
+## Updates
+
+**Check for updates** compares the skills you installed with `npx skills` from GitHub with their
+source, Global ones and the chosen project's. It asks GitHub once per repo, without signing in.
+GitHub allows about 60 such requests an hour per network, and T3 Code says when to try again once
+they're used up. Private repos can't be checked.
+
+Open a skill with an update to see what would change before anything is written. A skill you
+haven't edited gets the source's files. If you have edited it, T3 Code tells your changes apart
+from the source's and keeps yours. When both changed the same lines, nothing is written until you
+choose, for each such file, to keep yours or take theirs. **Keep mine** skips that update without
+changing any file. **Update all** updates a group, or every skill with an update, and leaves any
+skill whose edits clash for you to open.
+
+An update replaces the skill's folder in one step, keeps its links, and records the new version in
+the `skills` CLI's lock file, so `npx skills update` then sees it as current. A skill that holds
+links, or whose source does, isn't updated here.
+
 ## Instructions
 
 The **Instructions** section at the top of the page lists the files your agents read before they

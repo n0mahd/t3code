@@ -52,8 +52,11 @@ export type T3McpToolSummaryAction =
   | "skill-read"
   | "skill-enable"
   | "skill-disable"
+  | "skill-move"
+  | "skill-delete"
   | "instruction-list"
   | "instruction-read"
+  | "instruction-write"
   | "instruction-enable"
   | "instruction-disable"
   | "environment-read"
@@ -71,9 +74,21 @@ export type T3McpToolSummaryAction =
   | "html-preview"
   | "html-render";
 
+type T3McpToolLabels = readonly [
+  action: string,
+  running: string,
+  completed: string,
+  detail: string,
+];
+
 export interface T3McpToolDefinition {
   readonly displayName: string;
-  readonly labels: readonly [action: string, running: string, completed: string, detail: string];
+  readonly labels: T3McpToolLabels;
+  /**
+   * The labels of a two-step tool's first call, made without `confirm: true`, which only says
+   * what the tool would do.
+   */
+  readonly planLabels?: T3McpToolLabels;
   readonly icon: "t3-code" | "browser" | "device" | "pull-request";
   readonly summaryAction: T3McpToolSummaryAction;
 }
@@ -319,11 +334,23 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Disable", "Disabling", "Disabled", "skills for agents"],
     "skill-disable",
   ),
+  t3_skill_move: {
+    ...tool(["Move", "Moving", "Moved", "skills"], "skill-move"),
+    planLabels: ["Plan", "Planning", "Planned", "a skill move"],
+  },
+  t3_skill_delete: {
+    ...tool(["Delete", "Deleting", "Deleted", "skills"], "skill-delete"),
+    planLabels: ["Plan", "Planning", "Planned", "a skill deletion"],
+  },
   t3_instructions_list: tool(
     ["List", "Listing", "Listed", "instruction files"],
     "instruction-list",
   ),
   t3_instructions_get: tool(["Read", "Reading", "Read", "an instruction file"], "instruction-read"),
+  t3_instructions_write: tool(
+    ["Edit", "Editing", "Edited", "an instruction file"],
+    "instruction-write",
+  ),
   t3_instructions_enable: tool(
     ["Enable", "Enabling", "Enabled", "instruction files for agents"],
     "instruction-enable",

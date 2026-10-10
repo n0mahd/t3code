@@ -350,6 +350,26 @@ describe("resolveWorkEntryToolPresentation", () => {
     });
   });
 
+  it("labels a two-step skill tool's first call as a plan, not as the change", () => {
+    const entry = (args: Record<string, unknown>, result: unknown): WorkLogPresentationEntry => ({
+      id: "delete",
+      createdAt: "2026-09-19T00:00:00.000Z",
+      tone: "tool",
+      label: "Custom title",
+      itemType: "dynamic_tool",
+      toolLifecycleStatus: "completed",
+      toolData: { server: "t3-code", tool: "t3_skill_delete", arguments: args, result },
+    });
+    const skills = [{ scope: "global", name: "verify", home: "~/.agents/skills/verify" }];
+    const planned = entry({ skills }, { plan: ["This deletes ~/.agents/skills/verify."] });
+    const deleted = entry({ skills, confirm: true }, { outcomes: [{ status: "changed" }] });
+
+    expect(resolveWorkEntryToolPresentation(planned)?.displayName).toBe("Planned a skill deletion");
+    expect(resolveWorkEntryToolPresentation(deleted)?.displayName).toBe("Deleted skills");
+    expect(summarizeToolGroup([planned]).summary).toBe("Planned 1 skill deletion");
+    expect(summarizeToolGroup([planned, deleted]).summary).toBe("Deleted skills 1 time");
+  });
+
   it("does not summarize a foreign structured identity as T3 work", () => {
     const entry: WorkLogPresentationEntry = {
       id: "foreign",

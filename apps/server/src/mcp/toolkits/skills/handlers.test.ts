@@ -32,6 +32,8 @@ import * as Settings from "../../../serverSettings.ts";
 import * as VcsProcess from "../../../vcs/VcsProcess.ts";
 import * as SkillCatalog from "../../../skills/SkillCatalog.ts";
 import * as SkillManager from "../../../skills/SkillManager.ts";
+import * as SkillTracking from "../../../skills/SkillTracking.ts";
+import * as ProcessRunner from "../../../processRunner.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
@@ -145,7 +147,7 @@ const layerFor = (
   return McpHttpServer.layerSkillsToolkit.pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(
-      SkillManager.layer.pipe(
+      Layer.merge(SkillManager.layer, SkillTracking.layer).pipe(
         Layer.provideMerge(
           SkillCatalog.layer.pipe(
             Layer.provide(
@@ -220,7 +222,15 @@ const call = (name: string, args: Record<string, unknown>) =>
       );
   });
 
+const git = (cwd: string, args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const processRunner = yield* ProcessRunner.ProcessRunner;
+    return yield* processRunner.run({ command: "git", args: ["-C", cwd, ...args] });
+  }).pipe(Effect.provide(ProcessRunner.layer));
+
 const decodeList = Schema.decodeUnknownSync(SkillListResult);
+const decodePlan = Schema.decodeUnknownSync(Schema.Struct({ plan: Schema.Array(Schema.String) }));
+const planOf = (result: McpSchema.CallToolResult) => decodePlan(result.structuredContent).plan;
 const listSkills = (args: Record<string, unknown> = {}) =>
   call("t3_skill_list", args).pipe(
     Effect.map((result) => decodeList(result.structuredContent).skills),
@@ -449,6 +459,147 @@ describe("skills MCP tools", () => {
       }),
     );
 
+    it.effect.skipIf(!symlinksSupported)(
+      "says what a move would do, changes nothing until confirmed, then moves the skill",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* Effect.gen(function* () {
+            const beta = refOf(yield* listSkills(), "global", "beta");
+
+            const planned = yield* call("t3_skill_move", { skills: [beta], to: "project" });
+
+            expect(planOf(planned)).toEqual([
+              "“beta” moves into App, so anyone who clones it gets it.",
+              "Agents that use it now keep using it.",
+              "Nothing has changed yet. To do it, call t3_skill_move again with the same arguments and confirm: true.",
+            ]);
+            expect(yield* fs.exists(path.join(home, ".claude/skills/beta/SKILL.md"))).toBe(true);
+
+            const moved = yield* call("t3_skill_move", {
+              skills: [beta],
+              to: "project",
+              confirm: true,
+            });
+
+            expect(moved.structuredContent).toMatchObject({
+              outcomes: [{ skill: beta, status: "changed" }],
+            });
+            expect(yield* fs.exists(path.join(home, ".claude/skills/beta"))).toBe(false);
+            expect(yield* fs.exists(path.join(project, ".agents/skills/beta/SKILL.md"))).toBe(true);
+            // Claude used it before, so it still does, through a link in the project.
+            expect(stateOf(yield* listSkills(), "project", "beta").claudeAgent).toBe("link");
+          }).pipe(Effect.provide(layerFor(home, project)));
+        }),
+    );
+
+    it.effect("says git can undo taking a tracked skill out of its project", () =>
+      Effect.gen(function* () {
+        const { fs, path, home, project } = yield* makeMachine;
+        yield* git(project, ["init"]);
+        yield* git(project, ["add", ".agents/skills/verify"]);
+        yield* Effect.gen(function* () {
+          const verify = refOf(yield* listSkills(), "project", "verify");
+
+          const toGlobal = planOf(yield* call("t3_skill_move", { skills: [verify], to: "global" }));
+          expect(toGlobal).toContain("“verify” becomes Global and will be on in every project.");
+          expect(toGlobal).toContain("git tracks it, so you can undo this with git.");
+
+          const deleting = planOf(yield* call("t3_skill_delete", { skills: [verify] }));
+          expect(deleting[0]).toBe("This deletes .agents/skills/verify and any links to it.");
+          expect(deleting).toContain("git tracks it, so you can undo this with git.");
+          expect(deleting).not.toContain("It can't be undone.");
+          expect(yield* fs.exists(path.join(project, ".agents/skills/verify/SKILL.md"))).toBe(true);
+        }).pipe(Effect.provide(layerFor(home, project)));
+      }),
+    );
+
+    it.effect("plans keeping one copy for the projects named, and refuses an unknown one", () =>
+      Effect.gen(function* () {
+        const { home, project } = yield* makeMachine;
+        yield* Effect.gen(function* () {
+          const beta = refOf(yield* listSkills(), "global", "beta");
+
+          const planned = yield* call("t3_skill_move", {
+            skills: [beta],
+            to: { projects: [projectId] },
+          });
+          expect(planOf(planned)[0]).toBe("“beta” will be on in App only.");
+
+          const unknown = yield* call("t3_skill_move", {
+            skills: [beta],
+            to: { projects: ["no-such-project"] },
+            confirm: true,
+          });
+          expect(declaredFailure(unknown)).toMatchObject({
+            code: "invalid_request",
+            message: "The project was not found.",
+          });
+        }).pipe(Effect.provide(layerFor(home, project)));
+      }),
+    );
+
+    it.effect("says what a delete would remove, then deletes the skill once confirmed", () =>
+      Effect.gen(function* () {
+        const { fs, path, home, project } = yield* makeMachine;
+        yield* Effect.gen(function* () {
+          const beta = refOf(yield* listSkills(), "global", "beta");
+
+          const planned = planOf(yield* call("t3_skill_delete", { skills: [beta] }));
+
+          expect(planned[0]).toBe("This deletes ~/.claude/skills/beta and any links to it.");
+          expect(planned[1]).toMatch(/^.*claudeAgent.* will stop using it\.$/);
+          expect(planned.slice(2)).toEqual([
+            "It can't be undone.",
+            "Nothing has changed yet. To do it, call t3_skill_delete again with the same arguments and confirm: true.",
+          ]);
+          expect(yield* fs.exists(path.join(home, ".claude/skills/beta/SKILL.md"))).toBe(true);
+
+          const deleted = yield* call("t3_skill_delete", { skills: [beta], confirm: true });
+
+          expect(deleted.structuredContent).toMatchObject({
+            outcomes: [{ skill: beta, status: "changed" }],
+          });
+          expect(yield* fs.exists(path.join(home, ".claude/skills/beta"))).toBe(false);
+        }).pipe(Effect.provide(layerFor(home, project)));
+      }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "leaves a skill that is only linked into an agent's folder, and says so",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* Effect.gen(function* () {
+            const alpha = refOf(yield* listSkills(), "global", "alpha");
+
+            expect(planOf(yield* call("t3_skill_delete", { skills: [alpha] }))).toEqual([
+              "“alpha” is reached through a link, not kept in an agent's skill folder, so it stays.",
+              "There is nothing to delete.",
+            ]);
+            const deleted = yield* call("t3_skill_delete", { skills: [alpha], confirm: true });
+            expect(deleted.structuredContent).toMatchObject({
+              outcomes: [{ status: "skipped", reason: "linked" }],
+            });
+            expect(yield* fs.exists(path.join(home, "library/skills/alpha/SKILL.md"))).toBe(true);
+          }).pipe(Effect.provide(layerFor(home, project)));
+        }),
+    );
+
+    it.effect("tells the agent when a skill is no longer where the list said", () =>
+      Effect.gen(function* () {
+        const { home, project } = yield* makeMachine;
+        yield* Effect.gen(function* () {
+          const gone = { scope: "global", name: "beta", home: "~/.agents/skills/beta" };
+
+          expect(planOf(yield* call("t3_skill_delete", { skills: [gone] }))).toEqual([
+            "“beta” isn't at ~/.agents/skills/beta any more, so it is left out. List the skills again.",
+            "There is nothing to delete.",
+          ]);
+        }).pipe(Effect.provide(layerFor(home, project)));
+      }),
+    );
+
     it.effect("tells the agent when an agent name is not one it has", () =>
       Effect.gen(function* () {
         const { home, project } = yield* makeMachine;
@@ -482,6 +633,17 @@ describe("skills MCP tools", () => {
 
           expect(declaredFailure(result)).toMatchObject({ code: "capability_denied" });
           expect(yield* fs.exists(path.join(home, ".agents/skills/beta"))).toBe(false);
+
+          // Even a plan needs the access to carry it out.
+          for (const [name, args] of [
+            ["t3_skill_move", { skills: [refOf(skills, "global", "beta")], to: "project" }],
+            ["t3_skill_delete", { skills: [refOf(skills, "global", "beta")], confirm: true }],
+          ] as const) {
+            expect(declaredFailure(yield* call(name, args)), name).toMatchObject({
+              code: "capability_denied",
+            });
+          }
+          expect(yield* fs.exists(path.join(home, ".claude/skills/beta/SKILL.md"))).toBe(true);
         }).pipe(Effect.provide(layerFor(home, project, { runtimeMode: "approval-required" })));
       }),
     );
@@ -501,6 +663,9 @@ describe("skills MCP tools", () => {
               "t3_skill_enable",
               { skills: [{ scope: "everywhere", name: "beta", home: "x" }], agents: "all" },
             ],
+            ["t3_skill_move", { skills: [skill], to: "everywhere" }],
+            ["t3_skill_move", { skills: [skill], to: { projects: [] } }],
+            ["t3_skill_delete", { skills: [skill], confirm: "yes" }],
           ] as const) {
             const error = yield* call(name, args).pipe(Effect.flip);
             expect(error._tag, `${name} ${Object.keys(args).join()}`).toBe("InvalidParams");

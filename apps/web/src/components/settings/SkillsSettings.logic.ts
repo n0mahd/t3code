@@ -1,15 +1,18 @@
-import type {
-  EnvironmentId,
-  ProviderInstanceId,
-  ServerProvider,
-  SkillAgentAccess,
-  SkillListResult,
-  SkillOutcome,
-  SkillOutcomeReason,
-  SkillPlacement,
-  SkillRef,
-  SkillScope,
-  SkillSummary,
+import {
+  SKILL_NAME_MAX_LENGTH,
+  skillNameProblem,
+  type EnvironmentId,
+  type ProviderInstanceId,
+  type ServerProvider,
+  type SkillAgentAccess,
+  type SkillCreateResult,
+  type SkillListResult,
+  type SkillOutcome,
+  type SkillOutcomeReason,
+  type SkillPlacement,
+  type SkillRef,
+  type SkillScope,
+  type SkillSummary,
 } from "@t3tools/contracts";
 
 import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../../providerInstances";
@@ -63,11 +66,12 @@ export function skillsEnvironment<T extends { readonly environmentId: Environmen
   );
 }
 
+/** A skill's `Skill.id`, from the list's entry or a reference the server returned. */
+export const skillId = (skill: Pick<SkillSummary, "scope" | "name" | "home">) =>
+  `${skill.scope}\0${skill.name}\0${skill.home}`;
+
 export function ingestSkills(result: SkillListResult) {
-  const skills = result.skills.map((entry): Skill => ({
-    ...entry,
-    id: `${entry.scope}\0${entry.name}\0${entry.home}`,
-  }));
+  const skills = result.skills.map((entry): Skill => ({ ...entry, id: skillId(entry) }));
   const known = new Set(skills.flatMap((skill) => skill.access.map((access) => access.instanceId)));
   return { skills, unreadable: result.unreadable, known };
 }
@@ -836,6 +840,50 @@ export function describeResult(
     shown.push(`${problems.length - shown.length} more couldn't be changed.`);
   }
   return [lead, droppedText, ...shown].filter((part) => part !== "").join(" ");
+}
+
+// -- New skills -------------------------------------------------------------------------------
+
+/** What is wrong with a new skill's name as it is typed; null while it is empty or fine. */
+export function skillNameHint(name: string) {
+  switch (skillNameProblem(name)) {
+    case "tooLong":
+      return `Use at most ${SKILL_NAME_MAX_LENGTH} characters.`;
+    case "characters":
+      return "Use lowercase letters, digits and hyphens.";
+    case "hyphens":
+      return "Use single hyphens, and only between words.";
+    default:
+      return null;
+  }
+}
+
+/** Why a new skill wasn't made, and whether it is the name's fault, from the server's failure. */
+export function createFailure(error: unknown): { readonly text: string; readonly name: boolean } {
+  const { _tag, reason } =
+    typeof error === "object" && error !== null
+      ? (error as { _tag?: unknown; reason?: unknown })
+      : {};
+  if (_tag === "SkillCreateError" && reason === "nameTaken") {
+    return { text: "A skill with this name already exists there.", name: true };
+  }
+  if (_tag === "SkillRequestError" && reason === "projectNotRegistered") {
+    return { text: "This project isn't in this environment any more.", name: false };
+  }
+  return { text: "Couldn't create the skill.", name: false };
+}
+
+/** The status line after a skill was made; only agents it couldn't be given need saying. */
+export function describeCreated(result: SkillCreateResult, ctx: SkillsContext) {
+  if (result.blocked.length === 0) return null;
+  const nameOf = (id: ProviderInstanceId) =>
+    ctx.installed.find((agent) => agent.instanceId === id)?.displayName ?? id;
+  return [
+    `Created “${result.skill.name}”.`,
+    ...result.blocked.map((blocked) =>
+      problemText(blocked.reason, result.skill.name, nameOf(blocked.instanceId)),
+    ),
+  ].join(" ");
 }
 
 // -- Big changes ------------------------------------------------------------------------------

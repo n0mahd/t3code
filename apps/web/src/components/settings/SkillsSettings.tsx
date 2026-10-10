@@ -1,6 +1,11 @@
-import type { EditorId, ServerProvider } from "@t3tools/contracts";
+import type {
+  EditorId,
+  EnvironmentId,
+  ServerProvider,
+  SkillCreateResult,
+} from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { BookOpenIcon, XIcon } from "lucide-react";
+import { BookOpenIcon, PlusIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAfterDelay } from "../../hooks/useAfterDelay";
@@ -28,14 +33,17 @@ import type { PlaceOptions } from "./SkillUseIn";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer } from "./settingsLayout";
 import { useSettingsScope } from "./SettingsScopeContext";
+import { NewSkillDialog } from "./NewSkillDialog";
 import { useInstructions } from "./useInstructions";
 import {
   attention,
+  describeCreated,
   describeResult,
   ingestSkills,
   installedAgents,
   matchesQuery,
   sendInBatches,
+  skillId,
   skillsEnvironment,
   skillsToCheckWithGit,
   unreadableNote,
@@ -85,6 +93,7 @@ export function SkillsSettings() {
   const [subpage, setSubpage] = useState(false);
   /** Rows have checkboxes, and a bar at the bottom acts on the ticked ones. */
   const [selecting, setSelecting] = useState(false);
+  const [creating, setCreating] = useState(false);
   const canSelect = environment !== undefined && !missingProject && !subpage;
   return (
     <SettingsPageContainer width="expanded" hideScopeOnPhone={subpage}>
@@ -94,6 +103,13 @@ export function SkillsSettings() {
           <h1 className="text-lg font-semibold">Skills</h1>
           <StandardInfo />
           <span className="flex-1" />
+          {environment && canSelect && (
+            <NewSkillButton
+              environmentId={environment.environmentId}
+              offline={environment.connection.phase !== "connected"}
+              onClick={() => setCreating(true)}
+            />
+          )}
           {canSelect && (
             <Button
               size="xs"
@@ -119,6 +135,8 @@ export function SkillsSettings() {
           environment={environment}
           project={picked}
           selecting={selecting}
+          creating={creating}
+          onCreatingChange={setCreating}
           onSubpageChange={setSubpage}
         />
       )}
@@ -126,10 +144,31 @@ export function SkillsSettings() {
   );
 }
 
+/** Opens the New skill dialog; off without the grant to write files, or while offline. */
+function NewSkillButton({
+  environmentId,
+  offline,
+  onClick,
+}: {
+  environmentId: EnvironmentId;
+  offline: boolean;
+  onClick: () => void;
+}) {
+  const allowed = useAtomValue(serverEnvironment.createSkill.permissionAtom(environmentId));
+  return (
+    <Button size="xs" variant="outline" disabled={!allowed || offline} onClick={onClick}>
+      <PlusIcon />
+      New skill
+    </Button>
+  );
+}
+
 function EnvironmentSkills({
   environment,
   project,
   selecting,
+  creating,
+  onCreatingChange,
   onSubpageChange,
 }: {
   environment: ReturnType<typeof useEnvironments>["environments"][number];
@@ -137,6 +176,9 @@ function EnvironmentSkills({
   project: PickedProject | null;
   /** Rows have checkboxes, and a bar at the bottom acts on the ticked ones. */
   selecting: boolean;
+  /** The New skill dialog is open. */
+  creating: boolean;
+  onCreatingChange: (open: boolean) => void;
   /** True while a skill or an instruction file is open instead of the list. */
   onSubpageChange: (open: boolean) => void;
 }) {
@@ -394,6 +436,25 @@ function EnvironmentSkills({
     setSelected(new Set());
     setBusy(false);
   };
+  /** A new skill is on disk: the list is read again and the skill opened, ready to edit. */
+  const created = async (result: SkillCreateResult) => {
+    onCreatingChange(false);
+    setNotice(describeCreated(result, ctx));
+    setBusy(true);
+    try {
+      const loaded = await load();
+      if (loaded) {
+        setData(loaded);
+        setLoadError(null);
+        openSkill(skillId(result.skill));
+      } else {
+        setLoadError(LOAD_ERROR);
+      }
+    } catch {
+      setLoadError(LOAD_ERROR);
+    }
+    setBusy(false);
+  };
   /**
    * A plan that needs confirming waits for the dialog; any other goes ahead. For a placement or
    * delete the dialog opens at once and git is asked meanwhile: the "undo with git" line appears
@@ -646,6 +707,13 @@ function EnvironmentSkills({
         </>
       )}
 
+      <NewSkillDialog
+        open={creating}
+        onOpenChange={onCreatingChange}
+        environmentId={environment.environmentId}
+        projectRoot={cwd}
+        onCreated={(result) => void created(result)}
+      />
       <ConfirmPlan
         plan={confirming}
         onCancel={() => setConfirming(null)}

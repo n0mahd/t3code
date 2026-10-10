@@ -197,6 +197,12 @@ function SettingsIndexSections() {
           disabled={noServerTargets}
         />
         <SettingsRow
+          icon="book"
+          label="Skills"
+          target="SettingsSkills"
+          disabled={noServerTargets}
+        />
+        <SettingsRow
           icon="text.alignleft"
           label="Agent behavior"
           target="SettingsEnvironmentAgentBehavior"

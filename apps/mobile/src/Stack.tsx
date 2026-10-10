@@ -100,6 +100,11 @@ import {
   ScheduledTaskBranchPickerRouteScreen,
 } from "./features/settings/ScheduledTaskPickerScreens";
 import { ScheduledTaskEditorProvider } from "./features/settings/scheduled-task-editor";
+import { SettingsInstructionRouteScreen } from "./features/settings/skills/SettingsInstructionRouteScreen";
+import { SettingsSkillRouteScreen } from "./features/settings/skills/SettingsSkillRouteScreen";
+import { SettingsSkillsRouteScreen } from "./features/settings/skills/SettingsSkillsRouteScreen";
+import { SettingsSkillUseInRouteScreen } from "./features/settings/skills/SettingsSkillUseInRouteScreen";
+import { SkillsSettingsProvider } from "./features/settings/skills/skills-settings";
 import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboardRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
 import {
@@ -237,6 +242,25 @@ const SettingsContentStack = createV5SheetStackNavigator({
       screen: SettingsEnvironmentAgentBehaviorRouteScreen,
       linking: "agent-behavior",
       options: { title: "Agent behavior" },
+    }),
+    SettingsSkills: createNativeStackScreen({
+      screen: SettingsSkillsRouteScreen,
+      linking: "skills",
+      options: { title: "Skills" },
+    }),
+    // The open skill, file and Use in… screens read the list the Skills screen loaded, so they
+    // have no `linking:` path of their own.
+    SettingsSkill: createNativeStackScreen({
+      screen: SettingsSkillRouteScreen,
+      options: { title: "Skill" },
+    }),
+    SettingsSkillUseIn: createNativeStackScreen({
+      screen: SettingsSkillUseInRouteScreen,
+      options: { title: "Use in…" },
+    }),
+    SettingsInstruction: createNativeStackScreen({
+      screen: SettingsInstructionRouteScreen,
+      options: { title: "Instructions" },
     }),
     SettingsProviderAccounts: createNativeStackScreen({
       screen: SettingsProviderAccountsRouteScreen,
@@ -418,7 +442,9 @@ const SettingsSheetStack = createV5SheetStackNavigator({
       linking: "",
       layout: ({ children }) => (
         <SettingsEnvironmentFilterProvider>
-          <ScheduledTaskEditorProvider>{children}</ScheduledTaskEditorProvider>
+          <ScheduledTaskEditorProvider>
+            <SkillsSettingsProvider>{children}</SkillsSettingsProvider>
+          </ScheduledTaskEditorProvider>
         </SettingsEnvironmentFilterProvider>
       ),
     }),

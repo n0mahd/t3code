@@ -1,10 +1,10 @@
 # Skills
 
-Open **Settings → Skills** on web and desktop to see which skills your agents can use. The page
-reads the environment and project chosen at the top of Settings, so with a remote environment you
-see that machine's skills. You can turn each skill on or off for every agent, or for one agent at a
-time, and choose which projects use it. To change what a skill says, edit its `SKILL.md` in your
-editor or ask an agent.
+Open **Settings → Skills** on web, desktop or the phone app to see which skills your agents can
+use. The page reads the environment and project chosen at the top of Settings, so with a remote
+environment you see that machine's skills. You can turn each skill on or off for every agent, or
+for one agent at a time, and choose which projects use it. To change what a skill says, edit its
+`SKILL.md` in your editor or ask an agent.
 
 The agents are your enabled provider instances. Two Claude instances show as two agents, each
 with its own config folder.
@@ -124,6 +124,14 @@ it when:
 - Claude can't read the skill's header, the YAML between the `---` lines at the top of
   `SKILL.md`, so it skips the skill. Quote a value that contains a colon or brackets, for example
   a description.
+
+## On your phone
+
+The phone app shows the same skills and instruction files. You can turn skills on or off, use them
+in other projects, delete them, apply the fixes **Needs attention** offers, and change **Claude
+reads AGENTS.md**. `SKILL.md` and instruction files are read-only there; edit them on web or
+desktop. Acting on several skills at once is web and desktop only. When Settings covers several
+environments, the page shows one at a time.
 
 ## Limits
 

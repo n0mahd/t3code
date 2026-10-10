@@ -34,8 +34,8 @@ const projectFolder = Effect.fnUntraced(function* (
 });
 
 /**
- * Linking agents to the Global file rewrites files agents run from, so turning it on or off needs
- * full access; `McpToolAccess.writesEnvironment` checks that.
+ * Writing a file, or linking agents to the Global file, rewrites files agents run from, so it
+ * needs full access; `McpToolAccess.writesEnvironment` checks that.
  */
 export const layer = McpToolAccess.toLayer(InstructionsToolkit, {
   t3_instructions_list: McpToolAccess.reads((input) =>
@@ -53,6 +53,16 @@ export const layer = McpToolAccess.toLayer(InstructionsToolkit, {
       const catalog = yield* InstructionCatalog.InstructionCatalog;
       return yield* catalog.read({ cwd, id }).pipe(Effect.mapError(instructionFailure));
     }),
+  ),
+  t3_instructions_write: McpToolAccess.writesEnvironment(
+    ({ projectId, revision, ...input }, check) =>
+      Effect.gen(function* () {
+        const cwd = yield* projectFolder(yield* check, projectId);
+        const manager = yield* InstructionManager.InstructionManager;
+        return yield* manager
+          .write({ cwd, ...input, expectedRevision: revision })
+          .pipe(Effect.mapError(instructionFailure));
+      }),
   ),
   t3_instructions_enable: McpToolAccess.writesEnvironment(({ agents }) =>
     Effect.gen(function* () {

@@ -5,6 +5,7 @@ import {
   InstructionAgentsResult,
   InstructionListResult,
   InstructionReadResult,
+  InstructionWriteResult,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -109,6 +110,7 @@ const call = (name: string, args: Record<string, unknown>) =>
 const decodeList = Schema.decodeUnknownSync(InstructionListResult);
 const decodeRead = Schema.decodeUnknownSync(InstructionReadResult);
 const decodeAgents = Schema.decodeUnknownSync(InstructionAgentsResult);
+const decodeWrite = Schema.decodeUnknownSync(InstructionWriteResult);
 
 describe("instructions MCP tools", () => {
   it.layer(NodeServices.layer, { excludeTestServices: true })("over a real layout", (it) => {
@@ -186,6 +188,61 @@ describe("instructions MCP tools", () => {
         }),
     );
 
+    it.effect("replaces a file's text with the revision it read, and refuses once it changed", () =>
+      Effect.gen(function* () {
+        const { home, project, write, read } = yield* makeMachine;
+        yield* write("repos/app/AGENTS.md", "project rules");
+        yield* Effect.gen(function* () {
+          const id = "project:shared:AGENTS.md";
+          const { revision } = decodeRead(
+            (yield* call("t3_instructions_get", { id })).structuredContent,
+          );
+
+          const written = yield* call("t3_instructions_write", {
+            id,
+            contents: "project rules\nrun the tests\n",
+            revision,
+          });
+          expect(decodeWrite(written.structuredContent).revision).not.toBe(revision);
+          expect(yield* read("repos/app/AGENTS.md")).toBe("project rules\nrun the tests\n");
+
+          // The revision read before is stale now, as it is after someone else's edit.
+          const stale = yield* call("t3_instructions_write", { id, contents: "lost", revision });
+          expect(declaredFailure(stale)).toMatchObject({
+            code: "invalid_request",
+            message: "That file changed on disk. Reload it first.",
+          });
+          expect(yield* read("repos/app/AGENTS.md")).toBe("project rules\nrun the tests\n");
+        }).pipe(Effect.provide(mcpLayerFor(home, project)));
+      }),
+    );
+
+    it.effect("creates a missing project AGENTS.md and Global AGENTS.md, but not over a file", () =>
+      Effect.gen(function* () {
+        const { home, project, read } = yield* makeMachine;
+        yield* Effect.gen(function* () {
+          for (const id of ["project:shared:AGENTS.md", "global:shared"]) {
+            const created = yield* call("t3_instructions_write", {
+              id,
+              contents: `${id} rules\n`,
+              revision: null,
+            });
+            expect(created.isError, id).toBe(false);
+          }
+          expect(yield* read("repos/app/AGENTS.md")).toBe("project:shared:AGENTS.md rules\n");
+          expect(yield* read(".agents/AGENTS.md")).toBe("global:shared rules\n");
+
+          const again = yield* call("t3_instructions_write", {
+            id: "global:shared",
+            contents: "replaced",
+            revision: null,
+          });
+          expect(declaredFailure(again)).toMatchObject({ message: "That file already exists." });
+          expect(yield* read(".agents/AGENTS.md")).toBe("global:shared rules\n");
+        }).pipe(Effect.provide(mcpLayerFor(home, project)));
+      }),
+    );
+
     it.effect("lets a supervised thread read instructions but not change who reads them", () =>
       Effect.gen(function* () {
         const { home, project, fs, path } = yield* makeMachine;
@@ -195,11 +252,16 @@ describe("instructions MCP tools", () => {
           for (const [name, args] of [
             ["t3_instructions_enable", { agents: "all" }],
             ["t3_instructions_disable", { agents: ["codex"] }],
+            [
+              "t3_instructions_write",
+              { id: "project:shared:AGENTS.md", contents: "rules", revision: null },
+            ],
           ] as const) {
             const result = yield* call(name, args);
             expect(declaredFailure(result), name).toMatchObject({ code: "capability_denied" });
           }
           expect(yield* fs.exists(path.join(home, ".codex"))).toBe(false);
+          expect(yield* fs.exists(path.join(project, "AGENTS.md"))).toBe(false);
         }).pipe(Effect.provide(mcpLayerFor(home, project, { runtimeMode: "approval-required" })));
       }),
     );
@@ -215,6 +277,8 @@ describe("instructions MCP tools", () => {
             ["t3_instructions_disable", { agents: "all" }],
             ["t3_instructions_get", {}],
             ["t3_instructions_get", { id: "" }],
+            // A write names the revision it read, or null to create.
+            ["t3_instructions_write", { id: "global:shared", contents: "rules" }],
           ] as const) {
             const error = yield* call(name, args).pipe(Effect.flip);
             expect(error._tag, `${name} ${Object.keys(args).join()}`).toBe("InvalidParams");

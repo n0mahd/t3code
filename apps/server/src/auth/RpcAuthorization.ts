@@ -66,6 +66,11 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetSkill]: AuthFilesystemReadScope,
   // `git ls-files` in the project's folder.
   [WS_METHODS.serverSkillsTracked]: AuthFilesystemReadScope,
+  // Comparing skills with their sources reads the skills' files and the sources the user already
+  // installed from; updating one writes its folder and the skills CLI's lock.
+  [WS_METHODS.serverCheckSkillUpdates]: AuthFilesystemReadScope,
+  [WS_METHODS.serverGetSkillChanges]: AuthFilesystemReadScope,
+  [WS_METHODS.serverUpdateSkill]: AuthFilesystemWriteScope,
   // Instruction files are read like any other file of the machine.
   [WS_METHODS.serverListInstructions]: AuthFilesystemReadScope,
   [WS_METHODS.serverReadInstruction]: AuthFilesystemReadScope,

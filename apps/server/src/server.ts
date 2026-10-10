@@ -90,10 +90,12 @@ import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolve
 import * as InstructionCatalog from "./instructions/InstructionCatalog.ts";
 import * as InstructionManager from "./instructions/InstructionManager.ts";
 import * as InstructionTracking from "./instructions/InstructionTracking.ts";
+import * as GitHubSkillSource from "./skills/GitHubSkillSource.ts";
 import * as SkillCatalog from "./skills/SkillCatalog.ts";
 import { RegisteredProjects } from "./skills/SkillLibrary.ts";
 import * as SkillManager from "./skills/SkillManager.ts";
 import * as SkillTracking from "./skills/SkillTracking.ts";
+import * as SkillUpdates from "./skills/SkillUpdates.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
@@ -603,6 +605,9 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   SkillManager.layer,
   // Reads through SkillCatalog and runs git through VcsProcess.
   SkillTracking.layer,
+  // Reads skill sources from GitHub through the HTTP client; one instance, so its cache and the
+  // pause after GitHub's rate limit are shared, and updates run one at a time.
+  SkillUpdates.layer.pipe(Layer.provide(GitHubSkillSource.layer)),
   // Instruction files. The manager checks folders against ProjectService, so, like SkillManager,
   // being here makes it one instance and instruction writes run one request at a time. All three
   // read through one InstructionCatalog, which reads the file index and the provider snapshots.

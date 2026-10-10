@@ -3,6 +3,7 @@ import { AlertTriangleIcon, ArrowLeftIcon, MoreHorizontalIcon } from "lucide-rea
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
 import { useAfterDelay } from "../../hooks/useAfterDelay";
+import { useRevealInFileManager } from "../../hooks/useRevealInFileManager";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
@@ -104,6 +105,7 @@ export function SkillDetail({
     (detail.status === "ready" ? detail.result.description : "") || skill.description;
   // The server's resolved folder, not an agent's link.
   const skillFolder = detail.status === "ready" ? detail.result.home : null;
+  const reveal = useRevealInFileManager(environmentId);
   const provided = skill.provided !== undefined;
   const scopeLabel = provided
     ? "Built in and plugins"
@@ -175,6 +177,11 @@ export function SkillDetail({
               <MenuPopup align="end">
                 {skillFolder && (
                   <MenuItem onClick={() => copyPath(skillFolder, "skill path")}>Copy path</MenuItem>
+                )}
+                {skillFolder && reveal.label && (
+                  <MenuItem onClick={() => void reveal.reveal(skillFolder)}>
+                    {reveal.label}
+                  </MenuItem>
                 )}
                 {turnOnAll && (
                   <MenuItem disabled={busy} onClick={() => onPlan(turnOnAll)}>

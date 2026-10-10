@@ -14,10 +14,7 @@ import {
 import { useCallback, useMemo } from "react";
 
 import { resolveDiffPathForWorkspace } from "./diffFileActions";
-import {
-  revealInFileExplorerLabelForKind,
-  revealInFileExplorerLabelForOs,
-} from "~/components/preview/fileExplorerLabel";
+import { revealInFileManagerLabel } from "~/components/preview/fileExplorerLabel";
 import { readLocalApi } from "./localApi";
 import { serverEnvironment } from "./state/server";
 import { shellEnvironment } from "./state/shell";
@@ -120,16 +117,8 @@ export function useFileContextMenu(environmentId: EnvironmentId | null) {
   return useMemo(() => {
     const availableEditors = serverConfig?.availableEditors ?? [];
     const capabilities: FileContextMenuCapabilities = {
-      // The reveal wording comes from the server because on WSL the reveal can
-      // run through Windows File Explorer even though the host reports Linux.
       revealLabel:
-        environmentId !== null &&
-        serverConfig?.shellRevealInFileManager === true &&
-        serverConfig.availableEditors.includes("file-manager")
-          ? serverConfig.shellRevealInFileManagerKind === undefined
-            ? revealInFileExplorerLabelForOs(serverConfig.environment.platform.os)
-            : revealInFileExplorerLabelForKind(serverConfig.shellRevealInFileManagerKind)
-          : undefined,
+        environmentId !== null ? revealInFileManagerLabel(serverConfig ?? null) : undefined,
       canOpenDefault: availableEditors.includes("file-manager"),
       editorIds: availableEditors,
     };

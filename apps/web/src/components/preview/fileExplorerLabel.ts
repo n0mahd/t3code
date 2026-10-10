@@ -1,4 +1,8 @@
-import type { ExecutionEnvironmentPlatformOs, FileManagerRevealKind } from "@t3tools/contracts";
+import type {
+  ExecutionEnvironmentPlatformOs,
+  FileManagerRevealKind,
+  ServerConfig,
+} from "@t3tools/contracts";
 
 export function revealInFileExplorerLabel(platform: string): string {
   const normalized = platform.toLowerCase();
@@ -20,4 +24,22 @@ export function revealInFileExplorerLabelForKind(kind: FileManagerRevealKind): s
   if (kind === "finder") return "Reveal in Finder";
   if (kind === "file-explorer") return "Reveal in File Explorer";
   return "Reveal in Files";
+}
+
+/**
+ * What revealing a path on the server machine is called there, or undefined when its server can't.
+ * The wording comes from the server because on WSL the reveal can run through Windows File
+ * Explorer even though the host reports Linux.
+ */
+export function revealInFileManagerLabel(
+  config: Pick<
+    ServerConfig,
+    "availableEditors" | "environment" | "shellRevealInFileManager" | "shellRevealInFileManagerKind"
+  > | null,
+): string | undefined {
+  if (config?.shellRevealInFileManager !== true) return undefined;
+  if (!config.availableEditors.includes("file-manager")) return undefined;
+  return config.shellRevealInFileManagerKind === undefined
+    ? revealInFileExplorerLabelForOs(config.environment.platform.os)
+    : revealInFileExplorerLabelForKind(config.shellRevealInFileManagerKind);
 }

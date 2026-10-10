@@ -1352,6 +1352,119 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillManager", (it)
         }),
     );
   });
+
+  describe("skills that come with an agent", () => {
+    /** Codex's system skill, one Claude plugin, and a project skill of the system skill's name. */
+    const withProvided = Effect.gen(function* () {
+      const machine = yield* makeMachine;
+      const { path, home, write } = machine;
+      yield* write(".codex/skills/.system/imagegen/SKILL.md", skillFile("imagegen"));
+      yield* write("repos/app/.agents/skills/imagegen/SKILL.md", skillFile("imagegen"));
+      const installPath = path.join(home, ".claude/plugins/cache/acme-market/review-kit/1.0.0");
+      yield* write(
+        ".claude/plugins/installed_plugins.json",
+        JSON.stringify({
+          version: 2,
+          plugins: { "review-kit@acme-market": [{ scope: "user", installPath }] },
+        }),
+      );
+      yield* write(
+        ".claude/plugins/cache/acme-market/review-kit/1.0.0/skills/review/SKILL.md",
+        skillFile("review"),
+      );
+      return machine;
+    });
+
+    const providedRef = (skills: readonly SkillSummary[], name: string): SkillRef => {
+      const skill = skills.find((item) => item.name === name && item.provided !== undefined);
+      if (!skill) throw new Error(`No provided skill ${name} in the list`);
+      return { scope: skill.scope, name, home: skill.home };
+    };
+
+    it.effect("never deletes, moves or links one, and only its own agent is switched", () =>
+      Effect.gen(function* () {
+        const { fs, path, home, project } = yield* withProvided;
+        yield* withManager(home, [project], ({ manager, catalog }) =>
+          Effect.gen(function* () {
+            const { skills } = yield* catalog.list({ cwd: project });
+            const system = providedRef(skills, "imagegen");
+            const plugin = providedRef(skills, "review-kit:review");
+
+            const deleted = yield* manager.delete({ cwd: project, skills: [system, plugin] });
+            expect(deleted.outcomes.map(({ status, reason }) => [status, reason])).toEqual([
+              ["skipped", "provided"],
+              ["skipped", "provided"],
+            ]);
+            const placed = yield* manager.place({
+              cwd: project,
+              skills: [plugin],
+              to: { kind: "project", cwd: project },
+            });
+            expect(placed.outcomes.map(({ status, reason }) => [status, reason])).toEqual([
+              ["skipped", "provided"],
+            ]);
+            yield* encodeResult(placed);
+
+            // Another agent can't be given it; the plugin's own agent has nothing T3 Code can write.
+            const enabled = yield* manager.enable({
+              cwd: project,
+              skills: [system],
+              agents: [agent("cursor")],
+            });
+            expect(enabled.outcomes[0]).toMatchObject({
+              status: "skipped",
+              blocked: [{ instanceId: "cursor", reason: "provided" }],
+            });
+            const disabled = yield* manager.disable({
+              cwd: project,
+              skills: [plugin],
+              agents: [agent("claudeAgent"), agent("codex")],
+            });
+            expect(disabled.outcomes[0]).toMatchObject({
+              status: "skipped",
+              blocked: [{ instanceId: "claudeAgent", reason: "alwaysOn" }],
+            });
+
+            expect(
+              yield* fs.exists(path.join(home, ".codex/skills/.system/imagegen/SKILL.md")),
+            ).toBe(true);
+            expect(
+              yield* fs.exists(
+                path.join(
+                  home,
+                  ".claude/plugins/cache/acme-market/review-kit/1.0.0/skills/review/SKILL.md",
+                ),
+              ),
+            ).toBe(true);
+            expect(yield* fs.exists(path.join(home, ".agents/skills/imagegen"))).toBe(false);
+            expect(yield* fs.exists(path.join(project, ".agents/skills/review"))).toBe(false);
+          }),
+        );
+      }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "doesn't keep the user's own skill of the same name out of Global",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* withProvided;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              const { skills } = yield* catalog.list({ cwd: project });
+              const result = yield* manager.place({
+                cwd: project,
+                skills: [refOf(skills, "project", "imagegen")],
+                to: { kind: "global" },
+              });
+              expect(result.outcomes[0]?.status).toBe("changed");
+              expect(yield* fs.exists(path.join(home, ".agents/skills/imagegen/SKILL.md"))).toBe(
+                true,
+              );
+            }),
+          );
+        }),
+    );
+  });
 });
 
 describe("the request and result schemas", () => {

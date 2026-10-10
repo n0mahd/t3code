@@ -498,6 +498,11 @@ describe("skills MCP tools", () => {
         const { fs, path, home, project } = yield* makeMachine;
         yield* git(project, ["init"]);
         yield* git(project, ["add", ".agents/skills/verify"]);
+        yield* fs.makeDirectory(path.join(project, ".agents/skills/draft"));
+        yield* fs.writeFileString(
+          path.join(project, ".agents/skills/draft/SKILL.md"),
+          skillFile("draft"),
+        );
         yield* Effect.gen(function* () {
           const verify = refOf(yield* listSkills(), "project", "verify");
 
@@ -509,6 +514,13 @@ describe("skills MCP tools", () => {
           expect(deleting[0]).toBe("This deletes .agents/skills/verify and any links to it.");
           expect(deleting).toContain("git tracks it, so you can undo this with git.");
           expect(deleting).not.toContain("It can't be undone.");
+
+          // A skill git doesn't track can't come back.
+          const draft = refOf(yield* listSkills(), "project", "draft");
+          const both = planOf(yield* call("t3_skill_delete", { skills: [verify, draft] }));
+          expect(both).toContain(
+            "git tracks “verify”, so you can undo deleting it with git. The rest can't be undone.",
+          );
           expect(yield* fs.exists(path.join(project, ".agents/skills/verify/SKILL.md"))).toBe(true);
         }).pipe(Effect.provide(layerFor(home, project)));
       }),

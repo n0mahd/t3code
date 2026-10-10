@@ -69,7 +69,11 @@ function placedAlready(skill: SkillSummary, to: SkillPlacement) {
  * A sentence saying which of the project skills a change removes git can bring back, and whether
  * that is all of them.
  */
-function gitNote(removed: readonly SkillSummary[], tracked: ReadonlySet<string>, undo: string) {
+function gitNote(
+  removed: readonly SkillSummary[],
+  tracked: ReadonlySet<string>,
+  undo: (them: string) => string,
+) {
   const inGit = removed.filter((skill) => skill.scope === "project" && tracked.has(skill.name));
   if (inGit.length === 0) return undefined;
   const whole = inGit.length === removed.length;
@@ -77,7 +81,7 @@ function gitNote(removed: readonly SkillSummary[], tracked: ReadonlySet<string>,
     whole,
     text: whole
       ? `git tracks ${it(removed)}, so you can undo this with git.`
-      : `git tracks ${namesOf(inGit)}, so you can undo ${undo} ${it(inGit)} with git.`,
+      : `git tracks ${namesOf(inGit)}, so you can undo ${undo(it(inGit))} with git.`,
   };
 }
 
@@ -127,7 +131,7 @@ export function planMove(input: {
   const git =
     input.to.kind === "project"
       ? undefined
-      : gitNote(coming, new Set(input.tracked), "taking out of the project");
+      : gitNote(coming, new Set(input.tracked), (them) => `taking ${them} out of the project`);
   if (git !== undefined) lines.push(git.text);
   lines.push(nextStep("t3_skill_move"));
   return lines;
@@ -166,7 +170,7 @@ export function planDelete(input: {
     ),
   ];
   if (losing.length > 0) lines.push(`${joinNames(losing)} will stop using ${it(targets)}.`);
-  const git = gitNote(targets, new Set(input.tracked), "deleting");
+  const git = gitNote(targets, new Set(input.tracked), (them) => `deleting ${them}`);
   if (git === undefined) lines.push("It can't be undone.");
   else lines.push(git.whole ? git.text : `${git.text} The rest can't be undone.`);
   lines.push(nextStep("t3_skill_delete"));

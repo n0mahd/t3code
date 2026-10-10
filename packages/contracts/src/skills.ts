@@ -267,3 +267,194 @@ export class SkillRequestError extends Schema.TaggedError<SkillRequestError>()(
       : "That folder isn't a project in this environment.";
   }
 }
+
+// -- Updates from a skill's source ------------------------------------------------------------
+
+/** Why a skill couldn't be compared with its source, or updated. A client words each one. */
+export const SkillUpdateProblem = Schema.Literals([
+  /** GitHub's limit for requests without signing in is used up until `retryAt`. */
+  "rateLimited",
+  /** The repository or branch isn't on GitHub any more, or it is private. */
+  "notFound",
+  /** GitHub couldn't be reached, or answered with something unexpected. */
+  "unavailable",
+  /** The skill's folder, or its source's, is too large to compare. */
+  "tooLarge",
+  /** The source's folder holds links or submodules, which T3 Code doesn't update. */
+  "unsupported",
+  /** The skill's own folder couldn't be read. */
+  "unreadable",
+]);
+export type SkillUpdateProblem = typeof SkillUpdateProblem.Type;
+
+/** How a skill compares with the source the `skills` CLI installed it from. */
+export const SkillUpdateState = Schema.Literals([
+  /** The same files as the source. */
+  "current",
+  /** The source has a newer version. */
+  "update",
+  /** You've edited it, and the source has nothing newer. */
+  "edited",
+  /** It differs from the source, and T3 Code can't tell which side changed. */
+  "differs",
+  /** The source no longer has the skill. */
+  "removed",
+  /** It couldn't be compared; see `problem`. */
+  "unknown",
+]);
+export type SkillUpdateState = typeof SkillUpdateState.Type;
+
+export const SkillUpdateEntry = Schema.Struct({
+  scope: SkillScope,
+  name: Schema.String,
+  /** The same display path as `SkillSummary.home`. */
+  home: Schema.String,
+  /** `owner/repo`. */
+  source: Schema.String,
+  state: SkillUpdateState,
+  /**
+   * For `update`: whether you've changed the skill since it was installed. Absent when that is
+   * only known once the skill's changes are read.
+   */
+  edited: Schema.optional(Schema.Boolean),
+  problem: Schema.optional(SkillUpdateProblem),
+  /** For `rateLimited`: when GitHub takes requests again, as an ISO date. */
+  retryAt: Schema.optional(Schema.String),
+});
+export type SkillUpdateEntry = typeof SkillUpdateEntry.Type;
+
+/**
+ * Compare every skill the `skills` CLI recorded, Global ones and the project's, with its source:
+ * one GitHub request per repository.
+ */
+export const SkillUpdateCheckInput = Schema.Struct({
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  /** Ask GitHub again rather than reuse a recent answer. */
+  refresh: Schema.optional(Schema.Boolean),
+});
+export type SkillUpdateCheckInput = typeof SkillUpdateCheckInput.Type;
+
+export const SkillUpdateCheckResult = Schema.Struct({
+  entries: Schema.Array(SkillUpdateEntry),
+});
+export type SkillUpdateCheckResult = typeof SkillUpdateCheckResult.Type;
+
+/** Read what updating one skill would change. Nothing is written. */
+export const SkillChangesInput = Schema.Struct({
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  scope: SkillScope,
+  name: TrimmedNonEmptyString,
+  /** The `home` the list returned. */
+  home: TrimmedNonEmptyString,
+});
+export type SkillChangesInput = typeof SkillChangesInput.Type;
+
+export const SkillChangedFile = Schema.Struct({
+  /** Relative to the skill's folder. */
+  path: Schema.String,
+  /** From your copy to the source's. */
+  change: Schema.Literals(["added", "modified", "removed"]),
+  /**
+   * What a merge does to the file: take the source's (`theirs`), keep yours (`mine`), combine
+   * both (`merged`), or leave it to you because both changed it in ways that clash, or because
+   * nothing says which side changed it (`conflict`).
+   */
+  merge: Schema.Literals(["theirs", "mine", "merged", "conflict"]),
+  /** Your text and the source's; null where the file doesn't exist or isn't shown. */
+  mine: Schema.NullOr(Schema.String),
+  theirs: Schema.NullOr(Schema.String),
+  /** For `merged`: the combined text. */
+  merged: Schema.optional(Schema.String),
+  /** Why the texts aren't shown. */
+  omitted: Schema.optional(Schema.Literals(["binary", "tooLarge"])),
+  /** An agent may run this file rather than read it. */
+  script: Schema.Boolean,
+});
+export type SkillChangedFile = typeof SkillChangedFile.Type;
+
+export const SkillChangesResult = Schema.Struct({
+  /**
+   * The comparison, more exact than the check's: `edited` is always known here. Null when the
+   * skill is gone or has no record of a GitHub source.
+   */
+  entry: Schema.NullOr(SkillUpdateEntry),
+  /**
+   * The versions these changes are between: the source folder's git tree SHA and your copy's.
+   * An update names them, so it applies exactly what was shown or nothing.
+   */
+  upstreamSha: Schema.optional(Schema.String),
+  localSha: Schema.optional(Schema.String),
+  /** The files that differ, `SKILL.md` first, up to a limit. */
+  files: Schema.Array(SkillChangedFile),
+  /** How many more files differ than are listed. */
+  more: NonNegativeInt,
+});
+export type SkillChangesResult = typeof SkillChangesResult.Type;
+
+/** Update one skill from its source, or keep your copy as the version to compare with. */
+export const SkillUpdateInput = Schema.Struct({
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  scope: SkillScope,
+  name: TrimmedNonEmptyString,
+  home: TrimmedNonEmptyString,
+  /** `upstreamSha` and `localSha` from the changes that were shown. */
+  upstreamSha: TrimmedNonEmptyString,
+  localSha: TrimmedNonEmptyString,
+  /**
+   * `merge`: take the source's changes and keep yours, which needs every conflict settled in
+   * `resolutions`. `theirs`: replace your copy with the source's. `mine`: change no file, and
+   * record the source's version as the one your copy is based on.
+   */
+  choice: Schema.Literals(["merge", "theirs", "mine"]),
+  /** For `merge`: which version each conflicting file keeps, by path. */
+  resolutions: Schema.optional(Schema.Record(Schema.String, Schema.Literals(["mine", "theirs"]))),
+});
+export type SkillUpdateInput = typeof SkillUpdateInput.Type;
+
+export const SkillUpdateResult = Schema.Struct({
+  /**
+   * `updated`: files were written. `kept`: no file changed, and the source's version was
+   * recorded. `conflicts`: nothing was written because these files need a choice. `changed`:
+   * nothing was written because the skill or its source changed since the changes were read.
+   * `notFound`: the skill, or its record, is gone.
+   */
+  status: Schema.Literals(["updated", "kept", "conflicts", "changed", "notFound"]),
+  conflicts: Schema.Array(Schema.String),
+  /** The `skills` CLI's record couldn't be rewritten, so it still names the older version. */
+  lockStale: Schema.optional(Schema.Boolean),
+});
+export type SkillUpdateResult = typeof SkillUpdateResult.Type;
+
+/** An update that couldn't run. Nothing was written. */
+export class SkillUpdateError extends Schema.TaggedError<SkillUpdateError>()("SkillUpdateError", {
+  reason: Schema.Literals([
+    ...SkillUpdateProblem.literals,
+    /** The `skills` CLI's lock doesn't parse or has a version T3 Code doesn't write. */
+    "lockUnsupported",
+    /** The skill's folder couldn't be written; it was left as it was. */
+    "writeFailed",
+  ]),
+  /** For `rateLimited`: when GitHub takes requests again, as an ISO date. */
+  retryAt: Schema.optional(Schema.String),
+}) {
+  override get message(): string {
+    switch (this.reason) {
+      case "rateLimited":
+        return "GitHub's limit for requests without signing in is used up.";
+      case "notFound":
+        return "The skill's source isn't on GitHub any more.";
+      case "unavailable":
+        return "GitHub couldn't be reached.";
+      case "tooLarge":
+        return "The skill is too large to update here.";
+      case "unsupported":
+        return "The skill holds links, which T3 Code doesn't update.";
+      case "unreadable":
+        return "The skill's folder couldn't be read.";
+      case "lockUnsupported":
+        return "The skills CLI's lock file can't be updated safely.";
+      case "writeFailed":
+        return "The skill's folder couldn't be written.";
+    }
+  }
+}

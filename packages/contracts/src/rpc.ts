@@ -342,6 +342,8 @@ import {
 } from "./instructions.ts";
 import {
   SkillBatchResult,
+  SkillChangesInput,
+  SkillChangesResult,
   SkillDeleteInput,
   SkillDisableInput,
   SkillEnableInput,
@@ -353,6 +355,11 @@ import {
   SkillRequestError,
   SkillTrackedInput,
   SkillTrackedResult,
+  SkillUpdateCheckInput,
+  SkillUpdateCheckResult,
+  SkillUpdateError,
+  SkillUpdateInput,
+  SkillUpdateResult,
 } from "./skills.ts";
 import {
   ScheduledTaskDeleteInput,
@@ -505,6 +512,9 @@ export const WS_METHODS = {
   serverPlaceSkills: "server.placeSkills",
   serverDeleteSkills: "server.deleteSkills",
   serverSkillsTracked: "server.skillsTracked",
+  serverCheckSkillUpdates: "server.checkSkillUpdates",
+  serverGetSkillChanges: "server.getSkillChanges",
+  serverUpdateSkill: "server.updateSkill",
   serverListInstructions: "server.listInstructions",
   serverReadInstruction: "server.readInstruction",
   serverWriteInstruction: "server.writeInstruction",
@@ -686,6 +696,24 @@ const WsServerSkillsTrackedRpc = Rpc.make(WS_METHODS.serverSkillsTracked, {
   payload: SkillTrackedInput,
   success: SkillTrackedResult,
   error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerCheckSkillUpdatesRpc = Rpc.make(WS_METHODS.serverCheckSkillUpdates, {
+  payload: SkillUpdateCheckInput,
+  success: SkillUpdateCheckResult,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerGetSkillChangesRpc = Rpc.make(WS_METHODS.serverGetSkillChanges, {
+  payload: SkillChangesInput,
+  success: SkillChangesResult,
+  error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerUpdateSkillRpc = Rpc.make(WS_METHODS.serverUpdateSkill, {
+  payload: SkillUpdateInput,
+  success: SkillUpdateResult,
+  error: Schema.Union([SkillRequestError, SkillUpdateError, EnvironmentAuthorizationError]),
 });
 
 const WsServerListInstructionsRpc = Rpc.make(WS_METHODS.serverListInstructions, {
@@ -2191,4 +2219,11 @@ export const WsInstructionRpcGroup = RpcGroup.make(
   WsServerInstructionsTrackedRpc,
 ).middleware(RpcScopeAuthorization);
 
-export const WsRpcGroup = WsBaseRpcGroup.merge(WsInstructionRpcGroup);
+/** The skill update RPCs, a group of their own for the same reason. */
+export const WsSkillUpdateRpcGroup = RpcGroup.make(
+  WsServerCheckSkillUpdatesRpc,
+  WsServerGetSkillChangesRpc,
+  WsServerUpdateSkillRpc,
+).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = WsBaseRpcGroup.merge(WsInstructionRpcGroup, WsSkillUpdateRpcGroup);

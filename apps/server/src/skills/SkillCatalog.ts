@@ -249,6 +249,14 @@ export class SkillCatalog extends Context.Service<
       readonly cwd?: string | undefined;
       readonly skills: ReadonlyArray<{ readonly scope: SkillScope; readonly name: string }>;
     }) => Effect.Effect<ReadonlyArray<ResolvedSkill>, SkillRequestError>;
+    /**
+     * Every folder the list reads in one scope: the shared one, the library for Global, and each
+     * one an enabled agent reads. Project folders need `cwd`, a registered project's root.
+     */
+    readonly folders: (input: {
+      readonly cwd?: string | undefined;
+      readonly scope: SkillScope;
+    }) => Effect.Effect<ReadonlyArray<string>, SkillRequestError>;
   }
 >()("t3/skills/SkillCatalog") {}
 
@@ -1033,7 +1041,16 @@ const make = Effect.gen(function* () {
     };
   });
 
-  return SkillCatalog.of({ list, get, resolve });
+  const folders: SkillCatalog["Service"]["folders"] = Effect.fn("SkillCatalog.folders")(
+    function* (input) {
+      const cwd = yield* requireProject(input.cwd);
+      return rootsFor(cwd, yield* loadInstances(cwd))
+        .filter((root) => root.scope === input.scope)
+        .map((root) => root.directory);
+    },
+  );
+
+  return SkillCatalog.of({ list, get, resolve, folders });
 });
 
 export const layer = Layer.effect(SkillCatalog, make);

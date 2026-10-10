@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   SkillBatchResult,
+  SkillCreateError,
   SkillDeleteInput,
   SkillDisableInput,
   SkillEnableInput,
@@ -31,6 +32,7 @@ import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Settings from "../serverSettings.ts";
+import { parseSkillFrontmatter } from "../provider/Drivers/ClaudeSkills.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
 import { RegisteredProjects } from "./SkillLibrary.ts";
@@ -1138,6 +1140,158 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillManager", (it)
             }),
           );
         }),
+    );
+  });
+
+  describe("create", () => {
+    it.effect.skipIf(!symlinksSupported)(
+      "writes a Global skill in the shared folder and links it for the agents that read another",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home } = yield* makeMachine;
+          yield* withManager(home, [], ({ manager, catalog, refreshes }) =>
+            Effect.gen(function* () {
+              const description = 'Check a diff: "style" first # then tests';
+              const result = yield* manager.create({
+                scope: "global",
+                name: "review-code",
+                description,
+              });
+
+              expect(result).toEqual({
+                skill: {
+                  scope: "global",
+                  name: "review-code",
+                  home: "~/.agents/skills/review-code",
+                },
+                blocked: [],
+              });
+              const folder = path.join(home, ".agents/skills");
+              const text = yield* fs.readFileString(path.join(folder, "review-code/SKILL.md"));
+              expect(parseSkillFrontmatter(text)).toEqual({
+                kind: "parsed",
+                name: "review-code",
+                description,
+              });
+              expect(yield* fs.readLink(path.join(home, ".claude/skills/review-code"))).toBe(
+                path.join(folder, "review-code"),
+              );
+              const { skills } = yield* catalog.list({});
+              expect(stateOf(skills, "global", "review-code")).toEqual({
+                claudeAgent: "link",
+                codex: "direct",
+                cursor: "direct",
+                grok: "direct",
+                opencode: "direct",
+                antigravity: "link",
+                pi: "direct",
+              });
+              // Nothing half-made is left beside it.
+              expect((yield* fs.readDirectory(folder)).toSorted()).toEqual([
+                "alpha",
+                "review-code",
+              ]);
+              // Every agent that has the skill now has its picker refreshed.
+              const asked = yield* Effect.forEach(ALL_AGENTS, () => Queue.take(refreshes));
+              expect(asked.map((item) => item.instanceId).toSorted()).toEqual(
+                ALL_AGENTS.toSorted(),
+              );
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "writes a project skill in the project's shared folder, with relative links",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* withManager(home, [project], ({ manager, catalog }) =>
+            Effect.gen(function* () {
+              // A Global skill with the name doesn't stand in the way of a project one.
+              const result = yield* manager.create({
+                cwd: project,
+                scope: "project",
+                name: "alpha",
+                description: "The project's own alpha.",
+              });
+
+              expect(result.skill).toEqual({
+                scope: "project",
+                name: "alpha",
+                home: ".agents/skills/alpha",
+              });
+              expect(yield* fs.exists(path.join(project, ".agents/skills/alpha/SKILL.md"))).toBe(
+                true,
+              );
+              expect(yield* fs.readLink(path.join(project, ".claude/skills/alpha"))).toBe(
+                "../../.agents/skills/alpha",
+              );
+              const { skills } = yield* catalog.list({ cwd: project });
+              expect(stateOf(skills, "project", "alpha")).toMatchObject({
+                claudeAgent: "link",
+                codex: "direct",
+                grok: "link",
+              });
+            }),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "refuses a name anything in that scope's folders has, and writes nothing",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project, write } = yield* makeMachine;
+          // A plain file in one agent's folder, and a link that leads nowhere in another's.
+          yield* write("repos/app/.claude/skills/notes", "not a skill");
+          yield* fs.makeDirectory(path.join(project, ".cursor/skills"), { recursive: true });
+          yield* fs.symlink(path.join(home, "missing"), path.join(project, ".cursor/skills/gone"));
+          yield* withManager(home, [project], ({ manager }) =>
+            Effect.gen(function* () {
+              const refused = (scope: "global" | "project", name: string) =>
+                manager
+                  .create({ cwd: project, scope, name, description: "Anything." })
+                  .pipe(Effect.flip);
+
+              // `solo` is a real folder in Claude's, `alpha` a link in the shared one.
+              for (const name of ["solo", "alpha"]) {
+                expect(yield* refused("global", name)).toEqual(
+                  new SkillCreateError({ reason: "nameTaken" }),
+                );
+              }
+              for (const name of ["verify", "notes", "gone"]) {
+                expect(yield* refused("project", name)).toEqual(
+                  new SkillCreateError({ reason: "nameTaken" }),
+                );
+              }
+              expect(yield* fs.exists(path.join(home, ".agents/skills/solo"))).toBe(false);
+              expect(
+                (yield* fs.readDirectory(path.join(project, ".agents/skills"))).toSorted(),
+              ).toEqual(["verify"]);
+              expect(yield* fs.readFileString(path.join(project, ".claude/skills/notes"))).toBe(
+                "not a skill",
+              );
+            }),
+          );
+        }),
+    );
+
+    it.effect("makes a project skill only in a registered project", () =>
+      Effect.gen(function* () {
+        const { fs, path, home, project } = yield* makeMachine;
+        yield* withManager(home, [], ({ manager }) =>
+          Effect.gen(function* () {
+            const input = { scope: "project" as const, name: "ship-it", description: "Ship." };
+            for (const cwd of [undefined, project]) {
+              expect(yield* manager.create({ cwd, ...input }).pipe(Effect.flip)).toEqual(
+                new SkillRequestError({ reason: "projectNotRegistered" }),
+              );
+            }
+            expect(yield* fs.exists(path.join(project, ".agents/skills/ship-it"))).toBe(false);
+          }),
+        );
+      }),
     );
   });
 

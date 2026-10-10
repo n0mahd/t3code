@@ -342,6 +342,9 @@ import {
 } from "./instructions.ts";
 import {
   SkillBatchResult,
+  SkillCreateError,
+  SkillCreateInput,
+  SkillCreateResult,
   SkillDeleteInput,
   SkillDisableInput,
   SkillEnableInput,
@@ -505,6 +508,7 @@ export const WS_METHODS = {
   serverPlaceSkills: "server.placeSkills",
   serverDeleteSkills: "server.deleteSkills",
   serverSkillsTracked: "server.skillsTracked",
+  serverCreateSkill: "server.createSkill",
   serverListInstructions: "server.listInstructions",
   serverReadInstruction: "server.readInstruction",
   serverWriteInstruction: "server.writeInstruction",
@@ -686,6 +690,12 @@ const WsServerSkillsTrackedRpc = Rpc.make(WS_METHODS.serverSkillsTracked, {
   payload: SkillTrackedInput,
   success: SkillTrackedResult,
   error: Schema.Union([SkillRequestError, EnvironmentAuthorizationError]),
+});
+
+const WsServerCreateSkillRpc = Rpc.make(WS_METHODS.serverCreateSkill, {
+  payload: SkillCreateInput,
+  success: SkillCreateResult,
+  error: Schema.Union([SkillCreateError, SkillRequestError, EnvironmentAuthorizationError]),
 });
 
 const WsServerListInstructionsRpc = Rpc.make(WS_METHODS.serverListInstructions, {
@@ -2191,4 +2201,8 @@ export const WsInstructionRpcGroup = RpcGroup.make(
   WsServerInstructionsTrackedRpc,
 ).middleware(RpcScopeAuthorization);
 
-export const WsRpcGroup = WsBaseRpcGroup.merge(WsInstructionRpcGroup);
+/** Creating a skill, in its own group for the same reason. */
+export const WsSkillCreateRpcGroup =
+  RpcGroup.make(WsServerCreateSkillRpc).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = WsBaseRpcGroup.merge(WsInstructionRpcGroup, WsSkillCreateRpcGroup);

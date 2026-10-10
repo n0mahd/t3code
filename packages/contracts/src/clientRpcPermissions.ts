@@ -37,12 +37,13 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.vcsSwitchRef]: AuthSourceControlWriteScope,
   [WS_METHODS.vcsInit]: AuthSourceControlWriteScope,
 
-  // Skill changes create and remove links, write the agents' settings files, and move and delete
-  // skill folders, so they take the scope the other file writes take.
+  // Skill changes create and remove links, write the agents' settings files, and make, move and
+  // delete skill folders, so they take the scope the other file writes take.
   [WS_METHODS.serverEnableSkills]: AuthFilesystemWriteScope,
   [WS_METHODS.serverDisableSkills]: AuthFilesystemWriteScope,
   [WS_METHODS.serverPlaceSkills]: AuthFilesystemWriteScope,
   [WS_METHODS.serverDeleteSkills]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverCreateSkill]: AuthFilesystemWriteScope,
 
   // Instruction changes write, link, rename and delete the files agents read.
   [WS_METHODS.serverWriteInstruction]: AuthFilesystemWriteScope,

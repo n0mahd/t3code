@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -192,6 +193,12 @@ export const ScheduledTask = Schema.Struct({
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
+  /** Runs launch threads that sidebar lists hide. Omitted by servers that predate it; decodes to false. */
+  runInBackground: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  /** Thread of the most recent run of a background task; null or absent until one has launched. */
+  lastRunThreadId: Schema.optional(Schema.NullOr(ThreadId)),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -223,6 +230,10 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  runInBackground: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Hide each run's thread from the sidebar thread list. Omit to keep the stored value. Ignored for tasks bound to a thread.",
+  }),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

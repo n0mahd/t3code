@@ -45,6 +45,7 @@ import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as BackgroundRuns from "./BackgroundRuns.ts";
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
 import {
   redactHeaders,
@@ -397,6 +398,7 @@ export const layer = Layer.effect(
     const secretRequests = yield* SecretRequests.SecretRequests;
     const scheduler = yield* Scheduler.Scheduler;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
+    const backgroundRuns = yield* BackgroundRuns.make;
     // Webhook deliveries for one task dispatch in arrival order rather than
     // being dropped while an earlier delivery is still dispatching.
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
@@ -445,7 +447,9 @@ export const layer = Layer.effect(
     const listRows = Effect.fn("ScheduledTaskService.listRows")(function* () {
       const rows = yield* selectAllRows();
       const origin = yield* readWebhookOrigin;
-      return yield* Effect.forEach(rows, (row) => decodeRow(row, origin), { concurrency: 1 });
+      return yield* backgroundRuns.annotate(
+        yield* Effect.forEach(rows, (row) => decodeRow(row, origin), { concurrency: 1 }),
+      );
     });
 
     const getRows = (id: ScheduledTaskId) => sql<ScheduledTaskRow>`
@@ -485,7 +489,7 @@ export const layer = Layer.effect(
       );
       const row = rows[0];
       if (row === undefined) return null;
-      return yield* decodeRow(row, yield* readWebhookOrigin);
+      return yield* backgroundRuns.annotateOne(yield* decodeRow(row, yield* readWebhookOrigin));
     });
 
     const findWebhookCredentials = (id: ScheduledTaskId) =>
@@ -788,6 +792,19 @@ export const layer = Layer.effect(
         // after the poll read are honoured. A webhook prompt was rendered
         // from the row when the request arrived.
         const prompt = webhook?.prompt ?? active.prompt;
+        // A background run's thread is flagged before it exists, so its shell
+        // is never published without the flag.
+        const backgroundThreadId =
+          active.threadId === null && active.runInBackground
+            ? yield* backgroundRuns.registerThread({
+                taskId: active.id,
+                runKey:
+                  webhook === undefined
+                    ? `${trigger}:${DateTime.toEpochMillis(startedAt)}`
+                    : `webhook:${webhook.deliveryId}`,
+                createdAt: startedAtIso,
+              })
+            : undefined;
 
         // Effect.exit (not Effect.result) so defects and interruptions in the
         // dispatch are also captured and recorded as a failed run instead of
@@ -811,6 +828,7 @@ export const layer = Layer.effect(
                   },
                   createdBy: active.createdBy,
                   creationSource: active.creationSource,
+                  ...(backgroundThreadId === undefined ? {} : { threadId: backgroundThreadId }),
                 }),
               )
             : yield* Effect.exit(
@@ -829,6 +847,10 @@ export const layer = Layer.effect(
                   creationSource: active.creationSource,
                 }),
               );
+
+        if (backgroundThreadId !== undefined && result._tag === "Success") {
+          yield* backgroundRuns.recordLastRun(active.id, backgroundThreadId);
+        }
 
         const completedAt = yield* localNow;
         const runSucceeded = result._tag === "Success";
@@ -1078,6 +1100,10 @@ export const layer = Layer.effect(
           existingTask !== null &&
           existingTask.enabled === input.enabled &&
           isSameSchedule(existingTask.schedule, schedule);
+        // A task bound to a thread posts into it, so there is no run thread to hide.
+        const runInBackground =
+          (input.threadId ?? null) === null &&
+          (input.runInBackground ?? existingTask?.runInBackground ?? false);
         const task: ScheduledTask = {
           id,
           title: input.title,
@@ -1101,8 +1127,10 @@ export const layer = Layer.effect(
           lastRunStatus: existingTask?.lastRunStatus ?? "never",
           lastRunError: existingTask?.lastRunError ?? null,
           runCount: existingTask?.runCount ?? 0,
+          runInBackground,
         };
         yield* saveTask(task, input.requireExisting === true, webhook);
+        yield* backgroundRuns.setRunInBackground(id, runInBackground);
         yield* notifyChanged;
         return { task: (yield* findTask(id)) ?? task };
       });
@@ -1138,6 +1166,7 @@ export const layer = Layer.effect(
 
     const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
       deleteRow(input.id).pipe(
+        Effect.andThen(backgroundRuns.forgetTask(input.id)),
         Effect.andThen(
           Effect.all([
             Ref.update(webhookRateWindows, (windows) => {

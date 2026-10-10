@@ -17,7 +17,9 @@ import {
   planDelete,
   planToggle,
   planTurnOnAll,
+  providedNote,
   scriptFiles,
+  skillContext,
   type Skill,
   type SkillPlan,
   type SkillsContext,
@@ -102,10 +104,17 @@ export function SkillDetail({
     (detail.status === "ready" ? detail.result.description : "") || skill.description;
   // The server's resolved folder, not an agent's link.
   const skillFolder = detail.status === "ready" ? detail.result.home : null;
-  const scopeLabel = skill.scope === "global" ? "Global" : "This project";
-  const warning = attention(skill, ctx);
+  const provided = skill.provided !== undefined;
+  const scopeLabel = provided
+    ? "Built in and plugins"
+    : skill.scope === "global"
+      ? "Global"
+      : "This project";
+  // A skill that came with an agent is only about the agents that have it.
+  const agents = useMemo(() => skillContext(skill, ctx), [skill, ctx]);
+  const warning = provided ? null : attention(skill, ctx);
   const sameCopies = skill.copies.filter((copy) => copy.same);
-  const turnOnAll = planTurnOnAll([skill], ctx);
+  const turnOnAll = provided ? null : planTurnOnAll([skill], ctx);
   const del = planDelete([skill], ctx);
   const own = useMemo(() => [skill], [skill]);
 
@@ -132,27 +141,30 @@ export function SkillDetail({
           <p className="mt-1 text-sm break-words text-muted-foreground">
             {description || "No description yet."}
           </p>
+          {provided && (
+            <p className="mt-1 text-xs text-muted-foreground">{providedNote(skill, ctx)}</p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground">Used by</span>
-          {ctx.installed.length === 0 && (
+          {agents.installed.length === 0 && (
             <span className="text-xs text-muted-foreground">No agents are installed.</span>
           )}
-          {ctx.installed.map((agent) => (
+          {agents.installed.map((agent) => (
             <AgentSwitchChip
               key={agent.instanceId}
               skill={skill}
               agent={agent}
-              ctx={ctx}
+              ctx={agents}
               busy={busy}
               onToggle={() => {
-                const plan = planToggle(skill, agent, ctx);
+                const plan = planToggle(skill, agent, agents);
                 if (plan) onPlan(plan);
               }}
             />
           ))}
           <span className="flex-1" />
-          <UseInPopover skills={own} places={places} busy={busy} onPlan={onPlan} />
+          {!provided && <UseInPopover skills={own} places={places} busy={busy} onPlan={onPlan} />}
           {(skillFolder || turnOnAll || del) && (
             <Menu>
               <MenuTrigger

@@ -22,6 +22,7 @@ import {
   type InstructionPlan,
 } from "./InstructionsSettings.logic";
 import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
+import { BuiltInSection } from "./SkillBuiltInList";
 import { SkillDetail } from "./SkillDetail";
 import { SkillSection, StandardInfo } from "./SkillList";
 import type { PlaceOptions } from "./SkillUseIn";
@@ -276,18 +277,27 @@ function EnvironmentSkills({
   const loading = connected && skills === null && loadError === null;
   const showSkeleton = useAfterDelay(loading, SKELETON_DELAY_MS);
 
-  const projectSkills = useMemo(
-    () => (skills ?? []).filter((skill) => skill.scope === "project"),
+  // Skills that came with an agent are listed apart, whichever scope they apply to.
+  const ownSkills = useMemo(
+    () => (skills ?? []).filter((skill) => skill.provided === undefined),
     [skills],
+  );
+  const projectSkills = useMemo(
+    () => ownSkills.filter((skill) => skill.scope === "project"),
+    [ownSkills],
   );
   const globalSkills = useMemo(
-    () => (skills ?? []).filter((skill) => skill.scope === "global"),
+    () => ownSkills.filter((skill) => skill.scope === "global"),
+    [ownSkills],
+  );
+  const builtInSkills = useMemo(
+    () => (skills ?? []).filter((skill) => skill.provided !== undefined),
     [skills],
   );
+  // A skill that came with an agent is that agent's business, never something to fix here.
   const attentionIds = useMemo(
-    () =>
-      new Set((skills ?? []).filter((skill) => attention(skill, ctx) !== null).map((s) => s.id)),
-    [skills, ctx],
+    () => new Set(ownSkills.filter((skill) => attention(skill, ctx) !== null).map((s) => s.id)),
+    [ownSkills, ctx],
   );
   const needle = query.trim().toLowerCase();
   // Memoized, so a row or group is only drawn again when what it shows changed.
@@ -300,6 +310,7 @@ function EnvironmentSkills({
   );
   const visibleProject = useMemo(() => narrow(projectSkills), [narrow, projectSkills]);
   const visibleGlobal = useMemo(() => narrow(globalSkills), [narrow, globalSkills]);
+  const visibleBuiltIn = useMemo(() => narrow(builtInSkills), [narrow, builtInSkills]);
   const attentionTotal = attentionIds.size + instructions.attentionCount;
   const instructionData = instructions.data;
   const instructionItemsShown = useMemo(
@@ -631,6 +642,17 @@ function EnvironmentSkills({
                 onPlan={onPlan}
                 onOpen={openSkill}
               />
+              {/* Rows are ticked for the person's own skills, so these wait until Select is done. */}
+              {!selecting && (
+                <BuiltInSection
+                  visible={visibleBuiltIn}
+                  ctx={ctx}
+                  searching={needle !== ""}
+                  busy={locked}
+                  onPlan={onPlan}
+                  onOpen={openSkill}
+                />
+              )}
               {empty && <p className="text-sm text-muted-foreground">No skills yet.</p>}
               {selecting && chosen.length > 0 && (
                 <BulkBar

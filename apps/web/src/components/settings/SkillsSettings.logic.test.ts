@@ -11,6 +11,7 @@ import {
   attention,
   availability,
   availabilityNote,
+  canSwitch,
   checkState,
   compareSkillFiles,
   describeResult,
@@ -31,10 +32,12 @@ import {
   planTurnOffAll,
   planTurnOnAll,
   projectsBadge,
+  providedNote,
   rowSwitchOn,
   scriptFiles,
   sendInBatches,
   skillBody,
+  skillContext,
   skillsEnvironment,
   skillsToCheckWithGit,
   startingPlacement,
@@ -1295,5 +1298,72 @@ describe("a change of more than 200 skills", () => {
     expect(calls).toBe(2);
     expect(result.failed).toBe(true);
     expect(result.outcomes).toHaveLength(200);
+  });
+});
+
+describe("skills that come with an agent", () => {
+  /** The server lists only the agents that have such a skill. */
+  const provided = (
+    name: string,
+    kind: "agent" | "plugin",
+    access: ReadonlyArray<Pick<SkillAgentAccess, "instanceId" | "state" | "fixed">>,
+  ): Skill => ({
+    ...skill(name, {}, { scope: "global", provided: kind }),
+    access: access.map((entry) => ({
+      ...entry,
+      driver: ALL.find((item) => item.instanceId === entry.instanceId)!.driverKind,
+      folder: "~/.codex/skills/.system",
+    })),
+  });
+  const system = provided("imagegen", "agent", [{ instanceId: codex.instanceId, state: "off" }]);
+  const plugin = provided("review-kit:review", "plugin", [
+    { instanceId: claude.instanceId, state: "direct", fixed: true },
+  ]);
+
+  it("is only about the agents that have it", () => {
+    expect(skillContext(system, ctx).installed).toEqual([codex]);
+    expect(skillContext(skill("tdd"), ctx)).toBe(ctx);
+    // Turning it on asks only Codex, never the agents that can't have it.
+    expect(planRowSwitch(system, skillContext(system, ctx))?.change).toEqual({
+      kind: "enable",
+      skills: [{ scope: "global", name: "imagegen", home: "~/.agents/skills/imagegen" }],
+      agents: [codex.instanceId],
+    });
+  });
+
+  it("has a switch only where its agent has a setting for it", () => {
+    expect(canSwitch(system, skillContext(system, ctx))).toBe(true);
+    expect(canSwitch(plugin, skillContext(plugin, ctx))).toBe(false);
+  });
+
+  it("says what it came with", () => {
+    expect(providedNote(system, ctx)).toBe("Comes with Codex");
+    expect(providedNote(plugin, ctx)).toBe("Part of Claude's review-kit plugin");
+    expect(providedNote({ ...plugin, name: "review" }, ctx)).toBe("Part of a plugin for Claude");
+    expect(providedNote(system, { installed: [claude] })).toBe("Comes with an agent");
+  });
+
+  it("can't be deleted, and says why a change left it alone", () => {
+    expect(planDelete([plugin], ctx)).toBeNull();
+    expect(
+      describeResult(
+        { kind: "enable", skills: [ref("imagegen")], agents: [claude.instanceId] },
+        [
+          outcome({
+            name: "imagegen",
+            status: "skipped",
+            blocked: [{ instanceId: claude.instanceId, reason: "provided" }],
+          }),
+        ],
+        ctx,
+      ),
+    ).toBe("Claude can't use “imagegen”. It comes with another agent.");
+    expect(
+      describeResult(
+        { kind: "delete", skills: [ref("imagegen")] },
+        [outcome({ name: "imagegen", status: "skipped", reason: "provided" })],
+        ctx,
+      ),
+    ).toBe("“imagegen” comes with an agent, so it stays as it is.");
   });
 });

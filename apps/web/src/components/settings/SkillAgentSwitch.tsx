@@ -13,7 +13,8 @@ import {
 
 /**
  * One agent and its own switch. A switch that can't be flipped is disabled and says why when the
- * chip is pointed at; `blocker` is that reason, or null when the switch works.
+ * chip is pointed at; `blocker` is that reason, or null when the switch works. Without `onToggle`
+ * the chip has no switch at all.
  */
 export function AgentChip({
   agent,
@@ -30,19 +31,21 @@ export function AgentChip({
   blocker: ReactNode;
   /** Nothing can be switched now, such as while a change is being made. */
   disabled: boolean;
-  onToggle: () => void;
+  onToggle: (() => void) | undefined;
 }) {
   const chip = (
     <>
       <SkillAgentIcon agent={agent} agents={agents} active={on} />
       {agent.displayName}
-      <Switch
-        size="sm"
-        aria-label={agent.displayName}
-        checked={on}
-        disabled={disabled || !!blocker}
-        onCheckedChange={onToggle}
-      />
+      {onToggle && (
+        <Switch
+          size="sm"
+          aria-label={agent.displayName}
+          checked={on}
+          disabled={disabled || !!blocker}
+          onCheckedChange={onToggle}
+        />
+      )}
     </>
   );
   const className =
@@ -57,7 +60,10 @@ export function AgentChip({
   );
 }
 
-/** An agent's switch for one skill. An agent T3 Code can't switch for it says why. */
+/**
+ * An agent's switch for one skill. An agent T3 Code can't switch for it says why, except for a
+ * skill that came with the agent, which is the agent's to switch: that chip has no switch.
+ */
 export function AgentSwitchChip({
   skill,
   agent,
@@ -72,14 +78,16 @@ export function AgentSwitchChip({
   busy: boolean;
   onToggle: () => void;
 }) {
+  const blocker = switchBlocker(skill, agent);
+  const theirs = skill.provided !== undefined && blocker !== null;
   return (
     <AgentChip
       agent={agent}
       agents={ctx.installed}
       on={hasAccess(skill, agent)}
-      blocker={switchBlocker(skill, agent)}
+      blocker={theirs ? null : blocker}
       disabled={busy}
-      onToggle={onToggle}
+      onToggle={theirs ? undefined : onToggle}
     />
   );
 }

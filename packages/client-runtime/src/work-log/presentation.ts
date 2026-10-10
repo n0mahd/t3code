@@ -631,6 +631,7 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
     case "environment-update":
     case "skill-enable":
     case "skill-disable":
+    case "skill-create":
     case "instruction-enable":
     case "instruction-disable":
     case "attachment-prepare":

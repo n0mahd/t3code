@@ -3,6 +3,8 @@ import {
   ProjectId,
   ProviderInstanceId,
   SkillBatchResult,
+  SkillCreateInput,
+  SkillCreateResult,
   SkillGetResult,
   SkillListResult,
   SkillRef,
@@ -47,7 +49,7 @@ const resultNotes =
 const SkillListTool = Tool.make("t3_skill_list", {
   ...shared,
   description:
-    "List the agent skills T3 Code can see, in a project and in the user's home folder, and which agents can use each (access: direct = reads the skill's folder, link = reached through a link, off = it can see the skill but its own settings switch it off, none = cannot use it; fixed = T3 Code cannot switch that agent for that skill). A skill is named by scope, name and home. Use t3_skill_enable and t3_skill_disable to change who uses it. Deleting and moving skills is not available to agents.",
+    "List the agent skills T3 Code can see, in a project and in the user's home folder, and which agents can use each (access: direct = reads the skill's folder, link = reached through a link, off = it can see the skill but its own settings switch it off, none = cannot use it; fixed = T3 Code cannot switch that agent for that skill). A skill is named by scope, name and home. Use t3_skill_enable and t3_skill_disable to change who uses it. Use t3_skill_create to make a new one. Deleting and moving skills is not available to agents.",
   parameters: Schema.Struct({ projectId }),
   success: SkillListResult,
   dependencies: [...shared.dependencies, SkillCatalog.SkillCatalog],
@@ -86,9 +88,24 @@ const SkillDisableTool = Tool.make("t3_skill_disable", {
   dependencies: [...shared.dependencies, SkillManager.SkillManager],
 }).annotate(Tool.Destructive, false);
 
+const SkillCreateTool = Tool.make("t3_skill_create", {
+  ...shared,
+  description:
+    "Create a skill: a SKILL.md with this name and one-line description in the shared .agents/skills folder of the project (scope project) or of the user's home folder (scope global), with a placeholder body to replace by editing the file. It is turned on for every enabled agent, by a link for agents that read another folder; blocked lists agents it could not reach. The name is lowercase letters, digits and single hyphens, at most 64 characters. Refused when a folder an agent reads in that scope already has something with that name. Requires a live full-access/default calling thread or a full-access client.",
+  parameters: Schema.Struct({
+    projectId,
+    scope: SkillCreateInput.fields.scope,
+    name: SkillCreateInput.fields.name,
+    description: SkillCreateInput.fields.description,
+  }),
+  success: SkillCreateResult,
+  dependencies: [...shared.dependencies, SkillManager.SkillManager],
+}).annotate(Tool.Destructive, false);
+
 export const SkillsToolkit = Toolkit.make(
   SkillListTool,
   SkillGetTool,
   SkillEnableTool,
   SkillDisableTool,
+  SkillCreateTool,
 );

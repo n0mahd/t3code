@@ -433,7 +433,7 @@ export function groupBySource(skills: readonly Skill[]): {
   const groups = [...bySource]
     .filter(([, list]) => list.length >= 2)
     .map(([source, list]): SkillGroup => ({ source, skills: list }))
-    .toSorted((a, b) => a.source.localeCompare(b.source));
+    .sort((a, b) => a.source.localeCompare(b.source));
   const grouped = new Set(groups.map((group) => group.source));
   return { groups, loose: skills.filter((skill) => !skill.source || !grouped.has(skill.source)) };
 }

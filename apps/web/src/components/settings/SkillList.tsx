@@ -1,5 +1,5 @@
 import { ChevronRightIcon, InfoIcon } from "lucide-react";
-import { memo, useId, useMemo, useState, type MouseEvent } from "react";
+import { memo, useId, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import { Badge } from "../ui/badge";
@@ -336,6 +336,7 @@ export function StandardInfo() {
 
 export function SkillSection({
   title,
+  notice,
   visible,
   ctx,
   places,
@@ -350,6 +351,8 @@ export function SkillSection({
   onOpen,
 }: {
   title: string;
+  /** Shown between the section's title and its skills, such as the offer to tidy them. */
+  notice?: ReactNode;
   /** The skills that match the search and filters. */
   visible: readonly Skill[];
   ctx: SkillsContext;
@@ -392,6 +395,7 @@ export function SkillSection({
           </>
         )}
       </div>
+      {notice}
       <SettingsGroup>
         {visible.length === 0 ? (
           <p className="px-3 py-5 text-sm text-muted-foreground sm:px-4">{emptyText}</p>

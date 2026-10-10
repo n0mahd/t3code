@@ -24,7 +24,7 @@
  *
  * @module SkillLockFiles
  */
-// @effect-diagnostics-next-line nodeBuiltinImport:off - the hashes have to match the skills CLI's own SHA-1 and SHA-256 over buffers, computed synchronously.
+// @effect-diagnostics-next-line nodeBuiltinImport:off - `computedHash` has to match the skills CLI's own SHA-256 over buffers, computed synchronously.
 import * as NodeCrypto from "node:crypto";
 
 import * as DateTime from "effect/DateTime";
@@ -34,6 +34,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+
+import { gitBlobSha, treeShaOfEntries } from "./SkillUpdatePlan.ts";
 
 const GLOBAL_LOCK_VERSION = 3;
 const PROJECT_LOCK_VERSION = 1;
@@ -172,15 +174,21 @@ export const readSources = Effect.fn("SkillLockFiles.readSources")(function* (in
 });
 
 /** One regular file in a skill's folder, or a link in it. */
-interface HashedEntry {
+export interface HashedEntry {
   readonly relative: string;
   readonly kind: "file" | "link";
   readonly bytes: Uint8Array;
   readonly executable: boolean;
 }
 
-/** Everything in a skill's folder that the hashes look at, or undefined when it can't be hashed. */
-const readFolder = Effect.fnUntraced(function* (root: string) {
+/**
+ * Everything in a skill's folder, bounded, or undefined when it can't be read or is too large.
+ * Folders named in `skip` aren't entered.
+ */
+export const readFolder = Effect.fnUntraced(function* (
+  root: string,
+  skip: ReadonlySet<string> = new Set(),
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const entries: HashedEntry[] = [];
@@ -210,7 +218,7 @@ const readFolder = Effect.fnUntraced(function* (root: string) {
       const info = yield* fileSystem.stat(absolute).pipe(Effect.orElseSucceed(() => undefined));
       if (info === undefined) return undefined;
       if (info.type === "Directory") {
-        pending.push(relative);
+        if (!skip.has(name)) pending.push(relative);
         continue;
       }
       if (info.type !== "File") return undefined;
@@ -226,65 +234,23 @@ const readFolder = Effect.fnUntraced(function* (root: string) {
   return entries;
 });
 
-const sha1 = (...parts: ReadonlyArray<Uint8Array | string>) => {
-  const hash = NodeCrypto.createHash("sha1");
-  for (const part of parts) hash.update(part);
-  return hash.digest();
-};
-
-interface TreeNode {
-  readonly files: Map<string, { readonly mode: string; readonly sha: Buffer }>;
-  readonly folders: Map<string, TreeNode>;
-}
-
 /** The git tree SHA of the entries, the way GitHub reports a folder's `skillFolderHash`. */
-const gitTreeSha = (entries: readonly HashedEntry[]) => {
-  const root: TreeNode = { files: new Map(), folders: new Map() };
-  for (const entry of entries) {
-    const parts = entry.relative.split("/");
-    const name = parts.pop() ?? "";
-    let node = root;
-    for (const part of parts) {
-      const next = node.folders.get(part) ?? { files: new Map(), folders: new Map() };
-      node.folders.set(part, next);
-      node = next;
-    }
-    const mode = entry.kind === "link" ? "120000" : entry.executable ? "100755" : "100644";
-    node.files.set(name, {
-      mode,
-      sha: sha1(`blob ${entry.bytes.byteLength}\0`, entry.bytes),
-    });
-  }
-  const encode = (node: TreeNode): Buffer | undefined => {
-    const items: Array<{ readonly key: string; readonly body: Buffer }> = [];
-    for (const [name, file] of node.files) {
-      items.push({
-        key: name,
-        body: Buffer.concat([Buffer.from(`${file.mode} ${name}\0`), file.sha]),
-      });
-    }
-    for (const [name, folder] of node.folders) {
-      const content = encode(folder);
-      if (content === undefined) continue;
-      items.push({
-        // Git sorts a folder as if its name ended with a slash.
-        key: `${name}/`,
-        body: Buffer.concat([
-          Buffer.from(`40000 ${name}\0`),
-          sha1(`tree ${content.length}\0`, content),
-        ]),
-      });
-    }
-    if (items.length === 0) return undefined;
-    items.sort((a, b) => Buffer.compare(Buffer.from(a.key), Buffer.from(b.key)));
-    return Buffer.concat(items.map((item) => item.body));
-  };
-  const content = encode(root) ?? Buffer.alloc(0);
-  return sha1(`tree ${content.length}\0`, content).toString("hex");
-};
+export const gitTreeSha = (entries: readonly HashedEntry[]) =>
+  treeShaOfEntries(
+    entries.map((entry) => ({
+      path: entry.relative,
+      mode: entry.kind === "link" ? "120000" : entry.executable ? "100755" : "100644",
+      sha: gitBlobSha(entry.bytes),
+    })),
+  );
 
-/** The CLI's `computeSkillFolderHash`: SHA-256 over each file's path and bytes, sorted by path. */
-const computedHash = (entries: readonly HashedEntry[]) => {
+/**
+ * The CLI's `computeSkillFolderHash`: SHA-256 over each regular file's path and bytes, sorted by
+ * path, leaving out `.git` and `node_modules`.
+ */
+export const computedHash = (
+  entries: ReadonlyArray<Pick<HashedEntry, "relative" | "kind" | "bytes">>,
+) => {
   const hash = NodeCrypto.createHash("sha256");
   const files = entries
     .filter(
@@ -472,4 +438,129 @@ export const moveRecord = Effect.fn("SkillLockFiles.moveRecord")(function* (inpu
     contents: render(source, rest, input.from),
   });
   return (converted === undefined ? "dropped" : "moved") satisfies MoveRecordResult;
+});
+
+/** A skill the CLI installed from GitHub, as its lock records it. */
+export interface LockedSkill {
+  readonly scope: LockScope;
+  readonly name: string;
+  /** `owner/repo`. */
+  readonly source: string;
+  /** The branch or tag it was installed from; the default branch when absent. */
+  readonly ref: string | undefined;
+  /** Where SKILL.md was in the repository, when the record says. */
+  readonly skillPath: string | undefined;
+  /**
+   * The version the local copy was installed from: the folder's git tree SHA (global lock) or the
+   * CLI's `computedHash` of its files (project lock). Absent when the record has none, as for a
+   * global record that isn't version-tracked.
+   */
+  readonly baseline:
+    | { readonly kind: "tree"; readonly sha: string }
+    | { readonly kind: "content"; readonly hash: string }
+    | undefined;
+  /** The lock can be rewritten: it parses and has the version this module writes. */
+  readonly writable: boolean;
+}
+
+const TREE_SHA = /^[0-9a-f]{40}$/;
+const CONTENT_HASH = /^[0-9a-f]{64}$/;
+
+const lockedSkillOf = (
+  scope: LockScope,
+  name: string,
+  entry: unknown,
+  writable: boolean,
+): LockedSkill | undefined => {
+  const source = sourceOf(entry);
+  if (source === undefined || !isRecord(entry)) return undefined;
+  // A GitHub record names github.com unless its URL says otherwise; the CLI pins the host too.
+  if (
+    typeof entry.sourceUrl === "string" &&
+    !/^(?:https:\/\/|git@)github\.com[/:]/i.test(entry.sourceUrl)
+  ) {
+    return undefined;
+  }
+  const text = (key: string) =>
+    typeof entry[key] === "string" && entry[key] !== "" ? entry[key] : undefined;
+  const folderHash = text("skillFolderHash");
+  const contentHash = text("computedHash");
+  return {
+    scope,
+    name,
+    source,
+    ref: text("ref"),
+    skillPath: text("skillPath"),
+    baseline:
+      scope.kind === "global"
+        ? folderHash !== undefined && TREE_SHA.test(folderHash)
+          ? { kind: "tree", sha: folderHash }
+          : undefined
+        : contentHash !== undefined && CONTENT_HASH.test(contentHash)
+          ? { kind: "content", hash: contentHash }
+          : undefined,
+    writable,
+  };
+};
+
+/**
+ * The skills the CLI installed from GitHub: Global ones from the global lock and, with
+ * `projectRoot`, that project's. A lock that can't be read says nothing.
+ */
+export const readLockedSkills = Effect.fn("SkillLockFiles.readLockedSkills")(function* (input: {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly home: string;
+  readonly projectRoot?: string | undefined;
+}) {
+  const path = yield* Path.Path;
+  const skillsIn = Effect.fnUntraced(function* (scope: LockScope) {
+    const lock = yield* readLock(lockPathOf(path, scope, input));
+    if (lock._tag !== "Found" || lock.version < writtenVersion(scope)) return [];
+    const writable = lock.version === writtenVersion(scope);
+    return Object.entries(lock.data.skills).flatMap(([name, entry]) => {
+      const skill = lockedSkillOf(scope, name, entry, writable);
+      return skill === undefined ? [] : [skill];
+    });
+  });
+  return [
+    ...(yield* skillsIn({ kind: "global" })),
+    ...(input.projectRoot === undefined
+      ? []
+      : yield* skillsIn({ kind: "project", root: input.projectRoot })),
+  ];
+});
+
+/**
+ * Records that a skill is now based on another version of its source, the way `npx skills
+ * update` does: a global record gets the folder's tree SHA and an `updatedAt`, a project record
+ * the new `computedHash`. Every other field and record, and the file's formatting, stay as they
+ * are. Nothing is written unless the record is still there with the same source and the lock has
+ * the version this module writes; says whether it was written.
+ */
+export const recordBaseline = Effect.fn("SkillLockFiles.recordBaseline")(function* (input: {
+  readonly scope: LockScope;
+  readonly name: string;
+  readonly source: string;
+  readonly baseline: { readonly skillFolderHash: string } | { readonly computedHash: string };
+  readonly environment: NodeJS.ProcessEnv;
+  readonly home: string;
+}) {
+  const path = yield* Path.Path;
+  const lock = yield* readLock(lockPathOf(path, input.scope, input));
+  if (lock._tag !== "Found" || lock.version !== writtenVersion(input.scope)) return false;
+  const entry = lock.data.skills[input.name];
+  if (!isRecord(entry) || sourceOf(entry) !== input.source) return false;
+  const updated =
+    "skillFolderHash" in input.baseline
+      ? {
+          ...entry,
+          skillFolderHash: input.baseline.skillFolderHash,
+          updatedAt: DateTime.formatIso(yield* DateTime.now),
+        }
+      : { ...entry, computedHash: input.baseline.computedHash };
+  yield* writeFileStringAtomically({
+    filePath: lock.path,
+    contents: render(lock, { ...lock.data.skills, [input.name]: updated }, input.scope),
+  });
+  return true;
 });

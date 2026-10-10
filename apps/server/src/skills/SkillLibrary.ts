@@ -162,11 +162,14 @@ export const restoreLibraryLinks = Effect.fn("SkillLibrary.restoreLibraryLinks")
           Effect.orElseSucceed(() => undefined),
         );
         if (target === undefined) continue;
-        if (path.dirname(path.resolve(path.dirname(linkPath), target)) !== library) continue;
+        // A relative link would lead somewhere else from the worktree's own depth, so the new
+        // link names the library skill's absolute path.
+        const entry = path.resolve(path.dirname(linkPath), target);
+        if (path.dirname(entry) !== library) continue;
         const created = path.join(input.worktree, input.prefix, folder, name);
         yield* fileSystem.makeDirectory(path.dirname(created), { recursive: true });
         // A bare create: something already there, such as a skill the project commits, stays.
-        yield* fileSystem.symlink(target, created).pipe(
+        yield* fileSystem.symlink(entry, created).pipe(
           Effect.catchTags({
             PlatformError: (error) =>
               error.reason._tag === "AlreadyExists" ? Effect.void : Effect.fail(error),

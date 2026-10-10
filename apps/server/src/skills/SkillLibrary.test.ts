@@ -300,6 +300,31 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillLibrary", (it)
         }),
     );
 
+    it.effect.skipIf(!symlinksSupported)(
+      "writes a relative project link as the library skill's own path",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, library } = yield* makeMachine;
+          const project = path.join(home, "repos/relative");
+          const link = path.join(project, ".agents/skills/db-migrations");
+          yield* fs.makeDirectory(path.dirname(link), { recursive: true });
+          yield* fs.symlink(
+            path.relative(path.dirname(link), path.join(library, "db-migrations")),
+            link,
+          );
+          // A depth where the project link's relative target would lead somewhere else.
+          const worktree = path.join(home, "worktrees/deeper/still/relative-feature");
+
+          yield* restoreLibraryLinks({ project, worktree, prefix: "" }).pipe(
+            Effect.provideService(HostProcess.HomeDirectory, home),
+          );
+
+          const created = path.join(worktree, ".agents/skills/db-migrations");
+          expect(yield* fs.readLink(created)).toBe(path.join(library, "db-migrations"));
+          expect(yield* fs.exists(path.join(created, "SKILL.md"))).toBe(true);
+        }),
+    );
+
     it.effect("does nothing for a project without links, or one that has gone", () =>
       Effect.gen(function* () {
         const { fs, path, home, marketing } = yield* makeMachine;

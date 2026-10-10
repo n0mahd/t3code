@@ -3159,6 +3159,8 @@ const layerWsInstructionRpc = ServerWsInstructionRpcGroup.toLayer(
         instructionManager.adopt(input).pipe(Effect.as({})),
       [WS_METHODS.serverDeleteInstruction]: (input) =>
         instructionManager.delete(input).pipe(Effect.as({})),
+      [WS_METHODS.serverMoveInstruction]: (input) =>
+        instructionManager.move(input).pipe(Effect.as({})),
       [WS_METHODS.serverInstructionsTracked]: (input) => instructionTracking.tracked(input),
     });
   }),

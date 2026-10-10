@@ -1160,6 +1160,141 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("InstructionManager"
     });
   });
 
+  describe("move", () => {
+    it.effect(
+      "moves a project file's text to the end of the Global file, then deletes the file",
+      () =>
+        Effect.gen(function* () {
+          const { home, project, write, read, fs, path } = yield* makeMachine;
+          yield* write("repos/app/CLAUDE.md", "- Run the tests.\n");
+          yield* write("repos/app/CLAUDE.local.md", "- Be brief.");
+          yield* write("repos/app/AGENTS.md", "- Run the tests.\n");
+          yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+            Effect.gen(function* () {
+              // There is no Global file yet, so the first move makes it.
+              yield* manager.move({ cwd: project, id: "project:claude:CLAUDE.md" });
+              expect(yield* read(".agents/AGENTS.md")).toBe("- Run the tests.\n");
+
+              yield* manager.move({ cwd: project, id: "project:claudeLocal:CLAUDE.local.md" });
+              expect(yield* read(".agents/AGENTS.md")).toBe("- Run the tests.\n\n- Be brief.\n");
+
+              // Text the Global file has already isn't added twice.
+              yield* manager.move({ cwd: project, id: "project:shared:AGENTS.md" });
+              expect(yield* read(".agents/AGENTS.md")).toBe("- Run the tests.\n\n- Be brief.\n");
+
+              for (const file of ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"]) {
+                expect(yield* fs.exists(path.join(project, file)), file).toBe(false);
+              }
+            }),
+          );
+        }),
+    );
+
+    it.effect("leaves out the lines that import the Global file or the project's AGENTS.md", () =>
+      Effect.gen(function* () {
+        const { home, project, write, read } = yield* makeMachine;
+        yield* write(".agents/AGENTS.md", "global\n");
+        yield* write("repos/app/CLAUDE.md", "@~/.agents/AGENTS.md\n@AGENTS.md\n\nextra rule\n");
+        yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+          Effect.gen(function* () {
+            yield* manager.move({ cwd: project, id: "project:claude:CLAUDE.md" });
+            expect(yield* read(".agents/AGENTS.md")).toBe("global\n\nextra rule\n");
+          }),
+        );
+      }),
+    );
+
+    it.effect("copies the Global file to the project's AGENTS.md and keeps it", () =>
+      Effect.gen(function* () {
+        const { home, project, write, read, fs, path } = yield* makeMachine;
+        yield* write(".agents/AGENTS.md", "- Use pnpm.\n");
+        yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+          Effect.gen(function* () {
+            yield* manager.move({ cwd: project, id: "global:shared" });
+            expect(yield* read("repos/app/AGENTS.md")).toBe("- Use pnpm.\n");
+
+            yield* fs.remove(path.join(project, "AGENTS.md"));
+            yield* write("repos/app/AGENTS.md", "# App");
+            yield* manager.move({ cwd: project, id: "global:shared" });
+            yield* manager.move({ cwd: project, id: "global:shared" });
+            expect(yield* read("repos/app/AGENTS.md")).toBe("# App\n\n- Use pnpm.\n");
+            expect(yield* read(".agents/AGENTS.md")).toBe("- Use pnpm.\n");
+          }),
+        );
+      }),
+    );
+
+    it.effect("refuses what it can't move, and changes nothing", () =>
+      Effect.gen(function* () {
+        const { home, project, write, read } = yield* makeMachine;
+        yield* write("repos/app/apps/web/CLAUDE.md", "nested");
+        yield* write("repos/app/CLAUDE.md", "b".repeat(700_000));
+        yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+          Effect.gen(function* () {
+            const cases = [
+              ["project:nested:apps/web/CLAUDE.md", "unknownEntry"],
+              ["project:claudeLocal:CLAUDE.local.md", "notFound"],
+              ["global:shared", "notFound"],
+              ["managed:claude", "unknownEntry"],
+            ] as const;
+            for (const [id, reason] of cases) {
+              const error = yield* manager.move({ cwd: project, id }).pipe(Effect.flip);
+              expect(error.reason, id).toBe(reason);
+            }
+
+            yield* write(".agents/AGENTS.md", "a".repeat(700_000));
+            const error = yield* manager
+              .move({ cwd: project, id: "project:claude:CLAUDE.md" })
+              .pipe(Effect.flip);
+            expect(error.reason).toBe("tooLarge");
+            expect((yield* read(".agents/AGENTS.md")).length).toBe(700_000);
+            expect((yield* read("repos/app/CLAUDE.md")).length).toBe(700_000);
+            expect(yield* read("repos/app/apps/web/CLAUDE.md")).toBe("nested");
+          }),
+        );
+        yield* onMachine(home, { ...CLAUDE, registered: [] }, ({ manager }) =>
+          Effect.gen(function* () {
+            const error = yield* manager
+              .move({ cwd: project, id: "project:claude:CLAUDE.md" })
+              .pipe(Effect.flip);
+            expect(error.reason).toBe("unregisteredProject");
+          }),
+        );
+      }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "refuses when one file is a link to the other, and writes through a linked Global file",
+      () =>
+        Effect.gen(function* () {
+          const { home, project, write, link, read, fs, path } = yield* makeMachine;
+          yield* write("repos/app/CLAUDE.md", "project rules\n");
+          yield* link("repos/app/CLAUDE.md", ".agents/AGENTS.md");
+          yield* onMachine(home, { ...CLAUDE, registered: [project] }, ({ manager }) =>
+            Effect.gen(function* () {
+              for (const id of ["project:claude:CLAUDE.md", "global:shared"]) {
+                yield* link("repos/app/CLAUDE.md", "repos/app/AGENTS.md");
+                const error = yield* manager.move({ cwd: project, id }).pipe(Effect.flip);
+                expect(error.reason, id).toBe("sameFile");
+                yield* fs.remove(path.join(project, "AGENTS.md"));
+              }
+              expect(yield* read("repos/app/CLAUDE.md")).toBe("project rules\n");
+
+              yield* fs.remove(path.join(home, ".agents/AGENTS.md"));
+              yield* write("dotfiles/agents.md", "global\n");
+              yield* link("dotfiles/agents.md", ".agents/AGENTS.md");
+              yield* manager.move({ cwd: project, id: "project:claude:CLAUDE.md" });
+              expect(yield* read("dotfiles/agents.md")).toBe("global\n\nproject rules\n");
+              expect(yield* fs.readLink(path.join(home, ".agents/AGENTS.md"))).toBe(
+                path.join(home, "dotfiles/agents.md"),
+              );
+              expect(yield* fs.exists(path.join(project, "CLAUDE.md"))).toBe(false);
+            }),
+          );
+        }),
+    );
+  });
+
   describe("delete", () => {
     it.effect("removes a real file, and a link without touching what it leads to", () =>
       Effect.gen(function* () {

@@ -332,6 +332,7 @@ import {
   InstructionError,
   InstructionListInput,
   InstructionListResult,
+  InstructionMoveInput,
   InstructionReadInput,
   InstructionReadResult,
   InstructionShareInput,
@@ -514,6 +515,7 @@ export const WS_METHODS = {
   serverShareInstruction: "server.shareInstruction",
   serverAdoptInstruction: "server.adoptInstruction",
   serverDeleteInstruction: "server.deleteInstruction",
+  serverMoveInstruction: "server.moveInstruction",
   serverInstructionsTracked: "server.instructionsTracked",
   serverUpdateProvider: "server.updateProvider",
   serverUpdateServer: "server.updateServer",
@@ -738,6 +740,12 @@ const WsServerAdoptInstructionRpc = Rpc.make(WS_METHODS.serverAdoptInstruction, 
 
 const WsServerDeleteInstructionRpc = Rpc.make(WS_METHODS.serverDeleteInstruction, {
   payload: InstructionDeleteInput,
+  success: Schema.Struct({}),
+  error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
+});
+
+const WsServerMoveInstructionRpc = Rpc.make(WS_METHODS.serverMoveInstruction, {
+  payload: InstructionMoveInput,
   success: Schema.Struct({}),
   error: Schema.Union([InstructionError, EnvironmentAuthorizationError]),
 });
@@ -2188,6 +2196,7 @@ export const WsInstructionRpcGroup = RpcGroup.make(
   WsServerShareInstructionRpc,
   WsServerAdoptInstructionRpc,
   WsServerDeleteInstructionRpc,
+  WsServerMoveInstructionRpc,
   WsServerInstructionsTrackedRpc,
 ).middleware(RpcScopeAuthorization);
 

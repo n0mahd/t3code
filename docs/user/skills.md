@@ -110,7 +110,8 @@ shape. It fixes them in one pass, with a choice for each kind of problem:
 - Skills an agent could use but doesn't are turned on for it.
 
 Nothing changes until you confirm, and the confirmation says when git can undo it. Deleting a
-project's copy can't be undone otherwise. Dismissing the offer hides it until the problems change.
+project's copy can't be undone otherwise. Dismissing the offer, or tidying up, hides it until the
+problems change.
 
 ## Updates
 

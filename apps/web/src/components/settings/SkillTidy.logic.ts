@@ -248,6 +248,19 @@ export type TidyStepResult = {
   readonly asked: number;
 };
 
+/**
+ * How many skills Tidy up didn't change all the way: skipped, held back for an agent, or never
+ * answered for.
+ */
+export const tidySkillsLeft = (results: readonly TidyStepResult[]) =>
+  results.reduce((total, result) => {
+    const incomplete = result.outcomes.filter(
+      (outcome) =>
+        outcome.status === "skipped" || outcome.blocked.length > 0 || outcome.reason !== undefined,
+    ).length;
+    return total + incomplete + (result.asked - result.outcomes.length);
+  }, 0);
+
 /** The one line shown after Tidy up, from what the server says happened. */
 export function describeTidy(results: readonly TidyStepResult[]) {
   const done = results.flatMap((result) => {
@@ -266,15 +279,7 @@ export function describeTidy(results: readonly TidyStepResult[]) {
         ];
     }
   });
-  // A skill counts as left when it wasn't changed all the way: skipped, held back for an agent,
-  // or never answered for.
-  const left = results.reduce((total, result) => {
-    const incomplete = result.outcomes.filter(
-      (outcome) =>
-        outcome.status === "skipped" || outcome.blocked.length > 0 || outcome.reason !== undefined,
-    ).length;
-    return total + incomplete + (result.asked - result.outcomes.length);
-  }, 0);
+  const left = tidySkillsLeft(results);
   const lead = done.length === 0 ? "" : `Tidied up: ${joinNames(done)}.`;
   const rest = left === 0 ? "" : `${plural(left, "skill")} couldn't be changed.`;
   return [lead, rest].filter((part) => part !== "").join(" ") || "Nothing changed.";

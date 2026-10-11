@@ -21,6 +21,7 @@ import {
   packTitle,
   tidyConfirmation,
   tidyGitRefs,
+  tidySkillsLeft,
   tidyStepCount,
   tidySteps,
   turnOnTitle,
@@ -141,8 +142,11 @@ export function TidyUp({
   locked: boolean;
   onBack: () => void;
   onBusyChange: (busy: boolean) => void;
-  /** Called with the one-line result once everything picked has been asked for. */
-  onDone: (notice: string) => void;
+  /**
+   * Called with the one-line result once everything picked has been asked for, and whether all of
+   * it went through.
+   */
+  onDone: (notice: string, complete: boolean) => void;
 }) {
   useEscapeToList(onBack);
   const deleteSkills = useAtomCommand(serverEnvironment.deleteSkills, { reportFailure: false });
@@ -234,7 +238,7 @@ export function TidyUp({
       );
     }
     onBusyChange(false);
-    onDone(describeTidy(results));
+    onDone(describeTidy(results), tidySkillsLeft(results) === 0);
   };
 
   const { packs, duplicates } = findings;

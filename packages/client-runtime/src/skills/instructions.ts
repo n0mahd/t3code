@@ -56,7 +56,7 @@ const reads = (access: InstructionAgentAccess | undefined) =>
 const isClaude = (agent: SkillAgent) => agent.driverKind === "claudeAgent";
 
 /** The name of a file, for a search and a note. */
-export const entryFileName = (entry: InstructionEntry) =>
+const entryFileName = (entry: InstructionEntry) =>
   entry.relativePath ?? entry.path.split(/[\\/]/).at(-1) ?? entry.path;
 
 /** The project's own AGENTS.md, which the list calls "This project". */

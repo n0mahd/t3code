@@ -69,6 +69,9 @@ export function useInstructions({
   const deleteInstruction = useAtomCommand(serverEnvironment.deleteInstruction, {
     reportFailure: false,
   });
+  const moveInstruction = useAtomCommand(serverEnvironment.moveInstruction, {
+    reportFailure: false,
+  });
   const instructionsTracked = useAtomCommand(serverEnvironment.instructionsTracked, {
     reportFailure: false,
   });
@@ -85,8 +88,16 @@ export function useInstructions({
   const canShare = useAtomValue(serverEnvironment.shareInstruction.permissionAtom(environmentId));
   const canAdopt = useAtomValue(serverEnvironment.adoptInstruction.permissionAtom(environmentId));
   const canDelete = useAtomValue(serverEnvironment.deleteInstruction.permissionAtom(environmentId));
+  const canMove = useAtomValue(serverEnvironment.moveInstruction.permissionAtom(environmentId));
   const canChange =
-    canWrite && canEnable && canDisable && canSetClaude && canShare && canAdopt && canDelete;
+    canWrite &&
+    canEnable &&
+    canDisable &&
+    canSetClaude &&
+    canShare &&
+    canAdopt &&
+    canDelete &&
+    canMove;
 
   const [data, setData] = useState<InstructionData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -211,6 +222,15 @@ export function useInstructions({
       }
       case "delete": {
         const result = await deleteInstruction({ ...base, input: { ...scoped, id: change.id } });
+        return result._tag === "Success"
+          ? { text: describeChange(change, ctx), done: true }
+          : failed(result);
+      }
+      case "moveToGlobal":
+      case "copyToProject": {
+        // Both directions go between Global and the project picked above the page.
+        if (!cwd) return { text: CHANGE_FAILED, done: false };
+        const result = await moveInstruction({ ...base, input: { cwd, id: change.id } });
         return result._tag === "Success"
           ? { text: describeChange(change, ctx), done: true }
           : failed(result);

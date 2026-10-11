@@ -349,6 +349,7 @@ it.effect(
           WS_METHODS.serverShareInstruction,
           WS_METHODS.serverAdoptInstruction,
           WS_METHODS.serverDeleteInstruction,
+          WS_METHODS.serverMoveInstruction,
         ]) {
           const change = createCommandPermissions(runtime, method);
           // Being allowed to operate threads isn't enough to change files.

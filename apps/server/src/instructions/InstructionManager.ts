@@ -14,7 +14,8 @@
  *   Global file first.
  * - The only writes that take a real file are `adopt` (its text is kept first), `share` (a
  *   rename, refused when AGENTS.md exists; or a merge, where CLAUDE.md's text is written to the end
- *   of AGENTS.md before CLAUDE.md goes) and `delete`.
+ *   of AGENTS.md before CLAUDE.md goes), `move` (the same merge, into the Global file) and
+ *   `delete`.
  *
  * @module InstructionManager
  */
@@ -26,6 +27,7 @@ import {
   type InstructionAgentsInput,
   type InstructionAgentsResult,
   type InstructionDeleteInput,
+  type InstructionMoveInput,
   type InstructionShareInput,
   type InstructionWriteInput,
   type InstructionWriteResult,
@@ -69,6 +71,9 @@ const encoder = new TextEncoder();
 
 const LIMIT_MESSAGE = "Instruction files can be at most 1 MB.";
 
+/** The project's AGENTS.md, which the Global file is copied to. */
+const PROJECT_AGENTS_ID = "project:shared:AGENTS.md";
+
 /**
  * The text that adopting an agent's own file adds to the Global file: the agent's text under a
  * heading with the agent's name. Nothing is added when the Global file has that text already.
@@ -80,6 +85,17 @@ export const adoptedText = (sharedText: string, agentName: string, agentText: st
   if (sharedText.includes(section)) return sharedText;
   if (sharedText === "") return section;
   return `${sharedText}${sharedText.endsWith("\n") ? "" : "\n"}\n${section}`;
+};
+
+/**
+ * `into` with `own` added at its end after a blank line, for a merge. Nothing is added when `own`
+ * is empty or `into` has it already.
+ */
+const mergedText = (into: string, own: string) => {
+  const text = own.trim();
+  if (text === "" || into.includes(text)) return into;
+  if (into.trim() === "") return `${text}\n`;
+  return `${into}${into.endsWith("\n") ? "" : "\n"}\n${text}\n`;
 };
 
 export class InstructionManager extends Context.Service<
@@ -116,6 +132,12 @@ export class InstructionManager extends Context.Service<
     readonly share: (input: InstructionShareInput) => Effect.Effect<void, InstructionError>;
     /** Add an agent's own text to the Global file, then make the agent's file a link to it. */
     readonly adopt: (input: InstructionAdoptInput) => Effect.Effect<void, InstructionError>;
+    /**
+     * Move a project's AGENTS.md, CLAUDE.md or CLAUDE.local.md to Global: its text goes at the end
+     * of the Global file, created when missing, then the project file is deleted. Given the Global
+     * file, its text goes at the end of the project's AGENTS.md instead and the Global file stays.
+     */
+    readonly move: (input: InstructionMoveInput) => Effect.Effect<void, InstructionError>;
     /** Delete an instruction file. A link is removed and what it points at stays. */
     readonly delete: (input: InstructionDeleteInput) => Effect.Effect<void, InstructionError>;
   }
@@ -571,12 +593,9 @@ const make = Effect.gen(function* () {
             agentsMdPath: agentsMd,
             claudeMdDirectory: path.dirname(entry.path),
             homeDirectory: view.homeDirectory,
-          }).trim();
-          if (own !== "" && !agentsText.text.includes(own)) {
-            const joined =
-              agentsText.text.trim() === ""
-                ? `${own}\n`
-                : `${agentsText.text}${agentsText.text.endsWith("\n") ? "" : "\n"}\n${own}\n`;
+          });
+          const joined = mergedText(agentsText.text, own);
+          if (joined !== agentsText.text) {
             if (encoder.encode(joined).byteLength > INSTRUCTION_MAX_BYTES) {
               return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
             }
@@ -676,6 +695,114 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /** The text of a file a move reads, which must be there and be text. */
+  const readForMove = Effect.fnUntraced(function* (file: string, name: string) {
+    const text = yield* readTextAt(file);
+    if (text._tag === "TooLarge")
+      return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
+    if (text._tag === "Missing")
+      return yield* new InstructionError({
+        reason: "notFound",
+        message: "That file doesn't exist.",
+      });
+    if (text._tag === "Unreadable") {
+      return yield* new InstructionError({
+        reason: "readOnly",
+        message: `T3 Code can't read ${name} as text.`,
+      });
+    }
+    return text;
+  });
+
+  /**
+   * Adds `own` to the end of the file at `into`, creating it when missing. Refused when the two
+   * paths are one file, since a move would then delete the text it just kept.
+   */
+  const mergeInto = Effect.fnUntraced(function* (from: string, into: string, own: string) {
+    const [fromFacts, intoFacts] = yield* Effect.all([inspectAt(from), inspectAt(into)]);
+    if (fromFacts.real !== undefined && fromFacts.real === intoFacts.real) {
+      return yield* new InstructionError({
+        reason: "sameFile",
+        message: `${path.basename(from)} and ${path.basename(into)} are the same file.`,
+      });
+    }
+    const target = yield* writeTargetAt(into);
+    const current = yield* readTextAt(target);
+    if (current._tag === "TooLarge")
+      return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
+    if (current._tag === "Unreadable") {
+      return yield* new InstructionError({
+        reason: "readOnly",
+        message: `T3 Code can't read ${path.basename(into)} as text.`,
+      });
+    }
+    const text = current._tag === "Read" ? current.text : "";
+    const joined = mergedText(text, own);
+    if (joined === text) return;
+    if (encoder.encode(joined).byteLength > INSTRUCTION_MAX_BYTES) {
+      return yield* new InstructionError({ reason: "tooLarge", message: LIMIT_MESSAGE });
+    }
+    yield* writeText(target, joined);
+  });
+
+  const move: InstructionManager["Service"]["move"] = Effect.fn("InstructionManager.move")(
+    function* (input) {
+      yield* writeLock.withPermits(1)(
+        Effect.gen(function* () {
+          const entry = yield* catalog.resolve(input);
+          if (entry.scope === "global" && entry.kind === "shared") {
+            const projectFile = yield* catalog.resolve({
+              cwd: input.cwd,
+              id: PROJECT_AGENTS_ID,
+            });
+            const global = yield* readForMove(entry.path, "the Global instructions");
+            return yield* mergeInto(entry.path, projectFile.path, global.text);
+          }
+
+          if (entry.scope !== "project" || entry.kind === "nested" || entry.readOnly) {
+            return yield* new InstructionError({
+              reason: "unknownEntry",
+              message: "Only a file in a project's top folder can be moved to Global.",
+            });
+          }
+          const view = yield* catalog.shared;
+          const name = path.basename(entry.path);
+          const file = yield* readForMove(entry.path, name);
+          const before = yield* inspectAt(entry.path);
+          // A line that imports the Global file or the project's AGENTS.md means nothing once the
+          // text is in the Global file, so it doesn't move.
+          const own = [view.file.path, path.join(path.dirname(entry.path), "AGENTS.md")].reduce(
+            (text, agentsMdPath) =>
+              removeAgentsMdImport(text, {
+                path,
+                agentsMdPath,
+                claudeMdDirectory: path.dirname(entry.path),
+                homeDirectory: view.homeDirectory,
+              }),
+            file.text,
+          );
+          yield* mergeInto(entry.path, view.file.path, own);
+
+          // The text is in the Global file now, so the project file can go, unless it changed
+          // meanwhile. A link goes and what it points at stays.
+          const now = yield* inspectAt(entry.path);
+          const text = yield* readTextAt(entry.path);
+          if (
+            now.linkTarget !== before.linkTarget ||
+            text._tag !== "Read" ||
+            text.revision !== file.revision
+          ) {
+            return yield* new InstructionError({
+              reason: "changedOnDisk",
+              message: `${name} changed on disk, so it was kept.`,
+            });
+          }
+          yield* guard(fileSystem.remove(entry.path), whenWriting(entry.path));
+        }),
+      );
+    },
+  );
+
   const remove: InstructionManager["Service"]["delete"] = Effect.fn("InstructionManager.delete")(
     function* (input) {
       yield* writeLock.withPermits(1)(
@@ -725,6 +852,7 @@ const make = Effect.gen(function* () {
     setClaudeSetting,
     share,
     adopt,
+    move,
     delete: remove,
   });
 });

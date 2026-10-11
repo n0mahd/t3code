@@ -212,6 +212,17 @@ export const InstructionAdoptInput = Schema.Struct({
 });
 export type InstructionAdoptInput = typeof InstructionAdoptInput.Type;
 
+/**
+ * Move a project's AGENTS.md, CLAUDE.md or CLAUDE.local.md to Global: its text goes at the end of
+ * the Global AGENTS.md, then the project file is deleted. Given the Global AGENTS.md instead, its
+ * text is copied to the end of the project's AGENTS.md and the Global file stays.
+ */
+export const InstructionMoveInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  id: TrimmedNonEmptyString,
+});
+export type InstructionMoveInput = typeof InstructionMoveInput.Type;
+
 /** Delete a real instruction file. This can't be undone. */
 export const InstructionDeleteInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
@@ -244,6 +255,8 @@ export class InstructionError extends Schema.TaggedError<InstructionError>()("In
     "unregisteredProject",
     "invalidSettings",
     "linkFailed",
+    /** The file and where its text would go are one file behind a link. */
+    "sameFile",
     "writeFailed",
   ]),
   message: Schema.String,

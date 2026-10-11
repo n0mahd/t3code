@@ -388,7 +388,7 @@ function EnvironmentSkills({
     const { change } = plan;
     const leaves =
       view.kind === "instruction" &&
-      (change.kind === "share" || change.kind === "delete") &&
+      (change.kind === "share" || change.kind === "delete" || change.kind === "moveToGlobal") &&
       change.id === view.id;
     if ((await instructions.apply(plan)) && leaves) toList();
   };

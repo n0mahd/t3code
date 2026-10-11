@@ -1047,6 +1047,61 @@ describe("the ⋯ menu", () => {
     expect(Object.values(none).every((plan) => plan === null)).toBe(true);
   });
 
+  it("moves a file in the project's top folder to Global, and names it", () => {
+    const local = projectClaude("CLAUDE.local.md");
+    expect(actionsFor([projectAgents(), local], 1).moveToGlobal).toEqual({
+      change: {
+        kind: "moveToGlobal",
+        id: "project:claudeLocal:CLAUDE.local.md",
+        name: "CLAUDE.local.md",
+      },
+      confirmation: {
+        title: "Move CLAUDE.local.md to Global?",
+        body: "Its text goes at the end of your Global instructions, then CLAUDE.local.md is deleted from this project.",
+        notes: [],
+        confirm: "Move",
+        destructive: false,
+      },
+    });
+    for (const file of [projectAgents(), projectClaude("CLAUDE.md")]) {
+      expect(actionsFor([file], 0).moveToGlobal, file.id).toMatchObject({
+        change: { kind: "moveToGlobal", id: file.id },
+      });
+    }
+    const nested = entry("project:nested:apps/web/AGENTS.md", {
+      kind: "nested",
+      relativePath: "apps/web/AGENTS.md",
+    });
+    for (const file of [
+      nested,
+      sharedFile(),
+      ownFile("codex"),
+      projectAgents({}, { exists: false }),
+    ]) {
+      expect(actionsFor([file], 0).moveToGlobal, file.id).toBeNull();
+    }
+  });
+
+  it("copies Global to the project only while one is picked", () => {
+    const copy = (list: InstructionEntry[]) => actionsFor(list, list.length - 1).copyToProject;
+    expect(copy([sharedFile()])).toBeNull();
+    expect(copy([projectAgents(), sharedFile()])).toEqual({
+      change: { kind: "copyToProject", id: "global:shared" },
+      confirmation: {
+        title: "Copy to this project?",
+        body: "Your Global instructions go at the end of this project's AGENTS.md.",
+        notes: [],
+        confirm: "Copy",
+        destructive: false,
+      },
+    });
+    expect(copy([projectAgents({}, { exists: false }), sharedFile()])).toMatchObject({
+      confirmation: { body: "This project gets an AGENTS.md with your Global instructions." },
+    });
+    expect(copy([projectAgents(), sharedFile({}, { exists: false })])).toBeNull();
+    expect(actionsFor([projectAgents(), projectClaude("CLAUDE.md")], 1).copyToProject).toBeNull();
+  });
+
   it("offers nothing to change on a file that isn't there yet", () => {
     const missing = projectAgents({}, { exists: false });
     expect(Object.values(actionsFor([missing], 0)).every((plan) => plan === null)).toBe(true);
@@ -1234,6 +1289,27 @@ describe("asking git", () => {
       "You can undo this with git.",
     ]);
     expect(withInstructionGitNote(move, []).confirmation!.notes).toEqual([]);
+  });
+
+  it("says a tracked file leaves the project when it moves to Global", () => {
+    const all = data([projectAgents(), claudeMd]);
+    const toGlobal = instructionActions(
+      findInstructionRow(all, ctx, claudeMd.id)!,
+      ctx,
+      all,
+    ).moveToGlobal!;
+    expect(instructionsToCheckWithGit(toGlobal)).toEqual(["project:claude:CLAUDE.md"]);
+    expect(withInstructionGitNote(toGlobal, []).confirmation!.notes).toEqual([]);
+    expect(
+      withInstructionGitNote(toGlobal, ["project:claude:CLAUDE.md"]).confirmation!.notes,
+    ).toEqual(["It leaves the project for everyone who clones it.", "You can undo this with git."]);
+    const shared = data([projectAgents(), sharedFile()]);
+    const copy = instructionActions(
+      findInstructionRow(shared, ctx, "global:shared")!,
+      ctx,
+      shared,
+    ).copyToProject!;
+    expect(instructionsToCheckWithGit(copy)).toBeNull();
   });
 
   it("adds the line to a merge only when both files are tracked", () => {

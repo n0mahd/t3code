@@ -73,7 +73,7 @@ export function InstructionDetail({
   /** The session can't change instructions. */
   locked: boolean;
   onBack: () => void;
-  /** Turns agents on or off, moves, merges or deletes; a plan with a confirmation asks first. */
+  /** Turns agents on or off, moves, merges, copies or deletes; a plan with a confirmation asks first. */
   onPlan: (plan: InstructionPlan) => void;
   /** A save went through, so the list can read the files again. */
   onSaved: () => void;
@@ -215,6 +215,16 @@ export function InstructionDetail({
               {actions.useGlobal && (
                 <MenuItem disabled={disabled} onClick={() => onPlan(actions.useGlobal!)}>
                   Use Global instead…
+                </MenuItem>
+              )}
+              {actions.moveToGlobal && (
+                <MenuItem disabled={disabled} onClick={() => onPlan(actions.moveToGlobal!)}>
+                  Move to Global…
+                </MenuItem>
+              )}
+              {actions.copyToProject && (
+                <MenuItem disabled={disabled} onClick={() => onPlan(actions.copyToProject!)}>
+                  Copy to this project…
                 </MenuItem>
               )}
               {(actions.removeFromAgents || actions.remove) && <MenuSeparator />}

@@ -1238,6 +1238,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:delete-instruction",
       tag: WS_METHODS.serverDeleteInstruction,
     }),
+    moveInstruction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:move-instruction",
+      tag: WS_METHODS.serverMoveInstruction,
+    }),
     instructionsTracked: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:instructions-tracked",
       tag: WS_METHODS.serverInstructionsTracked,

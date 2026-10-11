@@ -1036,4 +1036,179 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("SkillCatalog", (it)
       }),
     );
   });
+
+  describe("skills that come with an agent", () => {
+    /**
+     * Codex's system skills, and Claude plugins installed for everyone, for this project, for
+     * another project, and one that this project's local settings turn off.
+     */
+    const makeProvided = Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.realPath(
+        yield* fs.makeTempDirectoryScoped({ prefix: "t3code-provided-skills-" }),
+      );
+      const project = path.join(home, "repos/app");
+      const write = (relative: string, contents: string) =>
+        Effect.gen(function* () {
+          const target = path.join(home, relative);
+          yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+          yield* fs.writeFileString(target, contents);
+        });
+      const cache = ".claude/plugins/cache/acme-market";
+      yield* write(
+        ".codex/skills/.system/imagegen/SKILL.md",
+        skillFile("imagegen", "Make images."),
+      );
+      yield* write(".codex/skills/.system/docs/SKILL.md", skillFile("docs", "Read the docs."));
+      yield* write(".codex/config.toml", '[[skills.config]]\nname = "docs"\nenabled = false\n');
+      // The user's own skill of the same name as a system one.
+      yield* write(".agents/skills/imagegen/SKILL.md", skillFile("imagegen", "My own images."));
+      yield* write(
+        `${cache}/review-kit/1.0.0/skills/review/SKILL.md`,
+        skillFile("review", "Review."),
+      );
+      yield* write(`${cache}/lint-kit/2.0.0/skills/lint/SKILL.md`, skillFile("lint", "Lint."));
+      yield* write(`${cache}/other-kit/1.0.0/skills/other/SKILL.md`, skillFile("other", "Other."));
+      yield* write(`${cache}/quiet-kit/1.0.0/skills/hush/SKILL.md`, skillFile("hush", "Hush."));
+      const install = (name: string, version: string, scope: string, projectPath?: string) => [
+        {
+          scope,
+          ...(projectPath ? { projectPath } : {}),
+          installPath: path.join(home, cache, name, version),
+          version,
+          installedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ];
+      yield* write(
+        ".claude/plugins/installed_plugins.json",
+        JSON.stringify({
+          version: 2,
+          plugins: {
+            "review-kit@acme-market": install("review-kit", "1.0.0", "user"),
+            "lint-kit@acme-market": install("lint-kit", "2.0.0", "project", project),
+            "other-kit@acme-market": install(
+              "other-kit",
+              "1.0.0",
+              "local",
+              path.join(home, "repos/other"),
+            ),
+            "quiet-kit@acme-market": install("quiet-kit", "1.0.0", "user"),
+          },
+        }),
+      );
+      yield* write(
+        ".claude/settings.json",
+        JSON.stringify({ enabledPlugins: { "quiet-kit@acme-market": true } }),
+      );
+      yield* write(
+        "repos/app/.claude/settings.local.json",
+        JSON.stringify({ enabledPlugins: { "quiet-kit@acme-market": false } }),
+      );
+      return { home, project };
+    });
+
+    const accessWithFixed = (skill: SkillSummary | undefined) =>
+      skill?.access.map(({ instanceId, state, fixed }) => ({ instanceId, state, fixed }));
+
+    it.effect("lists them with only the agent that has them, and on or off as it says", () =>
+      Effect.gen(function* () {
+        const { home, project } = yield* makeProvided;
+        const listed = yield* withCatalog(home, (catalog) => catalog.list({ cwd: project }));
+        yield* encodeList(listed);
+        const provided = listed.skills.filter((skill) => skill.provided !== undefined);
+        expect(provided.map((skill) => [skill.scope, skill.name, skill.provided])).toEqual([
+          ["global", "docs", "agent"],
+          ["global", "imagegen", "agent"],
+          ["project", "lint-kit:lint", "plugin"],
+          ["global", "quiet-kit:hush", "plugin"],
+          ["global", "review-kit:review", "plugin"],
+        ]);
+        const byName = new Map(provided.map((skill) => [skill.name, skill]));
+
+        // Codex switches its system skills in its own settings; no other agent can have one.
+        expect(byName.get("imagegen")).toMatchObject({
+          home: "~/.codex/skills/.system/imagegen",
+          copies: [],
+        });
+        expect(byName.get("imagegen")?.realFolder).toBeUndefined();
+        expect(accessWithFixed(byName.get("imagegen"))).toEqual([
+          { instanceId: "codex", state: "direct", fixed: undefined },
+        ]);
+        expect(accessWithFixed(byName.get("docs"))).toEqual([
+          { instanceId: "codex", state: "off", fixed: undefined },
+        ]);
+        // A plugin's skills go with the plugin, which T3 Code doesn't switch.
+        expect(byName.get("review-kit:review")).toMatchObject({
+          home: "~/.claude/plugins/cache/acme-market/review-kit/1.0.0/skills/review",
+          description: "Review.",
+        });
+        expect(accessWithFixed(byName.get("review-kit:review"))).toEqual([
+          { instanceId: "claudeAgent", state: "direct", fixed: true },
+        ]);
+        // The project's local settings turn the plugin off over the user's.
+        expect(accessWithFixed(byName.get("quiet-kit:hush"))).toEqual([
+          { instanceId: "claudeAgent", state: "off", fixed: true },
+        ]);
+
+        // The user's own skill of the same name is untouched by Codex's.
+        const mine = listed.skills.find(
+          (skill) => skill.name === "imagegen" && skill.provided === undefined,
+        );
+        expect(mine).toMatchObject({ home: "~/.agents/skills/imagegen", copies: [] });
+        expect(mine?.realFolder).toBe(true);
+        expect(listed.unreadable).toEqual([]);
+
+        // Without the project, its own plugin and its settings don't apply.
+        const global = yield* withCatalog(home, (catalog) => catalog.list({}));
+        const names = global.skills.filter((skill) => skill.provided).map((skill) => skill.name);
+        expect(names).not.toContain("lint-kit:lint");
+        expect(names).not.toContain("other-kit:other");
+        expect(
+          accessWithFixed(global.skills.find((skill) => skill.name === "quiet-kit:hush")),
+        ).toEqual([{ instanceId: "claudeAgent", state: "direct", fixed: true }]);
+      }),
+    );
+
+    it.effect("reads and resolves a plugin skill by the name the agent gives it", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const { home, project } = yield* makeProvided;
+        const name = "review-kit:review";
+        const folder = "~/.claude/plugins/cache/acme-market/review-kit/1.0.0/skills/review";
+        const detail = yield* withCatalog(home, (catalog) =>
+          catalog.get({ scope: "global", name, home: folder }),
+        );
+        expect(detail.home).toBe(path.join(home, folder.slice(2)));
+        expect(detail.contents).toBe(skillFile("review", "Review."));
+        expect(detail.files.map((file) => file.path)).toEqual(["SKILL.md"]);
+        // The folder name alone isn't the skill's name.
+        const bare = yield* withCatalog(home, (catalog) =>
+          catalog.get({ scope: "global", name: "review", home: folder }),
+        );
+        expect(bare).toEqual(NOT_FOUND);
+
+        const [resolved] = yield* withCatalog(home, (catalog) =>
+          catalog.resolve({ cwd: project, skills: [{ scope: "global", name }] }),
+        );
+        expect(resolved).toMatchObject({ provided: "plugin", own: false });
+        expect(
+          resolved?.agents.map((agent) => [agent.instanceId, agent.state, agent.settings]),
+        ).toEqual(
+          expect.arrayContaining([
+            ["claudeAgent", "direct", undefined],
+            ["codex", "none", undefined],
+          ]),
+        );
+        const [system] = yield* withCatalog(home, (catalog) =>
+          catalog
+            .resolve({ skills: [{ scope: "global", name: "imagegen" }] })
+            .pipe(Effect.map((skills) => skills.filter((skill) => skill.provided === "agent"))),
+        );
+        expect(
+          system?.agents.find((agent) => agent.instanceId === "codex")?.settings,
+        ).toBeDefined();
+      }),
+    );
+  });
 });

@@ -11,7 +11,8 @@
  * lead to the skill's home: a real folder is never replaced by them. Placing and deleting are the
  * only writes that take a real folder, and only one that sits in an agent's skill folder itself
  * (`own`), never a synced library behind a link (placing a synced skill into some projects links
- * to it instead; see `SkillPlacement`).
+ * to it instead; see `SkillPlacement`). A skill that comes with an agent (`provided`) is never
+ * linked, placed or deleted: only that agent's own setting for it is written, where it has one.
  *
  * Every write starts from what the folders hold now, not from what a client last saw: a skill
  * whose home is not where the client said is refused, and each link is checked again right
@@ -494,12 +495,46 @@ const make = Effect.gen(function* () {
     } satisfies SkillChange;
   });
 
+  /**
+   * A skill that comes with an agent is switched in that agent's own settings and nowhere else. An
+   * agent without such a setting stays as it is, and any other agent can't be given the skill.
+   */
+  const switchProvided = Effect.fnUntraced(function* (
+    skill: SkillCatalog.ResolvedSkill,
+    requested: ReadonlySet<ProviderInstanceId>,
+    off: boolean,
+    writers: SettingsWriters,
+  ) {
+    const blocked: Blocked[] = [];
+    const switching: ProviderInstanceId[] = [];
+    for (const agent of skill.agents) {
+      if (!requested.has(agent.instanceId)) continue;
+      if (agent.state === "none") {
+        if (!off) blocked.push({ instanceId: agent.instanceId, reason: "provided" });
+      } else if ((agent.state === "off") === off) {
+        continue;
+      } else if (agent.settings === undefined) {
+        blocked.push({ instanceId: agent.instanceId, reason: off ? "alwaysOn" : "setElsewhere" });
+      } else {
+        switching.push(agent.instanceId);
+      }
+    }
+    const switched = yield* switchAgents(skill, switching, off, writers);
+    return {
+      wrote: switched.wrote,
+      blocked: [...blocked, ...switched.blocked],
+    } satisfies SkillChange;
+  });
+
   const enableAgents = Effect.fnUntraced(function* (
     skill: SkillCatalog.ResolvedSkill,
     requested: ReadonlySet<ProviderInstanceId>,
     projectRoot: string | undefined,
     writers: SettingsWriters,
   ) {
+    if (skill.provided !== undefined) {
+      return yield* switchProvided(skill, requested, false, writers);
+    }
     if (skill.library !== undefined) {
       return yield* enableLibraryAgents({ ...skill, library: skill.library }, requested, writers);
     }
@@ -513,6 +548,7 @@ const make = Effect.gen(function* () {
     requested: ReadonlySet<ProviderInstanceId>,
     writers: SettingsWriters,
   ) {
+    if (skill.provided !== undefined) return yield* switchProvided(skill, requested, true, writers);
     if (skill.library !== undefined) {
       return yield* disableLibraryAgents({ ...skill, library: skill.library }, requested, writers);
     }
@@ -598,6 +634,7 @@ const make = Effect.gen(function* () {
     skill: SkillCatalog.ResolvedSkill,
     all: ReadonlyArray<SkillCatalog.ResolvedSkill>,
   ) {
+    if (skill.provided !== undefined) return skipped("provided");
     if (!skill.own) return skipped("linked");
     const audience = reaching(skill, all);
     const had = [...agentsWith(audience)];
@@ -789,11 +826,13 @@ const make = Effect.gen(function* () {
           { scope: "project" as const, name: ref.name },
         ]),
         change: (skill, _agents, _projectRoot, all) =>
-          placement.place(skill, to, {
-            cwd: input.cwd,
-            all,
-            followMove: (home) => followCodexMove(skill, home, writers),
-          }),
+          skill.provided !== undefined
+            ? Effect.succeed(skipped("provided"))
+            : placement.place(skill, to, {
+                cwd: input.cwd,
+                all,
+                followMove: (home) => followCodexMove(skill, home, writers),
+              }),
       });
     }, Effect.scoped),
     delete: Effect.fn("SkillManager.delete")(function* (input) {

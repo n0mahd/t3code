@@ -7,6 +7,7 @@ import { ChevronLeftIcon, MoreHorizontalIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useAfterDelay } from "../../hooks/useAfterDelay";
+import { useRevealInFileManager } from "../../hooks/useRevealInFileManager";
 import { openInEditorMenuLabel } from "../../editorLabels";
 import { usePreferredEditor, useOpenInPreferredEditor } from "../../editorPreferences";
 import { serverEnvironment } from "../../state/server";
@@ -146,6 +147,7 @@ export function InstructionDetail({
     })();
   };
   const canOpen = entry.exists && availableEditors.length > 0;
+  const reveal = useRevealInFileManager(environmentId);
 
   return (
     <section aria-label={`${row.heading} details`} className="min-w-0 space-y-3">
@@ -197,6 +199,9 @@ export function InstructionDetail({
               <MenuItem onClick={() => copyPath(entry.path, "instruction path")}>
                 Copy path
               </MenuItem>
+              {entry.exists && reveal.label && (
+                <MenuItem onClick={() => void reveal.reveal(entry.path)}>{reveal.label}</MenuItem>
+              )}
               {actions.turnOnAll && (
                 <MenuItem disabled={disabled} onClick={() => onPlan(actions.turnOnAll!)}>
                   Turn on for all agents

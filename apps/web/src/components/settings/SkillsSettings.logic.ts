@@ -97,6 +97,27 @@ const accessOf = (
 ): SkillAgentAccess | undefined =>
   skill.access.find((access) => access.instanceId === agent.instanceId);
 
+/**
+ * The agents a skill is about: for one that came with an agent, only the agents that have it, since
+ * no other one can; for any other skill, every agent on the page.
+ */
+export function skillContext(skill: Skill, ctx: SkillsContext): SkillsContext {
+  if (skill.provided === undefined) return ctx;
+  return { installed: ctx.installed.filter((agent) => accessOf(skill, agent) !== undefined) };
+}
+
+/** One short line on what a skill came with, such as "Part of Claude's review plugin". */
+export function providedNote(skill: Skill, ctx: SkillsContext) {
+  const agents =
+    joinNames(skillContext(skill, ctx).installed.map((agent) => agent.displayName)) || "an agent";
+  if (skill.provided !== "plugin") return `Comes with ${agents}`;
+  // The agent names a plugin's skills `<plugin>:<skill>`.
+  const [plugin, rest] = skill.name.split(":");
+  return plugin && rest !== undefined
+    ? `Part of ${agents}'s ${plugin} plugin`
+    : `Part of a plugin for ${agents}`;
+}
+
 /** The agent loads the skill: through a link, or by reading its folder. */
 export const hasAccess = (skill: Skill, agent: SkillAgent) => {
   const state = accessOf(skill, agent)?.state;
@@ -240,6 +261,10 @@ const isFixed = (skill: Skill, agent: Pick<SkillAgent, "instanceId">) =>
 /** Installed agents T3 Code can switch for this skill. */
 const switchableAgents = (skill: Skill, ctx: SkillsContext) =>
   ctx.installed.filter((agent) => !isFixed(skill, agent));
+
+/** Some agent can be switched for the skill here. */
+export const canSwitch = (skill: Skill, ctx: SkillsContext) =>
+  switchableAgents(skill, ctx).length > 0;
 
 /** Why an agent's switch can't be flipped, or null when it can. */
 export function switchBlocker(skill: Skill, agent: SkillAgent) {
@@ -705,6 +730,10 @@ const problemText = (
       return `“${name}” is in use by another program, so it wasn't moved.`;
     case "setElsewhere":
       return `${who ?? "An agent"}'s settings decide “${name}”, so it stays as it is.`;
+    case "provided":
+      return who === undefined
+        ? `“${name}” comes with an agent, so it stays as it is.`
+        : `${who} can't use “${name}”. It comes with another agent.`;
     case "failed":
       return who === undefined
         ? `Couldn't change “${name}”.`

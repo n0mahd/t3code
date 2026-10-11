@@ -38,7 +38,7 @@ export function SkillAgentIcon({
 }
 
 /** A tight, never-wrapping run of icons, so a row stays on one line. */
-function IconRow({ label, children }: { label: string; children: ReactNode }) {
+export function IconRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger

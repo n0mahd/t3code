@@ -425,7 +425,13 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
             cwd: dest.cwd,
             skills: [{ scope: "project", name: skill.name }],
           });
-    if (theirs.some((other) => other.scope === dest.scope && other.name === skill.name)) {
+    // A skill that comes with an agent isn't in the way: it lives in the agent's own folder.
+    if (
+      theirs.some(
+        (other) =>
+          other.scope === dest.scope && other.name === skill.name && other.provided === undefined,
+      )
+    ) {
       return skipped("destinationTaken");
     }
 
@@ -668,7 +674,10 @@ export const makeSkillPlacement = Effect.fnUntraced(function* (deps: PlacementDe
       dest.scope === "global" &&
       view.all.some(
         (other) =>
-          other.scope === "global" && other.name === skill.name && other.library === undefined,
+          other.scope === "global" &&
+          other.name === skill.name &&
+          other.library === undefined &&
+          other.provided === undefined,
       )
     ) {
       return skipped("destinationTaken");

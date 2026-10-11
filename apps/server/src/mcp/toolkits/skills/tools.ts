@@ -42,12 +42,12 @@ const agentNames = Schema.Array(ProviderInstanceId).check(
 const agentsDescription =
   "agents are named by provider instance id or driver kind, as in the access entries t3_skill_list returns.";
 const resultNotes =
-  'Each outcome says changed, unchanged or skipped. blocked lists agents the change did not reach: "alwaysOn" means the agent reads the skill\'s own folder and T3 Code knows no setting that switches one skill off for it (the access entry says fixed); "setElsewhere" means a project or organization setting decides it; "failed" means the agent\'s settings could not be written safely; "shadowed" means it loads another skill with that name first; "entryTaken" means something else is where the link would go. affected lists agents that gained or lost the skill without being asked, because they read the same folder.';
+  'Each outcome says changed, unchanged or skipped. blocked lists agents the change did not reach: "alwaysOn" means the agent reads the skill\'s own folder and T3 Code knows no setting that switches one skill off for it (the access entry says fixed); "setElsewhere" means a project or organization setting decides it; "failed" means the agent\'s settings could not be written safely; "shadowed" means it loads another skill with that name first; "entryTaken" means something else is where the link would go; "provided" means the skill comes with another agent or its plugin. affected lists agents that gained or lost the skill without being asked, because they read the same folder.';
 
 const SkillListTool = Tool.make("t3_skill_list", {
   ...shared,
   description:
-    "List the agent skills T3 Code can see, in a project and in the user's home folder, and which agents can use each (access: direct = reads the skill's folder, link = reached through a link, off = it can see the skill but its own settings switch it off, none = cannot use it; fixed = T3 Code cannot switch that agent for that skill). A skill is named by scope, name and home. Use t3_skill_enable and t3_skill_disable to change who uses it. Deleting and moving skills is not available to agents.",
+    "List the agent skills T3 Code can see, in a project and in the user's home folder, and which agents can use each (access: direct = reads the skill's folder, link = reached through a link, off = it can see the skill but its own settings switch it off, none = cannot use it; fixed = T3 Code cannot switch that agent for that skill). provided = the skill comes with an agent or one of its plugins: only that agent is listed, and only its own setting can switch it. A skill is named by scope, name and home. Use t3_skill_enable and t3_skill_disable to change who uses it. Deleting and moving skills is not available to agents.",
   parameters: Schema.Struct({ projectId }),
   success: SkillListResult,
   dependencies: [...shared.dependencies, SkillCatalog.SkillCatalog],

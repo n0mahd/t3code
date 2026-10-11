@@ -14,6 +14,10 @@
  * agent's settings files and never by asking the agent (see `AgentSkillSettings`). One that reads
  * the skill's folder directly, with no setting T3 Code can write, is `fixed`.
  *
+ * Skills that come with an agent or one of its plugins (see `ProvidedSkills`) are listed too, as
+ * `provided`, with only the instances that have them. They are never T3 Code's to move or delete,
+ * and never compared with the user's own skills of the same name.
+ *
  * @module SkillCatalog
  */
 import {
@@ -76,6 +80,7 @@ import {
   type LibraryLink,
 } from "./SkillLibrary.ts";
 import { readSources } from "./SkillLockFiles.ts";
+import { providedSkillRoots } from "./ProvidedSkills.ts";
 
 const SKILL_FILE = "SKILL.md";
 const MAX_FOLDER_ENTRIES = 1_000;
@@ -116,7 +121,23 @@ interface ReadRoot {
   readonly standard: boolean;
   /** The library of Global skills used in only some projects, which no agent reads. */
   readonly library?: boolean;
+  /**
+   * The folder holds skills that come with an agent or one of its plugins. A plugin's skills are
+   * named `<plugin>:<folder>`.
+   */
+  readonly provided?: { readonly kind: "agent" | "plugin"; readonly plugin?: string | undefined };
 }
+
+/** What an agent invokes the skill in a folder by. */
+const skillNameIn = (root: Pick<ReadRoot, "provided">, folder: string) =>
+  root.provided?.plugin === undefined ? folder : `${root.provided.plugin}:${folder}`;
+
+/** The folder in a root that a skill of this name would be in, or undefined when it can't be. */
+const folderIn = (root: Pick<ReadRoot, "provided">, name: string) => {
+  const plugin = root.provided?.plugin;
+  if (plugin === undefined) return name;
+  return name.startsWith(`${plugin}:`) ? name.slice(plugin.length + 1) : undefined;
+};
 
 const rootKey = (root: Pick<ReadRoot, "scope" | "directory">) => `${root.scope}\0${root.directory}`;
 
@@ -127,6 +148,8 @@ interface AgentInstance {
   readonly reads: readonly ReadRoot[];
   /** What it takes to read and write the agent's own skill settings. */
   readonly switches: SkillSwitchContext;
+  /** The folders of skills that come with it, and whether its settings turn each one off. */
+  readonly provided: ReadonlyArray<{ readonly root: ReadRoot; readonly off: boolean }>;
 }
 
 /** One folder entry that holds a skill: a real directory, or a link to one. */
@@ -158,6 +181,21 @@ interface SkillGroup {
   readonly header: SkillHeader;
 }
 
+/** What a skill comes with, when every entry that reaches it is in a folder an agent ships. */
+const providedOf = (group: Pick<SkillGroup, "entries">) => {
+  const [first, ...rest] = group.entries;
+  const kind = first?.root.provided?.kind;
+  return kind !== undefined && rest.every((entry) => entry.root.provided !== undefined)
+    ? kind
+    : undefined;
+};
+
+/** `provided`, for a skill that comes with an agent, to spread into what is returned for it. */
+const providedField = (group: Pick<SkillGroup, "entries">) => {
+  const provided = providedOf(group);
+  return provided === undefined ? {} : { provided };
+};
+
 /**
  * One skill as the folders hold it, with what it takes to change who reads it. `list` shows the
  * same facts as a summary.
@@ -176,6 +214,8 @@ export interface ResolvedSkill {
    * way. Only such a skill is T3 Code's to move or delete; a synced library's skill is not.
    */
   readonly own: boolean;
+  /** Set when the skill comes with an agent or one of its plugins (see `SkillSummary.provided`). */
+  readonly provided?: "agent" | "plugin";
   /** The shared folder of each scope, where a moved skill lands; a project's needs `cwd`. */
   readonly standardFolders: Readonly<Record<SkillScope, string | undefined>>;
   /**
@@ -342,7 +382,10 @@ const make = Effect.gen(function* () {
     );
     const entries = yield* Effect.forEach(
       listed.names
-        .filter((name) => isSkillFolderName(name) && (only === undefined || only.has(name)))
+        .filter(
+          (name) =>
+            isSkillFolderName(name) && (only === undefined || only.has(skillNameIn(root, name))),
+        )
         .toSorted()
         .slice(0, MAX_FOLDER_ENTRIES),
       (name) => entryAt(root, name),
@@ -470,6 +513,19 @@ const make = Effect.gen(function* () {
               : path.join(homeDirectory, root.folder);
           return [{ scope: "global", directory, label: globalLabel(directory), standard }];
         });
+        const instanceEnvironment = yield* mergeProviderInstanceEnvironment(
+          config.environment,
+          environment,
+        ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDirectory));
+        const provided = yield* providedSkillRoots({
+          driver: table.agent,
+          configHome,
+          cwd,
+          environment: instanceEnvironment,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        );
         instances.push({
           instanceId: ProviderInstanceId.make(instanceId),
           driver: table.agent,
@@ -483,19 +539,29 @@ const make = Effect.gen(function* () {
                 ? codexSettingsHome(path, config.config, configHome, homeDirectory)
                 : configHome,
             homeDirectory,
-            environment: yield* mergeProviderInstanceEnvironment(
-              config.environment,
-              environment,
-            ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDirectory)),
+            environment: instanceEnvironment,
             cwd,
           },
+          provided: provided.map((item) => ({
+            root: {
+              scope: item.scope,
+              directory: item.directory,
+              label: globalLabel(item.directory),
+              standard: false,
+              provided: { kind: item.kind, plugin: item.plugin },
+            },
+            off: item.off,
+          })),
         });
       }
     }
     return instances;
   });
 
-  /** The shared folders, then every folder an enabled instance reads, each once. */
+  /**
+   * The shared folders, then every folder an enabled instance reads, then the folders of skills
+   * that come with an agent, each once.
+   */
   const rootsFor = (cwd: string | undefined, instances: readonly AgentInstance[]) => {
     const standard: ReadRoot[] = [
       {
@@ -524,7 +590,11 @@ const make = Effect.gen(function* () {
         : []),
     ];
     const byKey = new Map<string, ReadRoot>();
-    for (const root of [...standard, ...instances.flatMap((instance) => instance.reads)]) {
+    for (const root of [
+      ...standard,
+      ...instances.flatMap((instance) => instance.reads),
+      ...instances.flatMap((instance) => instance.provided.map((item) => item.root)),
+    ]) {
       if (!byKey.has(rootKey(root))) byKey.set(rootKey(root), root);
     }
     return [...byKey.values()];
@@ -549,7 +619,9 @@ const make = Effect.gen(function* () {
   ) {
     const textOf = makeTextReader();
     const result = new Map<SkillGroup, SkillCopy[]>();
-    for (const members of Map.groupBy(groups, (group) => group.name).values()) {
+    // A skill that comes with an agent is that agent's, whatever the user has under its name.
+    const own = groups.filter((group) => providedOf(group) === undefined);
+    for (const members of Map.groupBy(own, (group) => group.name).values()) {
       for (const group of members) {
         const copies: SkillCopy[] = [];
         for (const other of members.filter((member) => member !== group)) {
@@ -615,7 +687,10 @@ const make = Effect.gen(function* () {
     );
     const isOwn = (group: Pick<SkillGroup, "entries">) =>
       group.entries.some(
-        (entry) => entry.target === undefined && plainRoots.has(rootKey(entry.root)),
+        (entry) =>
+          entry.target === undefined &&
+          entry.root.provided === undefined &&
+          plainRoots.has(rootKey(entry.root)),
       );
 
     // Group by what is really on disk: the same folder reached through several links is one skill.
@@ -624,13 +699,14 @@ const make = Effect.gen(function* () {
       for (const entry of entries) {
         // A project's link to a library skill is the Global skill itself.
         const scope = entry.libraryLink ? "global" : entry.root.scope;
-        const key = `${scope}\0${entry.name}\0${entry.home}`;
+        const name = skillNameIn(entry.root, entry.name);
+        const key = `${scope}\0${name}\0${entry.home}`;
         const existing = grouped.get(key);
         grouped.set(
           key,
           existing
             ? { ...existing, entries: [...existing.entries, entry] }
-            : { scope, name: entry.name, home: entry.home, entries: [entry] },
+            : { scope, name, home: entry.home, entries: [entry] },
         );
       }
     }
@@ -748,8 +824,54 @@ const make = Effect.gen(function* () {
       };
     };
 
+    /**
+     * How an instance has a skill that comes with an agent: it is that agent's, on unless its
+     * settings switch the skill or its plugin off. Any other agent can't have it.
+     */
+    const providedAccessFor = (group: SkillGroup, instance: AgentInstance) => {
+      const keys = new Set(group.entries.map((entry) => rootKey(entry.root)));
+      const mine = instance.provided.find((item) => keys.has(rootKey(item.root)));
+      const entry = mine && group.entries.find((item) => rootKey(item.root) === rootKey(mine.root));
+      if (mine === undefined || entry === undefined) {
+        return {
+          loadedEntries: [] as FolderEntry[],
+          switchedOff: false,
+          settings: undefined,
+          access: {
+            instanceId: instance.instanceId,
+            driver: instance.driver,
+            state: "none",
+            folder: group.entries[0]?.root.label ?? "",
+            fixed: true,
+          } satisfies SkillAgentAccess,
+        };
+      }
+      // A plugin's skills are switched with the plugin, which T3 Code leaves to the agent.
+      const settings =
+        mine.root.provided?.kind === "agent" &&
+        skillSwitchKind(instance.driver, group.scope) !== undefined
+          ? instance.switches
+          : undefined;
+      const switchedOff =
+        settings !== undefined &&
+        views.get(instance.instanceId)?.off(switchedSkillOf(group)) === true;
+      return {
+        loadedEntries: mine.off ? [] : [entry],
+        switchedOff,
+        settings,
+        access: {
+          instanceId: instance.instanceId,
+          driver: instance.driver,
+          state: mine.off || switchedOff ? "off" : "direct",
+          folder: mine.root.label,
+          ...(settings === undefined ? { fixed: true } : {}),
+        } satisfies SkillAgentAccess,
+      };
+    };
+
     /** How one instance reaches a skill: through the folders it loads it from, else `none`. */
     const accessFor = (group: SkillGroup, instance: AgentInstance) => {
+      if (providedOf(group) !== undefined) return providedAccessFor(group, instance);
       if (isLibrary(group)) return libraryAccessFor(group, instance);
       const found = instance.reads.flatMap((root) => {
         const loadable = loadableAt(group, instance, root);
@@ -828,6 +950,22 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.provideContext(filesystemContext));
 
     const skills = groups.map((group): SkillSummary => {
+      const provided = providedOf(group);
+      if (provided !== undefined) {
+        return {
+          name: group.name,
+          scope: group.scope,
+          home: displayPath(group.home, displayRoots),
+          description: capDescription(group.header.description),
+          ...(group.header.invalid ? { invalidHeader: true } : {}),
+          copies: [],
+          // Only the agents that have it: no other one can.
+          access: instances
+            .map((instance) => accessFor(group, instance).access)
+            .filter((access) => access.state !== "none"),
+          provided,
+        };
+      }
       const source = (group.scope === "project" ? sources.project : sources.global).get(group.name);
       // The projects a library skill is used in: where the shared folder has its link.
       const using = group.entries.some((item) => item.root.library === true)
@@ -855,7 +993,8 @@ const make = Effect.gen(function* () {
 
     const unreadable = new Map<string, SkillFolderProblem>();
     for (const { root, unreadable: failed } of scanned) {
-      if (failed)
+      // An agent's own folders are its business; a broken one only hides what it ships.
+      if (failed && root.provided === undefined)
         unreadable.set(`${root.scope}\0${root.label}`, { scope: root.scope, folder: root.label });
     }
 
@@ -906,6 +1045,7 @@ const make = Effect.gen(function* () {
           declaredName: group.header.declaredName,
           home: group.home,
           own: isOwn(group),
+          ...providedField(group),
           standardFolders,
           ...libraryOf(group, libraryLinks),
           entries: group.entries.map((entry) => ({
@@ -1013,9 +1153,16 @@ const make = Effect.gen(function* () {
     const roots = rootsFor(cwd, yield* loadInstances(cwd)).filter(
       (root) => root.scope === input.scope,
     );
-    const candidates = yield* Effect.forEach(roots, (root) => entryAt(root, input.name), {
-      concurrency: CONCURRENCY,
-    });
+    const candidates = yield* Effect.forEach(
+      roots,
+      (root) => {
+        const folder = folderIn(root, input.name);
+        return folder === undefined || !isSkillFolderName(folder)
+          ? Effect.succeed(undefined)
+          : entryAt(root, folder);
+      },
+      { concurrency: CONCURRENCY },
+    );
     const displayRoots = yield* displayRootsOf(cwd);
     const chosen = candidates.find(
       (entry) => entry !== undefined && displayPath(entry.home, displayRoots) === input.home,

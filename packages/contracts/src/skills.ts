@@ -70,6 +70,12 @@ export const SkillSummary = Schema.Struct({
    * workspace roots of the registered projects it is used in.
    */
   projects: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  /**
+   * The skill comes with an agent (`agent`) or one of the agent's plugins (`plugin`) instead of
+   * the user's own folders. T3 Code never moves, deletes or links it, and `access` lists only the
+   * instances that have it.
+   */
+  provided: Schema.optional(Schema.Literals(["agent", "plugin"])),
 });
 export type SkillSummary = typeof SkillSummary.Type;
 
@@ -224,6 +230,11 @@ export const SkillOutcomeReason = Schema.Literals([
   "inUse",
   /** A project or organization setting decides it, so switching the agent here can't. */
   "setElsewhere",
+  /**
+   * The skill comes with an agent or one of its plugins: it stays where it is, and only that
+   * agent can have it.
+   */
+  "provided",
 ]);
 export type SkillOutcomeReason = typeof SkillOutcomeReason.Type;
 

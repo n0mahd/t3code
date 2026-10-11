@@ -97,6 +97,21 @@ never moves or deletes them, and no other agent can have them. Codex's can be tu
 any other skill. A Claude plugin's skills come and go with the plugin, so turn the plugin on or off
 in Claude Code with `/plugin`.
 
+## Tidy up
+
+With a project picked, the page offers **Tidy up** when the project's skills could be in better
+shape. It fixes them in one pass, with a choice for each kind of problem:
+
+- Skills from the same GitHub repo can move to Global, so you keep one copy for all your projects.
+- A skill that is also in Global can go from the project, keeping the Global copy. **Compare**
+  shows how the two differ first.
+- Skills kept in Claude's own folder move to `.agents/skills`, with a link left for Claude, so
+  every agent can use them.
+- Skills an agent could use but doesn't are turned on for it.
+
+Nothing changes until you confirm, and the confirmation says when git can undo it. Deleting a
+project's copy can't be undone otherwise. Dismissing the offer hides it until the problems change.
+
 ## Instructions
 
 The **Instructions** section at the top of the page lists the files your agents read before they

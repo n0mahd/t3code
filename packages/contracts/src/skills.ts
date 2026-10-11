@@ -185,6 +185,18 @@ export const SkillPlaceInput = Schema.Struct({
 });
 export type SkillPlaceInput = typeof SkillPlaceInput.Type;
 
+/**
+ * Move each skill's real folder out of an agent's own folder (Claude's `.claude/skills`) into the
+ * shared folder of its scope, so every agent that reads that one can use it. Agents that used the
+ * skill and don't read the shared folder get a link where the folder was.
+ */
+export const SkillShareInput = Schema.Struct({
+  /** The registered project the list was read for, which project skills in `skills` belong to. */
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  skills: SkillRefs,
+});
+export type SkillShareInput = typeof SkillShareInput.Type;
+
 /** Which of these project skills git tracks, so a move or delete of them shows in git. */
 export const SkillTrackedInput = Schema.Struct({
   /** The project the skills are in. */

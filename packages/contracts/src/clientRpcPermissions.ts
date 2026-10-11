@@ -44,6 +44,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverPlaceSkills]: AuthFilesystemWriteScope,
   [WS_METHODS.serverDeleteSkills]: AuthFilesystemWriteScope,
   [WS_METHODS.serverCreateSkill]: AuthFilesystemWriteScope,
+  [WS_METHODS.serverShareSkills]: AuthFilesystemWriteScope,
 
   // Instruction changes write, link, rename and delete the files agents read.
   [WS_METHODS.serverWriteInstruction]: AuthFilesystemWriteScope,

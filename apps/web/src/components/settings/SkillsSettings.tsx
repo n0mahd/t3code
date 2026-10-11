@@ -6,9 +6,11 @@ import type {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { BookOpenIcon, PlusIcon, XIcon } from "lucide-react";
+import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAfterDelay } from "../../hooks/useAfterDelay";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { cn } from "../../lib/utils";
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useProjects } from "../../state/entities";
@@ -30,6 +32,8 @@ import { BulkBar, ConfirmPlan } from "./SkillBulkBar";
 import { BuiltInSection } from "./SkillBuiltInList";
 import { SkillDetail } from "./SkillDetail";
 import { SkillSection, StandardInfo } from "./SkillList";
+import { TidyBanner, TidyUp } from "./SkillTidy";
+import { tidyBanner, tidyFindings, tidySignature } from "./SkillTidy.logic";
 import type { PlaceOptions } from "./SkillUseIn";
 import { SettingsGroup } from "./SettingsGroup";
 import { SettingsPageContainer } from "./settingsLayout";
@@ -64,7 +68,16 @@ const CHANGE_ERROR = "Couldn't change the skills here.";
 
 type PickedProject = { id: string; label: string; cwd: string };
 type Loaded = ReturnType<typeof ingestSkills>;
-type View = { kind: "list" } | { kind: "skill"; id: string } | { kind: "instruction"; id: string };
+type View =
+  | { kind: "list" }
+  | { kind: "skill"; id: string }
+  | { kind: "instruction"; id: string }
+  | { kind: "tidy" };
+
+/** The banner's dismissal, per environment and project: the problems it was dismissed for. */
+const tidyDismissedKey = (environmentId: string, cwd: string) =>
+  `t3code:skills-tidy-dismissed:v1:${environmentId}:${cwd}`;
+const DismissedTidy = Schema.NullOr(Schema.String);
 
 export function SkillsSettings() {
   const { environment: scopedEnvironment, scope } = useSettingsScope();
@@ -372,7 +385,19 @@ function EnvironmentSkills({
     const row = findInstructionRow(instructionData, instructions.ctx, view.id);
     return row ? { row, data: instructionData } : null;
   }, [view, instructionData, instructions.ctx]);
-  const showList = !skillView && !instructionView;
+  const findings = useMemo(
+    () => (project && skills ? tidyFindings(skills, ctx) : null),
+    [project, skills, ctx],
+  );
+  const bannerText = findings ? tidyBanner(findings) : null;
+  const signature = findings ? tidySignature(findings) : null;
+  const [dismissedTidy, setDismissedTidy] = useLocalStorage(
+    tidyDismissedKey(environment.environmentId, cwd ?? ""),
+    null,
+    DismissedTidy,
+  );
+  const tidyView = view.kind === "tidy" && project && findings ? { project, findings } : null;
+  const showList = !skillView && !instructionView && !tidyView;
   useEffect(() => {
     onSubpageChange(!showList);
     return () => onSubpageChange(false);
@@ -393,6 +418,21 @@ function EnvironmentSkills({
     if ((await instructions.apply(plan)) && leaves) toList();
   };
 
+  /** Reads the folders again after a change, so the page shows what is on disk. */
+  const reloadAfterChange = async () => {
+    try {
+      const loaded = await load();
+      if (!mounted.current) return;
+      if (loaded) {
+        setData(loaded);
+        setLoadError(null);
+      } else {
+        setLoadError(LOAD_ERROR);
+      }
+    } catch {
+      if (mounted.current) setLoadError(LOAD_ERROR);
+    }
+  };
   /**
    * Asks the server to make the change, then reads the folders again: the page shows what is on
    * disk, never what the change was expected to do.
@@ -433,17 +473,7 @@ function EnvironmentSkills({
     } catch {
       setNotice(CHANGE_ERROR);
     }
-    try {
-      const loaded = await load();
-      if (loaded) {
-        setData(loaded);
-        setLoadError(null);
-      } else {
-        setLoadError(LOAD_ERROR);
-      }
-    } catch {
-      setLoadError(LOAD_ERROR);
-    }
+    await reloadAfterChange();
     setSelected(new Set());
     setBusy(false);
   };
@@ -465,6 +495,14 @@ function EnvironmentSkills({
       setLoadError(LOAD_ERROR);
     }
     setBusy(false);
+  };
+  /** Tidy up has asked for everything picked: its result shows over the list, read again. */
+  const finishTidy = async (result: string) => {
+    setBusy(true);
+    setNotice(result);
+    await reloadAfterChange();
+    setBusy(false);
+    toList();
   };
   /**
    * A plan that needs confirming waits for the dialog; any other goes ahead. For a placement or
@@ -578,6 +616,18 @@ function EnvironmentSkills({
           onReload={() => setDetailReload((count) => count + 1)}
         />
       )}
+      {tidyView && cwd && (
+        <TidyUp
+          environmentId={environment.environmentId}
+          cwd={cwd}
+          projectName={tidyView.project.label}
+          findings={tidyView.findings}
+          locked={locked}
+          onBack={toList}
+          onBusyChange={setBusy}
+          onDone={(result) => void finishTidy(result)}
+        />
+      )}
       {instructionView && (
         <InstructionDetail
           key={`${instructionView.row.id}:${detailReload}`}
@@ -674,6 +724,16 @@ function EnvironmentSkills({
               {project && (
                 <SkillSection
                   title="This project"
+                  notice={
+                    bannerText && signature !== dismissedTidy && !selecting ? (
+                      <TidyBanner
+                        text={bannerText}
+                        busy={locked}
+                        onTidy={() => show({ kind: "tidy" })}
+                        onDismiss={() => setDismissedTidy(signature)}
+                      />
+                    ) : null
+                  }
                   visible={visibleProject}
                   ctx={ctx}
                   places={places}

@@ -1198,6 +1198,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:create-skill",
       tag: WS_METHODS.serverCreateSkill,
     }),
+    shareSkills: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:share-skills",
+      tag: WS_METHODS.serverShareSkills,
+    }),
     skillsTracked: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:skills-tracked",
       tag: WS_METHODS.serverSkillsTracked,

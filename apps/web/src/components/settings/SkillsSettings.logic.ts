@@ -681,18 +681,22 @@ export function skillsToCheckWithGit(plan: SkillPlan): readonly SkillRef[] | nul
  */
 export function withGitNote(plan: SkillPlan, tracked: readonly string[]): SkillPlan {
   if (plan.confirmation === undefined) return plan;
-  const { skills } = plan.change;
-  const names = new Set(tracked);
-  const count = skills.filter((skill) => skill.scope === "project" && names.has(skill.name)).length;
-  if (count === 0) return plan;
-  const note =
-    count === skills.length
-      ? "You can undo this with git."
-      : `${count} of these ${count === 1 ? "is" : "are"} tracked by git, so you can undo ${count === 1 ? "that one" : "those"} with git.`;
+  const note = gitUndoNote(plan.change.skills, tracked);
+  if (note === null) return plan;
   return {
     ...plan,
     confirmation: { ...plan.confirmation, notes: [...plan.confirmation.notes, note] },
   };
+}
+
+/** The line saying git can undo a change to these skills, or null when git tracks none of them. */
+export function gitUndoNote(skills: readonly SkillRef[], tracked: readonly string[]) {
+  const names = new Set(tracked);
+  const count = skills.filter((skill) => skill.scope === "project" && names.has(skill.name)).length;
+  if (count === 0) return null;
+  return count === skills.length
+    ? "You can undo this with git."
+    : `${count} of these ${count === 1 ? "is" : "are"} tracked by git, so you can undo ${count === 1 ? "that one" : "those"} with git.`;
 }
 
 /** A one-click fix for a skill that installed agents can't use yet. */

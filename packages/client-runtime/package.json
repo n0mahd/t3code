@@ -99,6 +99,14 @@
       "types": "./src/providerSkills.ts",
       "default": "./src/providerSkills.ts"
     },
+    "./skills": {
+      "types": "./src/skills/skills.ts",
+      "default": "./src/skills/skills.ts"
+    },
+    "./skills/instructions": {
+      "types": "./src/skills/instructions.ts",
+      "default": "./src/skills/instructions.ts"
+    },
     "./providerUpdateRequiredModels": {
       "types": "./src/providerUpdateRequiredModels.ts",
       "default": "./src/providerUpdateRequiredModels.ts"

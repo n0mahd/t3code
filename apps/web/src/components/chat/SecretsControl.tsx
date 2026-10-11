@@ -76,6 +76,10 @@ export function SecretsControl({ environmentId }: { environmentId: EnvironmentId
     }
   };
 
+  // A server without secrets support fails the list; hide the row rather than
+  // offer an add that cannot succeed.
+  if (secrets === null && query.error !== null) return null;
+
   return (
     <>
       <div ref={anchorRef} role="group" aria-label="Secrets">

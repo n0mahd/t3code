@@ -103,17 +103,24 @@ function SecretForm({
   const [value, setValue] = useState("");
   const [revealed, setRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Set once the server has the secret. The list refreshes with the new name
+  // while the dialog closes, which would otherwise flash a duplicate-name error.
+  const [saved, setSaved] = useState(false);
 
   const nameError =
     isReplace || name.length === 0
       ? null
       : !isValidAgentSecretName(name)
         ? "Use letters, numbers and underscores, starting with a letter."
-        : existingNames.includes(name)
+        : !saved && existingNames.includes(name)
           ? "You already have a secret with this name."
           : null;
   const canSave =
-    !saving && isValidAgentSecretName(name) && nameError === null && value.trim().length > 0;
+    !saving &&
+    !saved &&
+    isValidAgentSecretName(name) &&
+    nameError === null &&
+    value.trim().length > 0;
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -124,6 +131,7 @@ function SecretForm({
       input: { name, value: value.trim(), mode: isReplace ? "replace" : "create" },
     }).finally(() => setSaving(false));
     if (result._tag === "Success") {
+      setSaved(true);
       toastManager.add({ type: "success", title: `${isReplace ? "Replaced" : "Saved"} ${name}` });
       onClose();
       return;

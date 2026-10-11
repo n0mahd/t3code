@@ -1063,6 +1063,7 @@ const REASON_TEXT: Record<Reason, string> = {
   unregisteredProject: "This project isn't set up in T3 Code.",
   invalidSettings: "Claude's settings file isn't valid JSON, so T3 Code left it alone.",
   linkFailed: "Couldn't make the link. On Windows, turn on Developer Mode.",
+  sameFile: "One file is a link to the other.",
   writeFailed: "Couldn't change that file.",
 };
 

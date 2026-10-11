@@ -127,6 +127,10 @@
       "types": "./src/state/attachments.ts",
       "default": "./src/state/attachments.ts"
     },
+    "./state/agent-secrets": {
+      "types": "./src/state/agentSecrets.ts",
+      "default": "./src/state/agentSecrets.ts"
+    },
     "./text-paste": {
       "types": "./src/textPaste.ts",
       "default": "./src/textPaste.ts"

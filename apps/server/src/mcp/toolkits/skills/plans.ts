@@ -29,21 +29,31 @@ const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ?
 const nextStep = (tool: string) =>
   `Nothing has changed yet. To do it, call ${tool} again with the same arguments and confirm: true.`;
 
-/** The skills asked for as the list shows them now, and those it no longer shows there. */
+/**
+ * The skills asked for as the list shows them now, leaving out those it no longer shows there and
+ * those that come with an agent, which are never moved or deleted.
+ */
 function lookUp(listed: readonly SkillSummary[], refs: readonly SkillRef[]) {
   const found: SkillSummary[] = [];
+  const provided: SkillSummary[] = [];
   const missing: SkillRef[] = [];
   for (const ref of refs) {
     const skill = listed.find(
       (item) => item.scope === ref.scope && item.name === ref.name && item.home === ref.home,
     );
     if (skill === undefined) missing.push(ref);
+    else if (skill.provided !== undefined) provided.push(skill);
     else found.push(skill);
   }
   const lines = missing.map(
     (ref) =>
       `“${ref.name}” isn't at ${ref.home} any more, so it is left out. List the skills again.`,
   );
+  if (provided.length > 0) {
+    lines.push(
+      `${namesOf(provided)} ${one(provided) ? "comes with an agent, so it stays" : "come with agents, so they stay"} as ${one(provided) ? "it is" : "they are"}.`,
+    );
+  }
   return { found, lines };
 }
 

@@ -54,7 +54,7 @@ const twoSteps = (tool: string) =>
 /** A call without `confirm: true` changes nothing and returns this instead of the outcomes. */
 const SkillPlanResult = Schema.Struct({ plan: Schema.Array(Schema.String) });
 const placeNotes =
-  'Skipped outcomes give a reason: "notFound" or "changed" means the skill is no longer where the list said (list again), "linked" means its folder is reached through a link and stays where it is, "destinationTaken" means something with that name is already there and is never replaced, "inUse" means another program is using the folder, "failed" means a folder couldn\'t be written. blocked lists agents that used a skill but couldn\'t be given it at its new place. sourceDropped means the installer\'s record of where the skill came from couldn\'t go along, so it won\'t update from there.';
+  'Skipped outcomes give a reason: "notFound" or "changed" means the skill is no longer where the list said (list again), "linked" means its folder is reached through a link and stays where it is, "destinationTaken" means something with that name is already there and is never replaced, "inUse" means another program is using the folder, "provided" means the skill comes with an agent and stays where it is, "failed" means a folder couldn\'t be written. blocked lists agents that used a skill but couldn\'t be given it at its new place. sourceDropped means the installer\'s record of where the skill came from couldn\'t go along, so it won\'t update from there.';
 const resultNotes =
   'Each outcome says changed, unchanged or skipped. blocked lists agents the change did not reach: "alwaysOn" means the agent reads the skill\'s own folder and T3 Code knows no setting that switches one skill off for it (the access entry says fixed); "setElsewhere" means a project or organization setting decides it; "failed" means the agent\'s settings could not be written safely; "shadowed" means it loads another skill with that name first; "entryTaken" means something else is where the link would go; "provided" means the skill comes with another agent or its plugin. affected lists agents that gained or lost the skill without being asked, because they read the same folder.';
 
@@ -102,8 +102,7 @@ const SkillDisableTool = Tool.make("t3_skill_disable", {
 
 const SkillCreateTool = Tool.make("t3_skill_create", {
   ...shared,
-  description:
-    `Create a skill: a SKILL.md with this name and one-line description in the shared .agents/skills folder of the project (scope project) or of the user's home folder (scope global), with a placeholder body to replace by editing the file. It is turned on for every enabled agent, by a link for agents that read another folder; blocked lists agents it could not reach. The name is lowercase letters, digits and single hyphens, at most 64 characters. Refused when a folder an agent reads in that scope already has something with that name. ${accessNote}`,
+  description: `Create a skill: a SKILL.md with this name and one-line description in the shared .agents/skills folder of the project (scope project) or of the user's home folder (scope global), with a placeholder body to replace by editing the file. It is turned on for every enabled agent, by a link for agents that read another folder; blocked lists agents it could not reach. The name is lowercase letters, digits and single hyphens, at most 64 characters. Refused when a folder an agent reads in that scope already has something with that name. ${accessNote}`,
   parameters: Schema.Struct({
     projectId,
     scope: SkillCreateInput.fields.scope,

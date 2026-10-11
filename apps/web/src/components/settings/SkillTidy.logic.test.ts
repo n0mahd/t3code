@@ -156,6 +156,17 @@ describe("tidyFindings", () => {
       ],
       expected: { packs: [], duplicates: [], ownFolder: [], missing: [] },
     },
+    {
+      case: "a project's plugin skill belongs to its agent, so there is nothing to tidy",
+      skills: [
+        skill("review-kit:review", {
+          home: "~/.claude/plugins/cache/review-kit/skills/review",
+          provided: "plugin",
+          reach: { claudeAgent: "direct", codex: "none" },
+        }),
+      ],
+      expected: { packs: [], duplicates: [], ownFolder: [], missing: [] },
+    },
   ])("$case", ({ skills, expected }) => {
     const findings = tidyFindings(skills, ctx);
     expect({

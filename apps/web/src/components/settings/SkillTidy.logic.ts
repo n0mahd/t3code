@@ -53,7 +53,10 @@ const missesSkill = (skill: Skill, agent: SkillAgent) => {
 
 /** Everything that could be tidied in the project's skills; `skills` holds both sections. */
 export function tidyFindings(skills: readonly Skill[], ctx: SkillsContext): TidyFindings {
-  const project = skills.filter((skill) => skill.scope === "project");
+  // A skill that came with an agent is that agent's business, never something to tidy.
+  const project = skills.filter(
+    (skill) => skill.scope === "project" && skill.provided === undefined,
+  );
   // Only a skill whose own folder is here can be moved or deleted.
   const movable = project.filter((skill) => skill.realFolder === true);
   const inGlobal = (skill: Skill) => skill.copies.some((copy) => copy.scope === "global");

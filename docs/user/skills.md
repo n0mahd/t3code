@@ -187,8 +187,8 @@ it when:
 The phone app shows the same skills and instruction files. You can turn skills on or off, use them
 in other projects, delete them, apply the fixes **Needs attention** offers, and change **Claude
 reads AGENTS.md**. `SKILL.md` and instruction files are read-only there; edit them on web or
-desktop. Creating skills, **Tidy up**, updates, moving instruction files and acting on several
-skills at once are web and desktop only. When Settings covers several environments, the page shows
+desktop. Creating skills, **Tidy up**, updates, built-in and plugin skills, moving instruction
+files and acting on several skills at once are web and desktop only. When Settings covers several environments, the page shows
 one at a time.
 
 ## Limits

@@ -324,7 +324,11 @@ export function TidyUp({
       {shareShown.length > 0 && (
         <CheckCard
           title={ownFolderTitle(shareShown)}
-          detail="Moves them to the shared folder, so every agent can use them."
+          detail={
+            shareShown.length === 1
+              ? "Moves it to the shared folder, so every agent can use it."
+              : "Moves them to the shared folder, so every agent can use them."
+          }
           checked={choices.share}
           disabled={disabled}
           onChange={(share) => update({ share })}

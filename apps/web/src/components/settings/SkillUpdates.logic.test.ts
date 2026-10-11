@@ -4,7 +4,7 @@ import {
   type SkillChangesResult,
   type SkillUpdateEntry,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import type { Skill } from "./SkillsSettings.logic";
 import {

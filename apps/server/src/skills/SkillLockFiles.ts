@@ -235,7 +235,7 @@ export const readFolder = Effect.fnUntraced(function* (
 });
 
 /** The git tree SHA of the entries, the way GitHub reports a folder's `skillFolderHash`. */
-export const gitTreeSha = (entries: readonly HashedEntry[]) =>
+const gitTreeSha = (entries: readonly HashedEntry[]) =>
   treeShaOfEntries(
     entries.map((entry) => ({
       path: entry.relative,

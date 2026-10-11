@@ -123,6 +123,7 @@ import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as AuthHttp from "./auth/http.ts";
 import * as ReplayMarkers from "./auth/replayMarkers.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import * as AgentSecrets from "./secrets/AgentSecrets.ts";
 import * as WebhookRoute from "./scheduledTasks/webhookRoute.ts";
 import * as RelayDeliveryProof from "./scheduledTasks/RelayDeliveryProof.ts";
 import * as HeldHooksWaker from "./relay/HeldHooksWaker.ts";
@@ -383,6 +384,7 @@ const layerProjectCloneTracker = ProjectCloneTracker.layer.pipe(
 );
 
 const layerReview = ReviewService.layer.pipe(
+  Layer.provide(ProjectStore.layer),
   Layer.provideMerge(GitVcsDriver.layer),
   Layer.provideMerge(layerVcsDriverRegistry),
 );
@@ -615,6 +617,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.mergeAll(InstructionManager.layer, InstructionTracking.layer).pipe(
     Layer.provideMerge(InstructionCatalog.layer),
   ),
+  // Users save secrets over WebSocket; agents find them through MCP.
+  AgentSecrets.layer,
 ).pipe(
   // Core Services
   // It checks a project's folder against ProjectService, which the next layer provides.

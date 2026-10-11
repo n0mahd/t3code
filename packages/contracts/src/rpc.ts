@@ -77,6 +77,8 @@ import {
   HostPowerSnapshot,
 } from "./background.ts";
 import {
+  FilesystemGetMetadataInput,
+  FilesystemGetMetadataResult,
   FilesystemBrowseInput,
   FilesystemBrowseResult,
   FilesystemBrowseError,
@@ -386,6 +388,12 @@ import {
 } from "./scheduledTask.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
+  AgentSecretDeleteInput,
+  AgentSecretError,
+  AgentSecretListResult,
+  AgentSecretSetInput,
+} from "./agentSecret.ts";
+import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
   ProjectCloneListEvent,
@@ -425,6 +433,7 @@ export const WS_METHODS = {
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
+  filesystemGetMetadata: "filesystem.getMetadata",
   agentSessionsScan: "agentSessions.scan",
   agentSessionsImport: "agentSessions.import",
   assetsCreateUrl: "assets.createUrl",
@@ -578,6 +587,9 @@ export const WS_METHODS = {
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   secretsAnswerRequest: "secrets.answerRequest",
+  secretsList: "secrets.list",
+  secretsSet: "secrets.set",
+  secretsDelete: "secrets.delete",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
 
@@ -1440,6 +1452,12 @@ const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
 });
 
+const WsFilesystemGetMetadataRpc = Rpc.make(WS_METHODS.filesystemGetMetadata, {
+  payload: FilesystemGetMetadataInput,
+  success: FilesystemGetMetadataResult,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   payload: FilesystemBrowseInput,
   success: FilesystemBrowseResult,
@@ -1990,6 +2008,22 @@ const WsSecretsAnswerRequestRpc = Rpc.make(WS_METHODS.secretsAnswerRequest, {
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsSecretsListRpc = Rpc.make(WS_METHODS.secretsList, {
+  payload: Schema.Struct({}),
+  success: AgentSecretListResult,
+  error: Schema.Union([AgentSecretError, EnvironmentAuthorizationError]),
+});
+
+const WsSecretsSetRpc = Rpc.make(WS_METHODS.secretsSet, {
+  payload: AgentSecretSetInput,
+  error: Schema.Union([AgentSecretError, EnvironmentAuthorizationError]),
+});
+
+const WsSecretsDeleteRpc = Rpc.make(WS_METHODS.secretsDelete, {
+  payload: AgentSecretDeleteInput,
+  error: Schema.Union([AgentSecretError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2158,6 +2192,7 @@ export const WsBaseRpcGroup = RpcGroup.make(
   WsProjectsMutateRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
+  WsFilesystemGetMetadataRpc,
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
   WsAssetsCreateUrlRpc,
@@ -2270,9 +2305,20 @@ export const WsSkillUpdateRpcGroup = RpcGroup.make(
   WsServerUpdateSkillRpc,
 ).middleware(RpcScopeAuthorization);
 
+/**
+ * Saved agent secrets are their own group so the server registers their handlers apart from the
+ * rest; one `toLayer` over every RPC is already near the compiler's instantiation limit.
+ */
+export const WsAgentSecretRpcGroup = RpcGroup.make(
+  WsSecretsListRpc,
+  WsSecretsSetRpc,
+  WsSecretsDeleteRpc,
+).middleware(RpcScopeAuthorization);
+
 export const WsRpcGroup = WsBaseRpcGroup.merge(
   WsInstructionRpcGroup,
   WsSkillCreateRpcGroup,
   WsSkillTidyRpcGroup,
   WsSkillUpdateRpcGroup,
+  WsAgentSecretRpcGroup,
 );

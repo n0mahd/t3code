@@ -100,6 +100,7 @@ import {
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
   WS_METHODS,
+  WsAgentSecretRpcGroup,
   WsBaseRpcGroup,
   WsInstructionRpcGroup,
   WsSkillTidyRpcGroup,
@@ -128,6 +129,7 @@ import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
+import * as AgentSecrets from "./secrets/AgentSecrets.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
 import {
   archivedShellStreamItemFromThreadShell,
@@ -559,6 +561,7 @@ const ServerWsInstructionRpcGroup = WsInstructionRpcGroup.middleware(RpcInstrume
 const ServerWsSkillCreateRpcGroup = WsSkillCreateRpcGroup.middleware(RpcInstrumentation);
 const ServerWsSkillTidyRpcGroup = WsSkillTidyRpcGroup.middleware(RpcInstrumentation);
 const ServerWsSkillUpdateRpcGroup = WsSkillUpdateRpcGroup.middleware(RpcInstrumentation);
+const ServerWsAgentSecretRpcGroup = WsAgentSecretRpcGroup.middleware(RpcInstrumentation);
 // When a resuming client's cursor is more than this many events behind the
 // current head, skip the per-event catch-up replay and send a fresh shell
 // snapshot instead. Replaying each intervening event costs a shell refetch;
@@ -2710,6 +2713,7 @@ const layerWsRpc = (
             ),
           ),
         [WS_METHODS.shellOpenInEditor]: (input) => externalLauncher.launchEditor(input),
+        [WS_METHODS.filesystemGetMetadata]: (input) => workspaceFileSystem.getMetadata(input),
         [WS_METHODS.filesystemBrowse]: (input) =>
           workspaceEntries.browse(input).pipe(
             Effect.mapError(
@@ -3203,6 +3207,17 @@ const layerWsSkillUpdateRpc = ServerWsSkillUpdateRpcGroup.toLayer(
   }),
 );
 
+const layerWsAgentSecretRpc = ServerWsAgentSecretRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const agentSecrets = yield* AgentSecrets.AgentSecrets;
+    return ServerWsAgentSecretRpcGroup.of({
+      [WS_METHODS.secretsList]: () => agentSecrets.list,
+      [WS_METHODS.secretsSet]: (input) => agentSecrets.set(input),
+      [WS_METHODS.secretsDelete]: (input) => agentSecrets.remove(input.name),
+    });
+  }),
+);
+
 // A defect in a handler's effect fails only its own request. RpcServer's default
 // sends a socket-level Defect frame instead, and the client ends every pending
 // request on the socket with it. DefectReporter logs these defects.
@@ -3276,6 +3291,7 @@ export const layer = Layer.unwrap(
               Layer.merge(layerWsSkillCreateRpc),
               Layer.merge(layerWsSkillTidyRpc),
               Layer.merge(layerWsSkillUpdateRpc),
+              Layer.merge(layerWsAgentSecretRpc),
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees
               // their defects, not the rest of the server's.

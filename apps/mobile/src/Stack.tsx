@@ -107,6 +107,7 @@ import { SettingsSkillUseInRouteScreen } from "./features/settings/skills/Settin
 import { SkillsSettingsProvider } from "./features/settings/skills/skills-settings";
 import { SettingsKeyboardRouteScreen } from "./features/settings/SettingsKeyboardRouteScreen";
 import { SettingsLegalRouteScreen } from "./features/settings/SettingsLegalRouteScreen";
+import { SettingsMicrophoneRouteScreen } from "./features/settings/SettingsMicrophoneRouteScreen";
 import {
   SettingsOpenSourceLicenseRouteScreen,
   SettingsOpenSourceLicensesRouteScreen,
@@ -332,6 +333,13 @@ const SettingsContentStack = createV5SheetStackNavigator({
       linking: "keyboard",
       options: {
         title: "Keyboard",
+      },
+    }),
+    SettingsMicrophone: createNativeStackScreen({
+      screen: SettingsMicrophoneRouteScreen,
+      linking: "microphone",
+      options: {
+        title: "Microphone",
       },
     }),
     SettingsFollowUp: createNativeStackScreen({

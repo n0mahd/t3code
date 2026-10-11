@@ -17,6 +17,7 @@ import {
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
   WS_METHODS,
+  WsAgentSecretRpcGroup,
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
@@ -491,5 +492,40 @@ it.effect("denies manual cleanup before the handler without settings permission"
       requiredPermission: AuthSettingsWriteScope,
     });
     expect(handled).toBe(false);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("lets a reader list secret names, and only a settings grant save or delete one", () =>
+  Effect.gen(function* () {
+    const handled: string[] = [];
+    const handlers = WsAgentSecretRpcGroup.toLayer({
+      [WS_METHODS.secretsList]: () =>
+        Effect.sync(() => {
+          handled.push("list");
+          return { secrets: [] };
+        }),
+      [WS_METHODS.secretsSet]: () => Effect.sync(() => void handled.push("set")),
+      [WS_METHODS.secretsDelete]: () => Effect.sync(() => void handled.push("delete")),
+    });
+    const clientWith = (scopes: Parameters<typeof RpcAuthorization.layer>[0]) =>
+      RpcTest.makeClient(WsAgentSecretRpcGroup).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer(scopes))),
+      );
+
+    const reader = yield* clientWith([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);
+    yield* reader[WS_METHODS.secretsList]({});
+    const input = { name: "API_KEY", value: "value", mode: "create" } as const;
+    expect(yield* reader[WS_METHODS.secretsSet](input).pipe(Effect.flip)).toMatchObject({
+      requiredPermission: AuthSettingsWriteScope,
+    });
+    expect(
+      yield* reader[WS_METHODS.secretsDelete]({ name: "API_KEY" }).pipe(Effect.flip),
+    ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+    expect(handled).toEqual(["list"]);
+
+    const writer = yield* clientWith([AuthSettingsWriteScope]);
+    yield* writer[WS_METHODS.secretsSet](input);
+    yield* writer[WS_METHODS.secretsDelete]({ name: "API_KEY" });
+    expect(handled).toEqual(["list", "set", "delete"]);
   }).pipe(Effect.scoped),
 );

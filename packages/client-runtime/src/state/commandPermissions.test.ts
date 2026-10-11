@@ -86,6 +86,38 @@ describe("command permissions", () => {
     ),
   );
 
+  it.effect("requires the settings grant to save or delete a secret, but not to list them", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const save = createCommandPermissions(runtime, WS_METHODS.secretsSet);
+        const remove = createCommandPermissions(runtime, WS_METHODS.secretsDelete);
+        expect(createCommandPermissions(runtime, WS_METHODS.secretsList).requiredScopes()).toEqual(
+          [],
+        );
+        registry.set(sessions(env), AsyncResult.success(grant(true)));
+        expect(registry.get(save.permissionAtom(env))).toBe(false);
+        expect((yield* save.authorize(registry, env).pipe(Effect.flip)).requiredPermission).toBe(
+          AuthSettingsWriteScope,
+        );
+        expect((yield* remove.authorize(registry, env).pipe(Effect.flip)).requiredPermission).toBe(
+          AuthSettingsWriteScope,
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthSettingsWriteScope],
+            permissions: [AuthSettingsWriteScope],
+          }),
+        );
+        expect(registry.get(save.permissionAtom(env))).toBe(true);
+        yield* save.authorize(registry, env);
+        yield* remove.authorize(registry, env);
+      }),
+    ),
+  );
+
   it.effect("uses the target grant for both availability and execution", () =>
     Effect.scoped(
       Effect.gen(function* () {

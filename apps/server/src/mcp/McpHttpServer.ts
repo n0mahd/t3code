@@ -28,6 +28,8 @@ import { PreviewControlsToolkit } from "./toolkits/previewControls/tools.ts";
 import * as PreviewControlsHandlers from "./toolkits/previewControls/handlers.ts";
 import { EnvironmentToolkit } from "./toolkits/environment/tools.ts";
 import * as EnvironmentHandlers from "./toolkits/environment/handlers.ts";
+import * as SecretsHandlers from "./toolkits/secrets/handlers.ts";
+import { SecretsToolkit } from "./toolkits/secrets/tools.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
 import * as ProjectHandlers from "./toolkits/project/handlers.ts";
 import { InstructionsToolkit } from "./toolkits/instructions/tools.ts";
@@ -844,6 +846,8 @@ export const layerInstructionsToolkit = toolkitRegistration(
   InstructionsHandlers.layer,
 );
 
+export const layerSecretsToolkit = toolkitRegistration(SecretsToolkit, SecretsHandlers.layer);
+
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
   AttachmentHandlers.layer,
@@ -886,6 +890,7 @@ export const layer = Layer.mergeAll(
   layerSkillsToolkit,
   layerInstructionsToolkit,
   layerEnvironmentToolkit,
+  layerSecretsToolkit,
   layerPreviewControlsRegistration,
   layerWorktreeToolkitRegistration,
   layerPullRequestsToolkit,

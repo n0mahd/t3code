@@ -16,6 +16,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -91,13 +92,14 @@ export interface OpenCodeUsageReadResult {
 }
 
 const isNotFound = (cause: PlatformError.PlatformError) => cause.reason._tag === "NotFound";
+const MESSAGE_PAGE_SIZE = 64;
 
-/** A regular file or directory, never a symlink to one. */
-const entryType = Effect.fn("entryType")(function* (path: string) {
+/** Stat of a regular file or directory; a symlink reports as itself and is never followed. */
+const entryInfo = Effect.fn("entryInfo")(function* (path: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const link = yield* Effect.exit(fileSystem.readLink(path));
-  if (Exit.isSuccess(link)) return "SymbolicLink" as const;
-  return (yield* fileSystem.stat(path)).type;
+  if (Exit.isSuccess(link)) return { type: "SymbolicLink" as const, mtime: Option.none<Date>() };
+  return yield* fileSystem.stat(path);
 });
 
 /** Reads current SQLite and pre-migration JSON stores without modifying either. */
@@ -126,8 +128,8 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
         names.filter((name) => /^opencode(?:-[a-zA-Z0-9_-]+)?\.db$/.test(name)),
         // One database removed between listing and stat must not hide the rest.
         (name) =>
-          entryType(path.join(root, name)).pipe(
-            Effect.map((type) => type === "File"),
+          entryInfo(path.join(root, name)).pipe(
+            Effect.map((info) => info.type === "File"),
             Effect.catchTags({
               PlatformError: (cause) =>
                 isNotFound(cause) ? Effect.succeed(false) : Effect.fail(cause),
@@ -172,26 +174,47 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
         const timestamp = columns.has("time_created") ? "time_created" : "NULL";
         const predicates = table === "session_message" ? ["type = 'assistant'"] : [];
         if (timestamp !== "NULL") predicates.push("time_created >= ?");
-        const where = predicates.length > 0 ? ` WHERE ${predicates.join(" AND ")}` : "";
-        const rows = yield* sql.unsafe<{
-          readonly id: unknown;
-          readonly session_id: unknown;
-          readonly data: unknown;
-          readonly created: unknown;
-        }>(
-          `SELECT id, session_id, data, ${timestamp} AS created FROM ${table}${where}`,
-          timestamp === "NULL" ? [] : [sinceMs],
-        );
-        for (const [index, row] of rows.entries()) {
-          append(
-            file.records,
-            parseOpenCodeMessage(text(row.data), {
-              id: text(row.id),
-              sessionId: text(row.session_id),
-              ...(typeof row.created === "number" ? { timestampMs: row.created } : {}),
-            }),
+        const lastRowId = (yield* sql.unsafe<{ readonly last_row_id: number | null }>(
+          `SELECT MAX(rowid) AS last_row_id FROM ${table}`,
+        ))[0]?.last_row_id;
+        if (lastRowId === null || lastRowId === undefined) continue;
+        let afterRowId: number | undefined;
+        // SqlClient materializes each result with StatementSync.all(). Keep
+        // message bodies in small pages, and exclude rows appended mid-scan.
+        while (true) {
+          const pagePredicates = [
+            ...predicates,
+            "rowid <= ?",
+            ...(afterRowId === undefined ? [] : ["rowid > ?"]),
+          ];
+          const rows = yield* sql.unsafe<{
+            readonly row_id: number;
+            readonly id: unknown;
+            readonly session_id: unknown;
+            readonly data: unknown;
+            readonly created: unknown;
+          }>(
+            `SELECT rowid AS row_id, id, session_id, data, ${timestamp} AS created
+             FROM ${table} WHERE ${pagePredicates.join(" AND ")} ORDER BY rowid LIMIT ${MESSAGE_PAGE_SIZE}`,
+            [
+              ...(timestamp === "NULL" ? [] : [sinceMs]),
+              lastRowId,
+              ...(afterRowId === undefined ? [] : [afterRowId]),
+            ],
           );
-          if (index % 256 === 255) yield* Effect.yieldNow;
+          for (const row of rows) {
+            append(
+              file.records,
+              parseOpenCodeMessage(text(row.data), {
+                id: text(row.id),
+                sessionId: text(row.session_id),
+                ...(typeof row.created === "number" ? { timestampMs: row.created } : {}),
+              }),
+            );
+          }
+          if (rows.length < MESSAGE_PAGE_SIZE) break;
+          afterRowId = rows[rows.length - 1]!.row_id;
+          yield* Effect.yieldNow;
         }
       }
     }).pipe(
@@ -213,18 +236,21 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
     yield* Effect.gen(function* () {
       for (const name of yield* fileSystem.readDirectory(directory)) {
         const entry = path.join(directory, name);
-        const type = yield* entryType(entry).pipe(
+        const info = yield* entryInfo(entry).pipe(
           Effect.catchTags({
             PlatformError: (cause) =>
               isNotFound(cause) ? Effect.succeed(null) : Effect.fail(cause),
           }),
         );
-        if (type === "Directory") {
+        if (info?.type === "Directory") {
           directories.push(entry);
-        } else if (type === "File" && name.endsWith(".json")) {
+        } else if (info?.type === "File" && name.endsWith(".json")) {
           found = true;
           const id = name.slice(0, -5);
           if (seen.has(`opencode:${id}`)) continue;
+          // A message cannot be created after its file was last written, so a
+          // file untouched since the window opened holds nothing in range.
+          if (Option.exists(info.mtime, (mtime) => mtime.getTime() < sinceMs)) continue;
           const file = { path: entry, records: [] as UsageRecord[] };
           files.push(file);
           yield* fileSystem.readFileString(entry).pipe(

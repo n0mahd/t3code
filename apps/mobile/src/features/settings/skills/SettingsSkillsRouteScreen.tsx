@@ -130,7 +130,11 @@ function SkillsList() {
   const [query, setQuery] = useState("");
   const [onlyAttention, setOnlyAttention] = useState(false);
   const { skills: data, instructions, skillsCtx: ctx, instructionsCtx } = settings;
-  const skills = data?.skills ?? null;
+  // Skills that come with an agent are listed apart on web and desktop, and only there.
+  const skills = useMemo(
+    () => data?.skills.filter((skill) => skill.provided === undefined) ?? null,
+    [data],
+  );
   const needle = query.trim().toLowerCase();
   const locked = settings.busy || !settings.canChangeSkills;
   const instructionsLocked = settings.busy || !settings.canChangeInstructions;

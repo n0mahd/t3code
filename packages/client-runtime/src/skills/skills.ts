@@ -714,6 +714,10 @@ const problemText = (
       return `“${name}” is in use by another program, so it wasn't moved.`;
     case "setElsewhere":
       return `${who ?? "An agent"}'s settings decide “${name}”, so it stays as it is.`;
+    case "provided":
+      return who === undefined
+        ? `“${name}” comes with an agent, so it stays as it is.`
+        : `${who} can't use “${name}”. It comes with another agent.`;
     case "failed":
       return who === undefined
         ? `Couldn't change “${name}”.`

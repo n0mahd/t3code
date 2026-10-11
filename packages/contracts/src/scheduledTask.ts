@@ -197,7 +197,7 @@ export const ScheduledTask = Schema.Struct({
   runInBackground: Schema.optional(Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
-  /** Thread of the most recent run of a background task; null or absent until one has launched. */
+  /** Newest thread a background run of this task launched; null or absent until one exists. */
   lastRunThreadId: Schema.optional(Schema.NullOr(ThreadId)),
 });
 export type ScheduledTask = typeof ScheduledTask.Type;

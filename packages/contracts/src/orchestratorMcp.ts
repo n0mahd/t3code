@@ -567,7 +567,7 @@ export const OrchestratorMcpScheduledTask = Schema.Struct({
   }),
   /** Present and true when runs are hidden from the sidebar. */
   runInBackground: Schema.optional(Schema.Boolean),
-  /** Thread of the most recent run of a background task, readable with t3_thread_read. */
+  /** Newest thread a background run of this task launched, readable with t3_thread_read. */
   lastRunThreadId: Schema.optional(ThreadId),
 });
 export type OrchestratorMcpScheduledTask = typeof OrchestratorMcpScheduledTask.Type;

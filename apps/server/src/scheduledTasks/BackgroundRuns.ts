@@ -15,16 +15,17 @@ import * as SqlClient from "effect/sql/SqlClient";
  * never run. The tables are prefixed so an upstream table is never shadowed.
  *
  * - `fork_scheduled_task_background`: one row per task that runs in the
- *   background, holding its most recent run's thread.
+ *   background. Installs that predate it reading runs from
+ *   `fork_background_threads` still carry an unused `last_run_thread_id`.
  * - `fork_background_threads`: one row per thread a background run launched.
- *   `ProjectionStore` reads it to flag thread shells.
+ *   `ProjectionStore` reads it to flag thread shells, and a task's newest run
+ *   is read from it by `scheduled_task_id`.
  */
 export const ensureBackgroundRunTables = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
     CREATE TABLE IF NOT EXISTS fork_scheduled_task_background (
-      task_id TEXT PRIMARY KEY,
-      last_run_thread_id TEXT
+      task_id TEXT PRIMARY KEY
     )
   `;
   yield* sql`
@@ -33,6 +34,10 @@ export const ensureBackgroundRunTables = Effect.gen(function* () {
       scheduled_task_id TEXT NOT NULL,
       created_at TEXT NOT NULL
     )
+  `;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS fork_background_threads_task_created_idx
+    ON fork_background_threads(scheduled_task_id, created_at)
   `;
 });
 
@@ -49,6 +54,7 @@ function runThreadId(taskId: ScheduledTaskId, runKey: string): ThreadId {
 }
 
 interface BackgroundTaskState {
+  readonly runInBackground: boolean;
   readonly lastRunThreadId: ThreadId | null;
 }
 
@@ -60,15 +66,41 @@ export const make = Effect.gen(function* () {
   const failure = (message: string, taskId: ScheduledTaskId) => (cause: unknown) =>
     new ScheduledTaskError({ message, taskId, cause });
 
-  /** Background state by task id; a task that does not run in the background is absent. */
+  /**
+   * Background state by task id. The last run is the newest thread a
+   * background run launched, read from the threads that exist rather than
+   * stored, so it survives turning the setting off and never points at a
+   * launch that created no thread.
+   */
   const stateByTaskId = () =>
-    sql<{ readonly task_id: string; readonly last_run_thread_id: string | null }>`
-      SELECT task_id, last_run_thread_id FROM fork_scheduled_task_background
+    sql<{
+      readonly task_id: string;
+      readonly run_in_background: number;
+      readonly last_run_thread_id: string | null;
+    }>`
+      SELECT
+        task.task_id,
+        EXISTS (
+          SELECT 1 FROM fork_scheduled_task_background background
+          WHERE background.task_id = task.task_id
+        ) AS run_in_background,
+        (
+          SELECT run.thread_id
+          FROM fork_background_threads run
+          INNER JOIN orchestration_v2_projection_threads thread
+            ON thread.thread_id = run.thread_id
+          WHERE run.scheduled_task_id = task.task_id
+            AND thread.deleted_at IS NULL
+          ORDER BY run.created_at DESC, run.thread_id DESC
+          LIMIT 1
+        ) AS last_run_thread_id
+      FROM scheduled_tasks task
     `.pipe(
       Effect.map((rows) => {
         const states = new Map<string, BackgroundTaskState>();
         for (const row of rows) {
           states.set(row.task_id, {
+            runInBackground: row.run_in_background === 1,
             lastRunThreadId:
               row.last_run_thread_id === null
                 ? null
@@ -93,7 +125,11 @@ export const make = Effect.gen(function* () {
       const state = states.get(task.id);
       return state === undefined
         ? task
-        : { ...task, runInBackground: true, lastRunThreadId: state.lastRunThreadId };
+        : {
+            ...task,
+            runInBackground: state.runInBackground,
+            lastRunThreadId: state.lastRunThreadId,
+          };
     });
   });
 
@@ -104,8 +140,8 @@ export const make = Effect.gen(function* () {
     (runInBackground
       ? // Conditional on the task existing, so a save racing a delete leaves no orphan row.
         sql`
-          INSERT INTO fork_scheduled_task_background (task_id, last_run_thread_id)
-          SELECT ${taskId}, NULL
+          INSERT INTO fork_scheduled_task_background (task_id)
+          SELECT ${taskId}
           WHERE EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${taskId})
           ON CONFLICT (task_id) DO NOTHING
         `
@@ -135,19 +171,6 @@ export const make = Effect.gen(function* () {
     );
   };
 
-  /** Only called for a thread that was created; a failed bookkeeping write must not fail the run. */
-  const recordLastRun = (taskId: ScheduledTaskId, threadId: ThreadId) =>
-    sql`
-      UPDATE fork_scheduled_task_background
-      SET last_run_thread_id = ${threadId}
-      WHERE task_id = ${taskId}
-    `.pipe(
-      Effect.asVoid,
-      Effect.catch((cause) =>
-        Effect.logWarning("Could not record background run thread", { taskId, cause }),
-      ),
-    );
-
   /**
    * Drops a deleted task's setting. Threads its runs launched stay flagged:
    * they remain searchable, and deleting a task must not flood the sidebar.
@@ -158,5 +181,5 @@ export const make = Effect.gen(function* () {
       Effect.mapError(failure("Could not clear the run-in-background setting.", taskId)),
     );
 
-  return { annotate, annotateOne, setRunInBackground, registerThread, recordLastRun, forgetTask };
+  return { annotate, annotateOne, setRunInBackground, registerThread, forgetTask };
 }).pipe(Effect.orDie);

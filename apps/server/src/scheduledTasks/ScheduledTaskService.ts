@@ -848,10 +848,6 @@ export const layer = Layer.effect(
                 }),
               );
 
-        if (backgroundThreadId !== undefined && result._tag === "Success") {
-          yield* backgroundRuns.recordLastRun(active.id, backgroundThreadId);
-        }
-
         const completedAt = yield* localNow;
         const runSucceeded = result._tag === "Success";
         const lastRunStatus = runSucceeded ? ("succeeded" as const) : ("failed" as const);

@@ -338,11 +338,37 @@ export function summarizeT3ToolCalls(
     case "skill-create":
       label = phrase("Created", "create", quantity(selected.length, "skill"));
       break;
+    case "skill-move":
+    case "skill-delete": {
+      // A call without `confirm: true` only says what it would do; it returns a plan.
+      const done = selected.filter((call) =>
+        call.output === undefined ? call.input?.confirm === true : !Array.isArray(call.output.plan),
+      );
+      const move = action === "skill-move";
+      label =
+        done.length === 0
+          ? phrase(
+              "Planned",
+              "plan",
+              quantity(selected.length, move ? "skill move" : "skill deletion"),
+            )
+          : move
+            ? phrase("Moved", "move", `skills ${quantity(done.length, "time")}`)
+            : phrase("Deleted", "delete", `skills ${quantity(done.length, "time")}`);
+      break;
+    }
     case "instruction-list":
       label = phrase("Listed", "list", `instruction files ${times}`);
       break;
     case "instruction-read":
       label = phrase("Read", "read", quantity(selected.length, "instruction file"));
+      break;
+    case "instruction-write":
+      label = phrase(
+        "Edited",
+        "edit",
+        quantity(countEntities(entityIds("id")), "instruction file"),
+      );
       break;
     case "instruction-enable":
       label = phrase("Enabled", "enable", `instruction files for agents ${times}`);

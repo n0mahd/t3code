@@ -85,8 +85,9 @@ update from its source any more.
 in an agent's own skill folder can be deleted. One that is only linked there, such as a skill from
 a synced folder, stays where it is.
 
-Agents running in T3 Code can list and create skills and turn them on or off for agents too; they
-can't move or delete them.
+Agents running in T3 Code can do the same: list and create skills, turn them on or off, choose
+where they are used and delete them. To move or delete skills, an agent first gets the plan,
+including what git can undo, and nothing changes until it confirms.
 
 ## Built in and plugins
 
@@ -127,8 +128,9 @@ also turns **Claude reads AGENTS.md** on, for every project.
 file from the project, so it also leaves the repo for everyone who clones it. **Copy to this
 project** adds your Global text to the end of the project's `AGENTS.md` and keeps Global as it is.
 
-Agents running in T3 Code can list these files and turn Global on or off for agents. They edit the
-files themselves, and the Claude choice stays yours.
+Agents running in T3 Code can list and read these files, edit them, create a missing project
+`AGENTS.md`, `CLAUDE.local.md` or Global `AGENTS.md`, and turn Global on or off for agents. An edit
+is refused when the file changed since the agent read it. The Claude choice stays yours.
 
 ## Needs attention
 

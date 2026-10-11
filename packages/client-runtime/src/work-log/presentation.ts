@@ -144,7 +144,14 @@ function resolveT3McpToolPresentation(
   data?: unknown,
 ) {
   if (!definition) return null;
-  const [action, running, completed, detail] = definition.labels;
+  const payload = asRecord(data);
+  const input =
+    asRecord(payload?.arguments) ?? asRecord(payload?.input) ?? asRecord(payload?.rawInput);
+  // A two-step tool called without `confirm: true` only planned; unknown arguments say nothing.
+  const [action, running, completed, detail] =
+    definition.planLabels !== undefined && input !== null && input.confirm !== true
+      ? definition.planLabels
+      : definition.labels;
   const verb =
     status === "inProgress"
       ? running
@@ -166,9 +173,6 @@ function resolveT3McpToolPresentation(
     definition.summaryAction === "unwatch-pr"
       ? definition.summaryAction
       : undefined;
-  const payload = asRecord(data);
-  const input =
-    asRecord(payload?.arguments) ?? asRecord(payload?.input) ?? asRecord(payload?.rawInput);
   const urlTarget = typeof input?.url === "string" ? parseChangeRequestUrl(input.url) : null;
   const number = urlTarget?.number ?? input?.number;
   const target =
@@ -632,6 +636,9 @@ function summaryActionPriority(action: ToolGroupAction | T3McpToolSummaryAction)
     case "skill-enable":
     case "skill-disable":
     case "skill-create":
+    case "skill-move":
+    case "skill-delete":
+    case "instruction-write":
     case "instruction-enable":
     case "instruction-disable":
     case "attachment-prepare":

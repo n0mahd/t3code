@@ -25,6 +25,7 @@ import * as InstructionCatalog from "../../../instructions/InstructionCatalog.ts
 import * as InstructionManager from "../../../instructions/InstructionManager.ts";
 import * as SkillCatalog from "../../../skills/SkillCatalog.ts";
 import * as SkillManager from "../../../skills/SkillManager.ts";
+import * as SkillTracking from "../../../skills/SkillTracking.ts";
 import * as VcsStatusBroadcaster from "../../../vcs/VcsStatusBroadcaster.ts";
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
@@ -61,6 +62,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(ThreadSearch.ThreadSearch)({}),
   Layer.mock(SkillCatalog.SkillCatalog)({}),
   Layer.mock(SkillManager.SkillManager)({}),
+  Layer.mock(SkillTracking.SkillTracking)({}),
   Layer.mock(InstructionCatalog.InstructionCatalog)({}),
   Layer.mock(InstructionManager.InstructionManager)({}),
 );

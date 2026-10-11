@@ -8,7 +8,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
-import { useId, useState, type ChangeEvent, type FormEvent } from "react";
+import { useId, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
 
 import { agentSecretEnvironment } from "../../state/agentSecrets";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -23,8 +23,9 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
+import { InputGroup, InputGroupAddon } from "../ui/input-group";
 import { Label } from "../ui/label";
+import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 
 export type SecretDialogRequest =
@@ -136,11 +137,12 @@ function SecretForm({
     });
   };
 
+  // A text area, so a pasted private key or certificate keeps its line breaks.
   const valueInputProps = {
     id: `${formId}-value`,
+    unstyled: true,
     font: "mono",
     autoFocus: isReplace,
-    type: "text",
     autoComplete: "off",
     autoCorrect: "off",
     autoCapitalize: "none",
@@ -150,7 +152,15 @@ function SecretForm({
     "data-lpignore": "true",
     placeholder: "Paste the secret",
     value,
-    onChange: (event: ChangeEvent<HTMLInputElement>) => setValue(event.target.value),
+    onChange: (event: ChangeEvent<HTMLTextAreaElement>) => setValue(event.target.value),
+    // Enter still saves; Shift+Enter starts a new line.
+    onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        event.currentTarget.form?.requestSubmit();
+      }
+    },
   } as const;
 
   return (
@@ -185,11 +195,11 @@ function SecretForm({
             <Label htmlFor={`${formId}-value`}>Value</Label>
             <InputGroup>
               {revealed ? (
-                <InputGroupInput {...valueInputProps} />
+                <Textarea {...valueInputProps} />
               ) : (
                 // Masked text rather than a password field: browsers offer to
                 // save any submitted password, and this is not a login.
-                <InputGroupInput {...valueInputProps} className="[-webkit-text-security:disc]" />
+                <Textarea {...valueInputProps} className="[-webkit-text-security:disc]" />
               )}
               <InputGroupAddon align="inline-end">
                 <Button

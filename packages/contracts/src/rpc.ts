@@ -345,6 +345,12 @@ import {
 } from "./scheduledTask.ts";
 import { SecretRequestAnswerInput, SecretRequestError } from "./secretRequest.ts";
 import {
+  AgentSecretDeleteInput,
+  AgentSecretError,
+  AgentSecretListResult,
+  AgentSecretSetInput,
+} from "./agentSecret.ts";
+import {
   ProjectCloneActionInput,
   ProjectCloneActionResult,
   ProjectCloneListEvent,
@@ -515,6 +521,9 @@ export const WS_METHODS = {
   scheduledTasksRunNow: "scheduledTasks.runNow",
   scheduledTasksRotateWebhookToken: "scheduledTasks.rotateWebhookToken",
   secretsAnswerRequest: "secrets.answerRequest",
+  secretsList: "secrets.list",
+  secretsSet: "secrets.set",
+  secretsDelete: "secrets.delete",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
 
@@ -1795,6 +1804,22 @@ const WsSecretsAnswerRequestRpc = Rpc.make(WS_METHODS.secretsAnswerRequest, {
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsSecretsListRpc = Rpc.make(WS_METHODS.secretsList, {
+  payload: Schema.Struct({}),
+  success: AgentSecretListResult,
+  error: Schema.Union([AgentSecretError, EnvironmentAuthorizationError]),
+});
+
+const WsSecretsSetRpc = Rpc.make(WS_METHODS.secretsSet, {
+  payload: AgentSecretSetInput,
+  error: Schema.Union([AgentSecretError, EnvironmentAuthorizationError]),
+});
+
+const WsSecretsDeleteRpc = Rpc.make(WS_METHODS.secretsDelete, {
+  payload: AgentSecretDeleteInput,
+  error: Schema.Union([AgentSecretError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -1844,7 +1869,7 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
-export const WsRpcGroup = RpcGroup.make(
+export const WsBaseRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
   WsServerRefreshProvidersRpc,
@@ -2035,3 +2060,15 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeShellRpc,
   WsOrchestrationV2SubscribeThreadRpc,
 ).middleware(RpcScopeAuthorization);
+
+/**
+ * Saved agent secrets are their own group so the server registers their handlers apart from the
+ * rest; one `toLayer` over every RPC is already near the compiler's instantiation limit.
+ */
+export const WsAgentSecretRpcGroup = RpcGroup.make(
+  WsSecretsListRpc,
+  WsSecretsSetRpc,
+  WsSecretsDeleteRpc,
+).middleware(RpcScopeAuthorization);
+
+export const WsRpcGroup = WsBaseRpcGroup.merge(WsAgentSecretRpcGroup);

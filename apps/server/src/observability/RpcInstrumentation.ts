@@ -49,6 +49,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.serverShareInstruction]: "server",
   [WS_METHODS.serverAdoptInstruction]: "server",
   [WS_METHODS.serverDeleteInstruction]: "server",
+  [WS_METHODS.serverMoveInstruction]: "server",
   [WS_METHODS.serverInstructionsTracked]: "server",
   [WS_METHODS.serverUpdateProvider]: "server",
   [WS_METHODS.providerAuthStart]: "provider",

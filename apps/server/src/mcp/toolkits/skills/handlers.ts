@@ -1,6 +1,7 @@
 import {
   OrchestratorMcpFailure,
   type ProjectId,
+  type SkillCreateError,
   type SkillRef,
   type SkillRequestError,
 } from "@t3tools/contracts";
@@ -13,7 +14,7 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import { readCaller, resolveProjectId, unavailable, type Caller } from "../../threadAccess.ts";
 import { SkillsToolkit } from "./tools.ts";
 
-const skillFailure = (error: SkillRequestError) =>
+const skillFailure = (error: SkillRequestError | SkillCreateError) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message: error.message });
 
 /**
@@ -82,6 +83,13 @@ export const layer = McpToolAccess.toLayer(SkillsToolkit, {
       const cwd = yield* changeFolder(yield* check, projectId, input.skills);
       const manager = yield* SkillManager.SkillManager;
       return yield* manager.disable({ cwd, ...input }).pipe(Effect.mapError(skillFailure));
+    }),
+  ),
+  t3_skill_create: McpToolAccess.writesEnvironment(({ projectId, ...input }, check) =>
+    Effect.gen(function* () {
+      const cwd = yield* projectFolder(yield* check, projectId, input.scope === "project");
+      const manager = yield* SkillManager.SkillManager;
+      return yield* manager.create({ cwd, ...input }).pipe(Effect.mapError(skillFailure));
     }),
   ),
 });

@@ -25,6 +25,15 @@ Each instance's config folder follows its settings: a Claude instance's config d
 agents reads isn't listed. If a folder exists but can't be read, the page says so above the list
 instead of showing it as empty.
 
+## Creating a skill
+
+**New skill** asks for a name, a one-line description, and whether the skill belongs to the project
+picked at the top of Settings or is Global. Names use lowercase letters, digits and single hyphens,
+up to 64 characters, as every agent requires. T3 Code writes the skill's `SKILL.md` in the
+project's `.agents/skills` or in `~/.agents/skills`, turns it on for every agent, and opens it so
+you can write its instructions. A name that is already taken in any of the agents' skill folders
+there is refused.
+
 ## Turning skills on or off
 
 A skill's switch turns it on or off for every agent. Open the skill to switch a single agent. The
@@ -76,8 +85,8 @@ update from its source any more.
 in an agent's own skill folder can be deleted. One that is only linked there, such as a skill from
 a synced folder, stays where it is.
 
-Agents running in T3 Code can list skills and turn them on or off for agents too; they can't
-move or delete them.
+Agents running in T3 Code can list and create skills and turn them on or off for agents too; they
+can't move or delete them.
 
 ## Built in and plugins
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
-import { EnvironmentId, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  SkillCreateError,
+  SkillRequestError,
+} from "@t3tools/contracts";
 import type {
   ServerProvider,
   SkillAgentAccess,
@@ -14,6 +20,8 @@ import {
   canSwitch,
   checkState,
   compareSkillFiles,
+  createFailure,
+  describeCreated,
   describeResult,
   groupAvailability,
   groupBySource,
@@ -38,6 +46,7 @@ import {
   sendInBatches,
   skillBody,
   skillContext,
+  skillNameHint,
   skillsEnvironment,
   skillsToCheckWithGit,
   startingPlacement,
@@ -1365,5 +1374,44 @@ describe("skills that come with an agent", () => {
         ctx,
       ),
     ).toBe("“imagegen” comes with an agent, so it stays as it is.");
+  });
+});
+
+describe("a new skill", () => {
+  it.each([
+    ["", null],
+    ["review-code", null],
+    ["Review", "Use lowercase letters, digits and hyphens."],
+    ["review code", "Use lowercase letters, digits and hyphens."],
+    ["review-", "Use single hyphens, and only between words."],
+    ["review--code", "Use single hyphens, and only between words."],
+    ["x".repeat(65), "Use at most 64 characters."],
+  ])("says what is wrong with the name %j", (name, hint) => {
+    expect(skillNameHint(name)).toBe(hint);
+  });
+
+  it("puts a taken name next to the name, and anything else under the form", () => {
+    expect(createFailure(new SkillCreateError({ reason: "nameTaken" }))).toEqual({
+      text: "A skill with this name already exists there.",
+      name: true,
+    });
+    expect(createFailure(new SkillRequestError({ reason: "projectNotRegistered" }))).toEqual({
+      text: "This project isn't in this environment any more.",
+      name: false,
+    });
+    expect(createFailure(new SkillCreateError({ reason: "failed" })).name).toBe(false);
+    expect(createFailure(new Error("socket closed")).text).toBe("Couldn't create the skill.");
+  });
+
+  it("says nothing when every agent got it, and names the ones that didn't", () => {
+    const skill = { scope: "project", name: "ship-it", home: ".agents/skills/ship-it" } as const;
+    const ctx = { installed: ALL };
+    expect(describeCreated({ skill, blocked: [] }, ctx)).toBeNull();
+    expect(
+      describeCreated(
+        { skill, blocked: [{ instanceId: claude.instanceId, reason: "shadowed" }] },
+        ctx,
+      ),
+    ).toBe("Created “ship-it”. Claude loads another “ship-it” first.");
   });
 });

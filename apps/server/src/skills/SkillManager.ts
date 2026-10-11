@@ -13,6 +13,8 @@
  * (`own`), never a synced library behind a link (placing a synced skill into some projects links
  * to it instead; see `SkillPlacement`). A skill that comes with an agent (`provided`) is never
  * linked, placed or deleted: only that agent's own setting for it is written, where it has one.
+ * Creating a skill makes a new folder in the shared one, and only under a name no folder of that
+ * scope has yet (see `SkillCreate`).
  *
  * Every write starts from what the folders hold now, not from what a client last saw: a skill
  * whose home is not where the client said is refused, and each link is checked again right
@@ -22,9 +24,12 @@
  * @module SkillManager
  */
 import {
+  SkillCreateError,
   SkillRequestError,
   type ProviderInstanceId,
   type SkillBatchResult,
+  type SkillCreateInput,
+  type SkillCreateResult,
   type SkillDeleteInput,
   type SkillDisableInput,
   type SkillEnableInput,
@@ -45,7 +50,10 @@ import * as Path from "effect/Path";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import type { SkillSettingsWriter } from "@t3tools/provider-core/server/driver";
-import { ownProjectFolderFor } from "@t3tools/provider-core/server/AgentSkillFolders";
+import {
+  STANDARD_SKILL_FOLDER,
+  ownProjectFolderFor,
+} from "@t3tools/provider-core/server/AgentSkillFolders";
 
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -59,6 +67,7 @@ import {
   readCodexSkillRules,
 } from "./CodexSkillSettings.ts";
 import * as SkillCatalog from "./SkillCatalog.ts";
+import { writeNewSkill } from "./SkillCreate.ts";
 import { createLink, removeLink, type RemoveLinkResult } from "./SkillLinks.ts";
 import { deleteFolder } from "./SkillMove.ts";
 import { makeSkillPlacement, projectsOfLibrarySkill, type LibrarySkill } from "./SkillPlacement.ts";
@@ -272,6 +281,14 @@ export class SkillManager extends Context.Service<
     readonly delete: (
       input: SkillDeleteInput,
     ) => Effect.Effect<SkillBatchResult, SkillRequestError>;
+    /**
+     * Make a skill in the scope's shared folder and turn it on for every enabled agent, which
+     * links it for the agents that don't read that folder. Refused when anything in a folder the
+     * list reads for that scope has the name already.
+     */
+    readonly create: (
+      input: SkillCreateInput,
+    ) => Effect.Effect<SkillCreateResult, SkillCreateError | SkillRequestError>;
   }
 >()("t3/skills/SkillManager") {}
 
@@ -789,6 +806,93 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  /** Anything at all under that name, a dangling link included, is in the way of a new skill. */
+  const occupied = (entry: string) =>
+    fileSystem.exists(entry).pipe(
+      Effect.flatMap((exists) =>
+        exists
+          ? Effect.succeed(true)
+          : fileSystem.readLink(entry).pipe(
+              Effect.as(true),
+              Effect.catchTags({
+                PlatformError: (error) =>
+                  error.reason._tag === "NotFound" ? Effect.succeed(false) : Effect.fail(error),
+              }),
+            ),
+      ),
+    );
+
+  const createOne = Effect.fnUntraced(function* (
+    input: SkillCreateInput,
+    writers: SettingsWriters,
+  ) {
+    const { cwd, scope, name } = input;
+    if (scope === "project" && cwd === undefined) {
+      return yield* new SkillRequestError({ reason: "projectNotRegistered" });
+    }
+    const failed = () => new SkillCreateError({ reason: "failed" });
+    for (const folder of yield* catalog.folders({ cwd, scope })) {
+      if (yield* occupied(path.join(folder, name)).pipe(Effect.mapError(failed))) {
+        return yield* new SkillCreateError({ reason: "nameTaken" });
+      }
+    }
+    const folder = path.join(
+      scope === "project" && cwd !== undefined ? cwd : homeDirectory,
+      STANDARD_SKILL_FOLDER,
+    );
+    const written = yield* writeNewSkill({ folder, name, description: input.description }).pipe(
+      Effect.provideContext(filesystemContext),
+      Effect.tapError((error) => Effect.logWarning("skill create", { error })),
+      Effect.mapError(failed),
+    );
+    if (written === "taken") return yield* new SkillCreateError({ reason: "nameTaken" });
+
+    const home = yield* fileSystem
+      .realPath(path.join(folder, name))
+      .pipe(Effect.orElseSucceed(() => path.join(folder, name)));
+    const find = (skills: ReadonlyArray<SkillCatalog.ResolvedSkill>) =>
+      skills.find((skill) => skill.scope === scope && skill.home === home);
+    const created = find(yield* catalog.resolve({ cwd, skills: [{ scope, name }] }));
+    // The skill is written; with nothing to read it, no agent has to be given it.
+    if (created === undefined) {
+      return {
+        skill: {
+          scope,
+          name,
+          home:
+            scope === "project"
+              ? `${STANDARD_SKILL_FOLDER}/${name}`
+              : `~/${STANDARD_SKILL_FOLDER}/${name}`,
+        },
+        blocked: [],
+      } satisfies SkillCreateResult;
+    }
+    const projectRoot =
+      cwd === undefined
+        ? undefined
+        : yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
+    const change = yield* enableAgents(
+      created,
+      new Set(created.agents.map((agent) => agent.instanceId)),
+      projectRoot,
+      writers,
+    );
+    const now = change.wrote
+      ? (find(yield* catalog.resolve({ cwd, skills: [{ scope, name }] })) ?? created)
+      : created;
+    yield* refreshPickers(
+      cwd,
+      now.agents.filter((agent) => hasSkill(agent.state)).map((agent) => agent.instanceId),
+    );
+    return {
+      skill: { scope, name, home: created.displayHome },
+      blocked: change.blocked.filter(
+        (item, index, all) =>
+          all.findIndex((other) => other.instanceId === item.instanceId) === index,
+      ),
+    } satisfies SkillCreateResult;
+  });
+
   return SkillManager.of({
     enable: Effect.fn("SkillManager.enable")(function* (input) {
       // Codex, if it has to be asked, stays open for the whole request.
@@ -848,6 +952,11 @@ const make = Effect.gen(function* () {
         change: (skill, _agents, _projectRoot, all) => deleteOne(skill, all),
       });
     }),
+    create: Effect.fn("SkillManager.create")(function* (input) {
+      // Codex, if a setting has to be cleared for the new skill, stays open for the request.
+      const writers = makeWriters(yield* Scope.Scope);
+      return yield* writeLock.withPermits(1)(createOne(input, writers));
+    }, Effect.scoped),
   });
 });
 

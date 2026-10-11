@@ -1194,6 +1194,10 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:delete-skills",
       tag: WS_METHODS.serverDeleteSkills,
     }),
+    createSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:create-skill",
+      tag: WS_METHODS.serverCreateSkill,
+    }),
     skillsTracked: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:skills-tracked",
       tag: WS_METHODS.serverSkillsTracked,

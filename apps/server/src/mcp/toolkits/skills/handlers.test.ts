@@ -486,6 +486,30 @@ describe("skills MCP tools", () => {
       }),
     );
 
+    it.effect.skipIf(!symlinksSupported)(
+      "creates a skill in the calling thread's project and tells the agent a taken name",
+      () =>
+        Effect.gen(function* () {
+          const { fs, path, home, project } = yield* makeMachine;
+          yield* Effect.gen(function* () {
+            const args = { scope: "project", name: "ship-it", description: "Ship the release." };
+            const result = yield* call("t3_skill_create", args);
+
+            expect(result.structuredContent).toEqual({
+              skill: { scope: "project", name: "ship-it", home: ".agents/skills/ship-it" },
+              blocked: [],
+            });
+            expect(yield* fs.readLink(path.join(project, ".claude/skills/ship-it"))).toBe(
+              "../../.agents/skills/ship-it",
+            );
+            expect(declaredFailure(yield* call("t3_skill_create", args))).toMatchObject({
+              code: "invalid_request",
+              message: "A skill with this name already exists there.",
+            });
+          }).pipe(Effect.provide(layerFor(home, project)));
+        }),
+    );
+
     it.effect("rejects inputs the tools do not accept before touching any service", () =>
       Effect.gen(function* () {
         const { home, project } = yield* makeMachine;
@@ -497,6 +521,8 @@ describe("skills MCP tools", () => {
             ["t3_skill_enable", { skills: [skill], agents: ["not a slug"] }],
             // Only enabling takes "all".
             ["t3_skill_disable", { skills: [skill], agents: "all" }],
+            ["t3_skill_create", { scope: "global", name: "Ship It", description: "Ship." }],
+            ["t3_skill_create", { scope: "global", name: "ship-it", description: "two\nlines" }],
             [
               "t3_skill_enable",
               { skills: [{ scope: "everywhere", name: "beta", home: "x" }], agents: "all" },

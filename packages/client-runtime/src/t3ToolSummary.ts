@@ -335,6 +335,9 @@ export function summarizeT3ToolCalls(
     case "skill-disable":
       label = phrase("Disabled", "disable", `skills for agents ${times}`);
       break;
+    case "skill-create":
+      label = phrase("Created", "create", quantity(selected.length, "skill"));
+      break;
     case "instruction-list":
       label = phrase("Listed", "list", `instruction files ${times}`);
       break;

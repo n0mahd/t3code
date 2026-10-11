@@ -52,6 +52,7 @@ export type T3McpToolSummaryAction =
   | "skill-read"
   | "skill-enable"
   | "skill-disable"
+  | "skill-create"
   | "instruction-list"
   | "instruction-read"
   | "instruction-enable"
@@ -319,6 +320,7 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Disable", "Disabling", "Disabled", "skills for agents"],
     "skill-disable",
   ),
+  t3_skill_create: tool(["Create", "Creating", "Created", "a skill"], "skill-create"),
   t3_instructions_list: tool(
     ["List", "Listing", "Listed", "instruction files"],
     "instruction-list",

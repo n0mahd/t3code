@@ -103,6 +103,7 @@ import {
   WsBaseRpcGroup,
   WsInstructionRpcGroup,
   WsRpcGroup,
+  WsSkillCreateRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import {
@@ -552,6 +553,7 @@ const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
 // instantiation limit. `ServerWsRpcGroup` is only what the RPC server serves.
 const ServerWsBaseRpcGroup = WsBaseRpcGroup.middleware(RpcInstrumentation);
 const ServerWsInstructionRpcGroup = WsInstructionRpcGroup.middleware(RpcInstrumentation);
+const ServerWsSkillCreateRpcGroup = WsSkillCreateRpcGroup.middleware(RpcInstrumentation);
 // When a resuming client's cursor is more than this many events behind the
 // current head, skip the per-event catch-up replay and send a fresh shell
 // snapshot instead. Replaying each intervening event costs a shell refetch;
@@ -3164,6 +3166,15 @@ const layerWsInstructionRpc = ServerWsInstructionRpcGroup.toLayer(
   }),
 );
 
+const layerWsSkillCreateRpc = ServerWsSkillCreateRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const skillManager = yield* SkillManager.SkillManager;
+    return ServerWsSkillCreateRpcGroup.of({
+      [WS_METHODS.serverCreateSkill]: (input) => skillManager.create(input),
+    });
+  }),
+);
+
 // A defect in a handler's effect fails only its own request. RpcServer's default
 // sends a socket-level Defect frame instead, and the client ends every pending
 // request on the socket with it. DefectReporter logs these defects.
@@ -3234,6 +3245,7 @@ export const layer = Layer.unwrap(
               serverBrowser,
             ).pipe(
               Layer.merge(layerWsInstructionRpc),
+              Layer.merge(layerWsSkillCreateRpc),
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees
               // their defects, not the rest of the server's.

@@ -265,6 +265,71 @@ export type SkillOutcome = typeof SkillOutcome.Type;
 export const SkillBatchResult = Schema.Struct({ outcomes: Schema.Array(SkillOutcome) });
 export type SkillBatchResult = typeof SkillBatchResult.Type;
 
+/** The longest skill name agents accept. */
+export const SKILL_NAME_MAX_LENGTH = 64;
+
+/**
+ * What is wrong with a name for a new skill, by the rule the agents share
+ * (https://agentskills.io/specification): lowercase letters, digits and hyphens, at most 64
+ * characters, no hyphen at either end or two in a row. Undefined for a good name.
+ */
+export const skillNameProblem = (
+  name: string,
+): "empty" | "tooLong" | "characters" | "hyphens" | undefined => {
+  if (name.length === 0) return "empty";
+  if (name.length > SKILL_NAME_MAX_LENGTH) return "tooLong";
+  if (!/^[a-z0-9-]+$/.test(name)) return "characters";
+  if (name.startsWith("-") || name.endsWith("-") || name.includes("--")) return "hyphens";
+  return undefined;
+};
+
+/** A name `skillNameProblem` finds nothing wrong with. */
+export const SkillName = Schema.String.check(
+  Schema.isMaxLength(SKILL_NAME_MAX_LENGTH),
+  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+);
+
+/**
+ * Make a new skill in the shared folder of the project (`cwd`, which must be a registered project)
+ * or of the home folder, and turn it on for every enabled agent. Refused when anything an agent
+ * reads in that scope already has the name.
+ */
+export const SkillCreateInput = Schema.Struct({
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  scope: SkillScope,
+  name: SkillName,
+  /** One line; agents show it and decide from it when to use the skill. */
+  description: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(1024),
+    Schema.isPattern(/^[^\r\n]*$/),
+  ),
+});
+export type SkillCreateInput = typeof SkillCreateInput.Type;
+
+export const SkillCreateResult = Schema.Struct({
+  /** The new skill, as the list names it. */
+  skill: SkillRef,
+  /** Agents that couldn't be given the skill, with why. */
+  blocked: SkillOutcome.fields.blocked,
+});
+export type SkillCreateResult = typeof SkillCreateResult.Type;
+
+/** A skill that couldn't be made. */
+export class SkillCreateError extends Schema.TaggedError<SkillCreateError>()("SkillCreateError", {
+  reason: Schema.Literals([
+    /** Something an agent reads in that scope already has the name. */
+    "nameTaken",
+    /** The folder or its SKILL.md couldn't be written. */
+    "failed",
+  ]),
+}) {
+  override get message(): string {
+    return this.reason === "nameTaken"
+      ? "A skill with this name already exists there."
+      : "The skill couldn't be written.";
+  }
+}
+
 /** A whole request that couldn't be carried out, as opposed to a skill that was skipped. */
 export class SkillRequestError extends Schema.TaggedError<SkillRequestError>()(
   "SkillRequestError",

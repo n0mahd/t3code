@@ -57,6 +57,7 @@ import {
   type ProjectOption,
   type Skill,
   type SkillAgent,
+  type SkillPlan,
 } from "./SkillsSettings.logic";
 
 const agent = (instanceId: string, driver: string, displayName: string): SkillAgent => ({
@@ -1231,6 +1232,12 @@ describe("telling that a moved skill lost its source", () => {
       access: [],
       ...(source === undefined ? {} : { source }),
     }) satisfies SkillListResult["skills"][number];
+  /** The change a placement plan makes; an update is never one. */
+  const placement = (plan: SkillPlan | null) => {
+    const change = plan!.change;
+    if (change.kind === "update") throw new Error("a placement plan made an update");
+    return change;
+  };
   const dropped = (name: string) =>
     outcome({
       name,
@@ -1245,7 +1252,7 @@ describe("telling that a moved skill lost its source", () => {
     });
     const plan = planPlace(skills, { kind: "global" });
 
-    expect(describeResult(plan!.change, [dropped("write-a-prd")], ctx)).toBe(
+    expect(describeResult(placement(plan), [dropped("write-a-prd")], ctx)).toBe(
       "Made 1 skill Global. write-a-prd won't update from mattpocock/skills any more.",
     );
   });
@@ -1257,11 +1264,11 @@ describe("telling that a moved skill lost its source", () => {
     });
     const plan = planPlace(skills, { kind: "global" });
 
-    expect(describeResult(plan!.change, [dropped("a"), dropped("b")], ctx)).toBe(
+    expect(describeResult(placement(plan), [dropped("a"), dropped("b")], ctx)).toBe(
       "Made 2 skills Global. 2 skills won't update from their sources any more.",
     );
     expect(
-      describeResult(plan!.change, [outcome({ name: "a" }), outcome({ name: "b" })], ctx),
+      describeResult(placement(plan), [outcome({ name: "a" }), outcome({ name: "b" })], ctx),
     ).toBe("Made 2 skills Global.");
   });
 });

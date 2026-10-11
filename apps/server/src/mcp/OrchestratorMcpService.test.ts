@@ -200,7 +200,16 @@ describe("OrchestratorMcpService", () => {
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
         thread: { id: childThreadId },
-        runs: [{ id: RunId.make("run:mcp-restart-child"), ordinal: 1, status: "cancelled" }],
+        runs: [
+          {
+            id: RunId.make("run:mcp-restart-child"),
+            ordinal: 1,
+            status: "cancelled",
+            delegatedTaskId: taskId,
+          },
+          // An unrelated later run cannot supply this follow-up's result.
+          { id: RunId.make("run:mcp-restart-later"), ordinal: 2, status: "running" },
+        ],
         contextTransfers: [],
         messages: [],
         subagents: [],
@@ -1752,6 +1761,42 @@ describe("OrchestratorMcpService provider resolution", () => {
           })
           .pipe(Effect.flip);
         assert.equal(error.code, "runtime_mode_escalation_denied");
+        assert.equal(yield* Ref.get(upserted), 0);
+      }),
+    );
+
+    it.effect("shows a background task's last run and refuses to hide a bound task's runs", () =>
+      Effect.gen(function* () {
+        const upserted = yield* Ref.make(0);
+        const lastRunThreadId = ThreadId.make("thread:scheduled-last-run");
+        const background = task({
+          id: ScheduledTaskId.make("scheduled-task:background"),
+          schedule: { type: "interval", everyMs: 3_600_000 },
+          runInBackground: true,
+          lastRunThreadId,
+        });
+        const bound = task({ threadId: boundThreadId });
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              [background, bound],
+              liveThreadShell(boundThreadId, { runtimeMode: "approval-required" }),
+              upserted,
+            ),
+          ),
+        );
+        const listed = yield* mcp.listScheduledTasks(supervisedClient, { projectId });
+        assert.equal(listed.tasks[0]?.runInBackground, true);
+        assert.equal(listed.tasks[0]?.lastRunThreadId, lastRunThreadId);
+        assert.equal(listed.tasks[1]?.runInBackground, undefined);
+
+        const error = yield* mcp
+          .updateScheduledTask(supervisedClient, {
+            scheduledTaskId: bound.id,
+            runInBackground: true,
+          })
+          .pipe(Effect.flip);
+        assert.equal(error.code, "invalid_request");
         assert.equal(yield* Ref.get(upserted), 0);
       }),
     );

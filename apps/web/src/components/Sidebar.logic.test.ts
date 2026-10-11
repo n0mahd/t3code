@@ -22,6 +22,7 @@ import {
   getSidebarThreadIdsToPrewarm,
   hasUnseenCompletion,
   isContextMenuPointerDown,
+  isSidebarBackgroundThread,
   isSidebarSubagentThread,
   isSidebarThreadWorking,
   isTrailingDoubleClick,
@@ -458,6 +459,37 @@ describe("sidebar thread lineage helpers", () => {
 
     expect(isSidebarSubagentThread(subagent)).toBe(true);
     expect(isSidebarSubagentThread(makeThreadFixture())).toBe(false);
+  });
+
+  it("hides threads launched by background scheduled-task runs from the sidebar", () => {
+    const environmentId = EnvironmentId.make("environment-background");
+    const projectId = ProjectId.make("project-background");
+    const visible = makeThreadFixture({
+      id: ThreadId.make("thread-visible"),
+      environmentId,
+      projectId,
+    });
+    const asBackground = (thread: ReturnType<typeof makeThreadFixture>) => ({
+      ...thread,
+      source: { ...thread.source, background: true },
+    });
+    const background = asBackground(
+      makeThreadFixture({ id: ThreadId.make("thread-background"), environmentId, projectId }),
+    );
+    // A shell from a server that predates the flag decodes without the field.
+    const unflagged = makeThreadFixture({
+      id: ThreadId.make("thread-unflagged"),
+      environmentId,
+      projectId,
+    });
+
+    expect(isSidebarBackgroundThread(background)).toBe(true);
+    expect(isSidebarBackgroundThread(visible)).toBe(false);
+    expect(
+      filterSidebarV2VisibleThreads([visible, background, unflagged], null).map(
+        (thread) => thread.id,
+      ),
+    ).toEqual([visible.id, unflagged.id]);
   });
 
   it("resolves the parent thread for fork sidebar affordances", () => {

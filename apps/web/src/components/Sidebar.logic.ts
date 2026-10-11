@@ -567,16 +567,28 @@ export function isSidebarSubagentThread(thread: Pick<SidebarThreadSummary, "line
   return thread.lineage.relationshipToParent === "subagent";
 }
 
+/**
+ * Runs of a scheduled task set to run in the background stay out of the
+ * sidebar. They remain searchable and open from the task's row in Settings.
+ */
+export function isSidebarBackgroundThread(thread: {
+  readonly source?: { readonly background?: boolean | undefined } | undefined;
+}): boolean {
+  return thread.source?.background === true;
+}
+
 export function filterSidebarV2VisibleThreads<
   T extends Pick<SidebarThreadSummary, "archivedAt" | "lineage"> & {
     environmentId: string;
     projectId: string;
+    source?: { readonly background?: boolean | undefined } | undefined;
   },
 >(threads: readonly T[], scopedProjectKeys: ReadonlySet<string> | null): T[] {
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
       !isSidebarSubagentThread(thread) &&
+      !isSidebarBackgroundThread(thread) &&
       (scopedProjectKeys === null ||
         scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
   );

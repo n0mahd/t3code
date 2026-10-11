@@ -306,6 +306,7 @@ it.effect("needs the filesystem write grant to change skills, but not to list or
         WS_METHODS.serverDeleteSkills,
         WS_METHODS.serverCreateSkill,
         WS_METHODS.serverShareSkills,
+        WS_METHODS.serverUpdateSkill,
       ]) {
         const change = createCommandPermissions(runtime, method);
         // Being allowed to operate threads isn't enough to change files.
@@ -324,6 +325,8 @@ it.effect("needs the filesystem write grant to change skills, but not to list or
         WS_METHODS.serverListSkills,
         WS_METHODS.serverGetSkill,
         WS_METHODS.serverSkillsTracked,
+        WS_METHODS.serverCheckSkillUpdates,
+        WS_METHODS.serverGetSkillChanges,
       ]) {
         expect(createCommandPermissions(runtime, method).requiredScopes()).toEqual([]);
       }

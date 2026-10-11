@@ -45,6 +45,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverDeleteSkills]: AuthFilesystemWriteScope,
   [WS_METHODS.serverCreateSkill]: AuthFilesystemWriteScope,
   [WS_METHODS.serverShareSkills]: AuthFilesystemWriteScope,
+  // An update rewrites a skill's folder and the skills CLI's lock.
+  [WS_METHODS.serverUpdateSkill]: AuthFilesystemWriteScope,
 
   // Instruction changes write, link, rename and delete the files agents read.
   [WS_METHODS.serverWriteInstruction]: AuthFilesystemWriteScope,

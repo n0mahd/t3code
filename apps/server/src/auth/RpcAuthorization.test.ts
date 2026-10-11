@@ -61,17 +61,19 @@ describe("RPC authorization scopes", () => {
     }
   });
 
-  it("reads skill folders, SKILL.md text and git tracking under the filesystem read scope", () => {
+  it("reads skill folders, SKILL.md text, git tracking and skill sources under the filesystem read scope", () => {
     for (const method of [
       WS_METHODS.serverListSkills,
       WS_METHODS.serverGetSkill,
       WS_METHODS.serverSkillsTracked,
+      WS_METHODS.serverCheckSkillUpdates,
+      WS_METHODS.serverGetSkillChanges,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthFilesystemReadScope);
     }
   });
 
-  it("changes skills, which writes links, settings files and folders, under filesystem write", () => {
+  it("changes and updates skills, which writes links, settings files and folders, under filesystem write", () => {
     for (const method of [
       WS_METHODS.serverEnableSkills,
       WS_METHODS.serverDisableSkills,
@@ -79,6 +81,7 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.serverDeleteSkills,
       WS_METHODS.serverCreateSkill,
       WS_METHODS.serverShareSkills,
+      WS_METHODS.serverUpdateSkill,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthFilesystemWriteScope);
     }

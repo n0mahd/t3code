@@ -1206,6 +1206,18 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:server:skills-tracked",
       tag: WS_METHODS.serverSkillsTracked,
     }),
+    checkSkillUpdates: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:check-skill-updates",
+      tag: WS_METHODS.serverCheckSkillUpdates,
+    }),
+    getSkillChanges: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:get-skill-changes",
+      tag: WS_METHODS.serverGetSkillChanges,
+    }),
+    updateSkill: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:update-skill",
+      tag: WS_METHODS.serverUpdateSkill,
+    }),
     listInstructions: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:list-instructions",
       tag: WS_METHODS.serverListInstructions,

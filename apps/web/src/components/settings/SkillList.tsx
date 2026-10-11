@@ -1,3 +1,4 @@
+import type { SkillUpdateEntry } from "@t3tools/contracts";
 import { ChevronRightIcon, InfoIcon } from "lucide-react";
 import { memo, useId, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 
@@ -11,6 +12,7 @@ import { GitHubIcon } from "../Icons";
 import { SettingsGroup } from "./SettingsGroup";
 import { AgentSwitchChip } from "./SkillAgentSwitch";
 import { SkillAgents } from "./skillAgentIcon";
+import { hasUpdate, planUpdateAll, type SkillUpdates } from "./SkillUpdates.logic";
 import { UseInPopover, type PlaceOptions } from "./SkillUseIn";
 import {
   GROUP_PREVIEW,
@@ -40,6 +42,7 @@ const SkillRow = memo(function SkillRow({
   ctx,
   nested = false,
   places,
+  update,
   selecting,
   selected,
   showFix,
@@ -53,6 +56,8 @@ const SkillRow = memo(function SkillRow({
   places: PlaceOptions;
   /** The row sits under a group's row, so it is indented. */
   nested?: boolean;
+  /** How the skill compares with its source, once updates were checked. */
+  update: SkillUpdateEntry | undefined;
   /** Rows have a checkbox instead of a switch, and a click ticks them. */
   selecting: boolean;
   selected: boolean;
@@ -110,6 +115,11 @@ const SkillRow = memo(function SkillRow({
           </span>
         </button>
         <span className="ml-auto flex shrink-0 items-center gap-2">
+          {hasUpdate(update) && (
+            <Badge variant="info" size="sm">
+              Update
+            </Badge>
+          )}
           {derived.conflict && (
             <Badge variant="warning" size="sm" title={derived.conflict}>
               Conflict
@@ -197,6 +207,7 @@ const SkillGroupRows = memo(function SkillGroupRows({
   group,
   ctx,
   places,
+  updates,
   selecting,
   selected,
   showFix,
@@ -208,6 +219,7 @@ const SkillGroupRows = memo(function SkillGroupRows({
   group: SkillGroup;
   ctx: SkillsContext;
   places: PlaceOptions;
+  updates: SkillUpdates | null;
   selecting: boolean;
   /** The ids of the ticked rows, across the page. */
   selected: ReadonlySet<string>;
@@ -223,9 +235,11 @@ const SkillGroupRows = memo(function SkillGroupRows({
     () => ({
       on: listSwitchOn(group.skills, ctx),
       availability: groupAvailability(group.skills, ctx),
+      updateAll: planUpdateAll(group.skills, updates),
     }),
-    [group.skills, ctx],
+    [group.skills, ctx, updates],
   );
+  const updateCount = derived.updateAll?.affected ?? 0;
   const ids = useMemo(() => group.skills.map((skill) => skill.id), [group.skills]);
   const ticks = selecting ? checkState(ids, selected) : null;
   const shown = showAll ? group.skills : group.skills.slice(0, GROUP_PREVIEW);
@@ -265,6 +279,26 @@ const SkillGroupRows = memo(function SkillGroupRows({
               {group.skills.length}
             </Badge>
           </button>
+          {updateCount > 0 && (
+            <Badge variant="info" size="sm" aria-label={`${updateCount} with updates`}>
+              <span className="sm:hidden">{updateCount}</span>
+              <span className="hidden sm:inline">
+                {updateCount === 1 ? "1 update" : `${updateCount} updates`}
+              </span>
+            </Badge>
+          )}
+          {!selecting && derived.updateAll && (
+            <span className="hidden sm:contents" onClick={stopRowClick}>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={busy}
+                onClick={() => derived.updateAll && onPlan(derived.updateAll)}
+              >
+                Update all
+              </Button>
+            </span>
+          )}
           <span className="hidden sm:contents">
             <SkillAgents value={derived.availability} ctx={ctx} />
           </span>
@@ -295,6 +329,7 @@ const SkillGroupRows = memo(function SkillGroupRows({
             ctx={ctx}
             places={places}
             nested
+            update={updates?.get(skill.id)}
             selecting={selecting}
             selected={selected.has(skill.id)}
             showFix={showFix}
@@ -340,6 +375,7 @@ export function SkillSection({
   visible,
   ctx,
   places,
+  updates,
   emptyText,
   flat,
   selecting,
@@ -357,6 +393,8 @@ export function SkillSection({
   visible: readonly Skill[];
   ctx: SkillsContext;
   places: PlaceOptions;
+  /** The last check for updates, or null before one. */
+  updates: SkillUpdates | null;
   emptyText: string;
   /** List the skills without groups, as a search does. */
   flat: boolean;
@@ -407,6 +445,7 @@ export function SkillSection({
                 group={group}
                 ctx={ctx}
                 places={places}
+                updates={updates}
                 selecting={selecting}
                 selected={selected}
                 showFix={showFix}
@@ -422,6 +461,7 @@ export function SkillSection({
                 skill={skill}
                 ctx={ctx}
                 places={places}
+                update={updates?.get(skill.id)}
                 selecting={selecting}
                 selected={selected.has(skill.id)}
                 showFix={showFix}

@@ -1,4 +1,4 @@
-import type { EnvironmentId, SkillGetResult } from "@t3tools/contracts";
+import type { EnvironmentId, SkillGetResult, SkillUpdateEntry } from "@t3tools/contracts";
 import { AlertTriangleIcon, ArrowLeftIcon, MoreHorizontalIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 
@@ -6,12 +6,15 @@ import { useAfterDelay } from "../../hooks/useAfterDelay";
 import { useRevealInFileManager } from "../../hooks/useRevealInFileManager";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Skeleton } from "../ui/skeleton";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { copyPath, useEscapeToList } from "./SkillDetailChrome";
 import { AgentSwitchChip } from "./SkillAgentSwitch";
+import { SkillUpdatePanel } from "./SkillUpdatePanel";
+import { hasUpdate } from "./SkillUpdates.logic";
 import { UseInPopover, type PlaceOptions } from "./SkillUseIn";
 import {
   attention,
@@ -57,6 +60,9 @@ export function SkillDetail({
   projectRoot,
   places,
   busy,
+  update,
+  canUpdate,
+  onUpdateEntry,
   onBack,
   onPlan,
   onReload,
@@ -68,6 +74,12 @@ export function SkillDetail({
   places: PlaceOptions;
   /** A change is being made, so nothing else can start. */
   busy: boolean;
+  /** How the skill compares with its source, once updates were checked. */
+  update: SkillUpdateEntry | undefined;
+  /** The connection may write the skill's files. */
+  canUpdate: boolean;
+  /** Reading the skill's changes found a more exact comparison than the check's. */
+  onUpdateEntry: (entry: SkillUpdateEntry) => void;
   onBack: () => void;
   /** Turns an agent on or off, places or deletes the skill; a plan with a confirmation asks first. */
   onPlan: (plan: SkillPlan) => void;
@@ -125,7 +137,7 @@ export function SkillDetail({
       <BackBar scope={scopeLabel} onBack={onBack} />
       <div className="space-y-3 rounded-xl border border-border/60 bg-card/40 px-3 py-3 sm:px-4">
         <div className="min-w-0">
-          <h2 className="text-lg font-semibold break-words">
+          <h2 className="flex flex-wrap items-center gap-x-2 text-lg font-semibold break-words">
             <Tooltip>
               <TooltipTrigger render={<span tabIndex={0} className="cursor-default" />}>
                 {skill.name}
@@ -139,7 +151,13 @@ export function SkillDetail({
                 ))}
               </TooltipPopup>
             </Tooltip>
+            {hasUpdate(update) && (
+              <Badge variant="info" size="sm">
+                Update
+              </Badge>
+            )}
           </h2>
+          {skill.source && <p className="text-xs text-muted-foreground">From {skill.source}</p>}
           <p className="mt-1 text-sm break-words text-muted-foreground">
             {description || "No description yet."}
           </p>
@@ -223,6 +241,18 @@ export function SkillDetail({
           )}
         </div>
       </div>
+
+      {(update?.state === "update" || update?.state === "differs") && (
+        <SkillUpdatePanel
+          skill={skill}
+          environmentId={environmentId}
+          projectRoot={projectRoot}
+          busy={busy}
+          locked={!canUpdate}
+          onEntry={onUpdateEntry}
+          onPlan={onPlan}
+        />
+      )}
 
       <div className="min-w-0 overflow-hidden rounded-xl border border-border/60 bg-card/40">
         {detail.status === "loading" && (

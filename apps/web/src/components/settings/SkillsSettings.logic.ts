@@ -222,7 +222,21 @@ export type SkillChange =
       /** Where each skill came from (`owner/repo`), by `Skill.id`, for telling one that lost it. */
       readonly sources?: Readonly<Record<string, string>>;
     }
-  | { readonly kind: "delete"; readonly skills: readonly SkillRef[] };
+  | { readonly kind: "delete"; readonly skills: readonly SkillRef[] }
+  | {
+      readonly kind: "update";
+      readonly skills: readonly SkillRef[];
+      /**
+       * For one skill updated from its page: the versions its changes were read at, and what the
+       * person chose. Without it each skill is merged, and one whose edits clash is left alone.
+       */
+      readonly shown?: {
+        readonly upstreamSha: string;
+        readonly localSha: string;
+        readonly choice: "merge" | "theirs" | "mine";
+        readonly resolutions: Readonly<Record<string, "mine" | "theirs">>;
+      };
+    };
 
 /** What the confirm dialog says before a change is made, in plain words. */
 export type PlanConfirmation = {
@@ -775,7 +789,7 @@ const MAX_PROBLEMS = 3;
 
 /** One status line on what a change did, from what the server says happened to each skill. */
 export function describeResult(
-  change: SkillChange,
+  change: Exclude<SkillChange, { kind: "update" }>,
   outcomes: readonly SkillOutcome[],
   ctx: SkillsContext,
 ) {

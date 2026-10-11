@@ -515,20 +515,21 @@ function EnvironmentSkills({
     if ((await instructions.apply(plan)) && leaves) toList();
   };
 
-  /** Reads the folders again after a change, so the page shows what is on disk. */
-  const reloadAfterChange = async () => {
+  /** Reads the folders again after a change, so the page shows what is on disk, and returns it. */
+  const reloadAfterChange = async (): Promise<Loaded | null> => {
     try {
       const loaded = await load();
-      if (!mounted.current) return;
+      if (!mounted.current) return null;
       if (loaded) {
         setData(loaded);
         setLoadError(null);
-      } else {
-        setLoadError(LOAD_ERROR);
+        return loaded;
       }
+      setLoadError(LOAD_ERROR);
     } catch {
       if (mounted.current) setLoadError(LOAD_ERROR);
     }
+    return null;
   };
   /**
    * Asks the server to make the change, then reads the folders again: the page shows what is on
@@ -650,10 +651,13 @@ function EnvironmentSkills({
     setBusy(false);
   };
   /** Tidy up has asked for everything picked: its result shows over the list, read again. */
-  const finishTidy = async (result: string) => {
+  const finishTidy = async (result: string, complete: boolean) => {
     setBusy(true);
     setNotice(result);
-    await reloadAfterChange();
+    const loaded = await reloadAfterChange();
+    // What a Tidy up that went through leaves is what the person chose to keep, so the banner
+    // doesn't offer it again until the problems change.
+    if (complete && loaded) setDismissedTidy(tidySignature(tidyFindings(loaded.skills, ctx)));
     setBusy(false);
     toList();
   };
@@ -783,7 +787,7 @@ function EnvironmentSkills({
           locked={locked}
           onBack={toList}
           onBusyChange={setBusy}
-          onDone={(result) => void finishTidy(result)}
+          onDone={(result, complete) => void finishTidy(result, complete)}
         />
       )}
       {instructionView && (

@@ -467,13 +467,13 @@ function ScheduledTaskRow({
             <Badge variant={statusVariant(task.lastRunStatus)}>{task.lastRunStatus}</Badge>
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
-          {task.runInBackground && task.lastRunThreadId ? (
+          {task.lastRunThreadId ? (
             <Link
               to="/$environmentId/$threadId"
               params={buildThreadRouteParams(scopeThreadRef(environmentId, task.lastRunThreadId))}
               className="underline underline-offset-2"
             >
-              Open last run
+              {task.runInBackground ? "Open last run" : "Open last background run"}
             </Link>
           ) : null}
         </div>

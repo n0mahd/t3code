@@ -427,6 +427,22 @@ export const layer = Layer.effect(
     const changesPubSub = yield* PubSub.sliding<void>(1);
     const notifyChanged = PubSub.publish(changesPubSub, undefined).pipe(Effect.asVoid);
 
+    // The newest thread a background run of the task launched. Read from the
+    // threads that exist rather than stored, so it survives turning the
+    // setting off and never points at a launch that created no thread.
+    const lastRunThreadIdColumn = sql`
+      (
+        SELECT run.thread_id
+        FROM scheduled_task_run_threads run
+        INNER JOIN orchestration_v2_projection_threads thread
+          ON thread.thread_id = run.thread_id
+        WHERE run.task_id = scheduled_tasks.task_id
+          AND thread.deleted_at IS NULL
+        ORDER BY run.created_at DESC, run.thread_id DESC
+        LIMIT 1
+      ) AS last_run_thread_id
+    `;
+
     const selectAllRows = () => sql<ScheduledTaskRow>`
       SELECT
         task_id,
@@ -452,7 +468,7 @@ export const layer = Layer.effect(
         webhook_token,
         webhook_secret,
         run_in_background,
-        last_run_thread_id
+        ${lastRunThreadIdColumn}
       FROM scheduled_tasks
       ORDER BY updated_at DESC, task_id ASC
     `;
@@ -489,7 +505,7 @@ export const layer = Layer.effect(
         webhook_token,
         webhook_secret,
         run_in_background,
-        last_run_thread_id
+        ${lastRunThreadIdColumn}
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `;
@@ -533,8 +549,7 @@ export const layer = Layer.effect(
 
     // Run-state columns (last_run_*, run_count) are intentionally absent from
     // the conflict clause: they are owned by the run transitions below, and a
-    // concurrent settings save must not overwrite an in-flight increment. The
-    // one exception: leaving the background clears last_run_thread_id.
+    // concurrent settings save must not overwrite an in-flight increment.
     // Check existence in the write itself so an edit cannot undo a deletion
     // that landed after upsert loaded the previous task.
     const saveTask = (
@@ -624,10 +639,7 @@ export const layer = Layer.effect(
             WHEN ${webhook.secretChanged ? 1 : 0} = 1 THEN excluded.webhook_secret
             ELSE scheduled_tasks.webhook_secret
           END,
-          run_in_background = excluded.run_in_background,
-          last_run_thread_id = CASE
-            WHEN excluded.run_in_background = 1 THEN scheduled_tasks.last_run_thread_id
-          END
+          run_in_background = excluded.run_in_background
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
@@ -709,21 +721,6 @@ export const layer = Layer.effect(
       `.pipe(
         Effect.mapError((cause) =>
           taskError("Could not register the background run thread.", { taskId: id, cause }),
-        ),
-      );
-
-    // Only for a thread that launched. Best effort: the run already went out,
-    // so a failed write must not record it as failed.
-    const recordLastRunThread = (id: ScheduledTaskId, threadId: ThreadId, startedAtIso: string) =>
-      sql`
-        UPDATE scheduled_tasks
-        SET last_run_thread_id = ${threadId}
-        WHERE task_id = ${id}
-          AND run_in_background = 1
-          AND last_run_at = ${startedAtIso}
-      `.pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not record background run thread", { taskId: id, cause }),
         ),
       );
 
@@ -895,10 +892,6 @@ export const layer = Layer.effect(
                   creationSource: active.creationSource,
                 }),
               );
-
-        if (backgroundThreadId !== undefined && result._tag === "Success") {
-          yield* recordLastRunThread(active.id, backgroundThreadId, startedAtIso);
-        }
 
         const completedAt = yield* localNow;
         const runSucceeded = result._tag === "Success";

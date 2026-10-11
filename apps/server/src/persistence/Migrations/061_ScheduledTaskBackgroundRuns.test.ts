@@ -40,11 +40,8 @@ layer("061_ScheduledTaskBackgroundRuns", (it) => {
       const rows = yield* sql<{
         task_id: string;
         run_in_background: number;
-        last_run_thread_id: string | null;
-      }>`SELECT task_id, run_in_background, last_run_thread_id FROM scheduled_tasks`;
-      assert.deepEqual(rows, [
-        { task_id: "existing", run_in_background: 0, last_run_thread_id: null },
-      ]);
+      }>`SELECT task_id, run_in_background FROM scheduled_tasks`;
+      assert.deepEqual(rows, [{ task_id: "existing", run_in_background: 0 }]);
       const runThreads = yield* sql<{
         count: number;
       }>`SELECT COUNT(*) AS count FROM scheduled_task_run_threads`;
